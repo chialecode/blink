@@ -1,0 +1,38 @@
+name: CI
+
+# Keep this job name in sync with the main-protection ruleset. No path filters:
+# every PR must produce the required check, including documentation-only PRs.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-quality:
+    name: repository-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Run documentation and hygiene checks
+        run: python -B scripts/check_docs.py
+
+      - name: Run documentation gate regression tests
+        run: python -B scripts/test_check_docs.py

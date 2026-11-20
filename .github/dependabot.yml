@@ -1,0 +1,22 @@
+version: 2
+# Version updates wait 7 days after a release (cooldown). Their PRs are not
+# merged one by one: they are handled together when a stage starts
+# (docs/dev-rules/workflow.md#dependency-inventory). Security updates are not
+# delayed by the cooldown.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: "02:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore(ci)

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Local pre-push gate. Enable once per clone: git config --local core.hooksPath .githooks
+# CI has no sibling repositories or local reference index, so the reference-name
+# leak check only has real terms on a developer machine; this hook runs it there.
+# A hook can be skipped and never replaces the remote main-protection ruleset.
+set -eu
+root=$(git rev-parse --show-toplevel)
+py=python
+command -v "$py" >/dev/null 2>&1 || py=python3
+"$py" -B "$root/scripts/check_docs.py"
+"$py" -B "$root/scripts/test_check_docs.py" 2>&1 | tail -n 3
