@@ -84,7 +84,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 | **6. 提示块（Callout）** | `> [!note\|insight\|tension\|quote\|warning] 标题`<br>折叠态：`> [!insight]- 标题`（默认收起）/ `> [!insight]+` | `<aside class="callout callout-insight">...</aside>` 或 `<details class="callout callout-insight"><summary>标题</summary>...</details>` | 剥离 `[!insight]` 标记，保留标题与正文 |
 | **7. 折叠块** | `:::fold 折叠标题`<br>`内容...`<br>`:::`（兼容 `<details><summary>`） | `<details><summary>折叠标题</summary>...</details>` | 剥离 `:::fold` 围栏，保留标题与内容 |
 | **8. 高亮与脚注** | `==重点高亮==`<br>`正文[^1]` + `[^1]: 注释` | `<mark>重点高亮</mark>`<br>`<sup><a href="#fn-1">[1]</a></sup>` + `<section class="footnotes">` | 剥离 `==` 与角标，脚注正文归入末尾可检索段落 |
-| **9. 可选数学与只读 AI 嵌入槽** | 数学（v1 保留语法，M4/LOOP 可选原生排版）：`$E=mc^2$`（严格非空白边界，不误触 `$5`）/ `$$...$$`<br>AI 只读嵌入槽：`![[ai:<uuidv7>\|可选说明]]` | `<blink-math display="inline\|block">...</blink-math>`<br>`<blink-embed kind="ai" id="<uuid>">可选说明</blink-embed>` | 数学剥离 `$` 保留表达式；**`![[ai:...]]` 严禁把 AI 生成内容混入原文层 FTS/向量块**，仅登记指针边，防止派生反馈污染与守护 `INV-01`/`INV-09` |
+| **9. 可选数学与只读 AI 嵌入槽** | 数学（v1 保留语法，M5/LOOP 可选原生排版）：`$E=mc^2$`（严格非空白边界，不误触 `$5`）/ `$$...$$`<br>AI 只读嵌入槽：`![[ai:<uuidv7>\|可选说明]]` | `<blink-math display="inline\|block">...</blink-math>`<br>`<blink-embed kind="ai" id="<uuid>">可选说明</blink-embed>` | 数学剥离 `$` 保留表达式；**`![[ai:...]]` 严禁把 AI 生成内容混入原文层 FTS/向量块**，仅登记指针边，防止派生反馈污染与守护 `INV-01`/`INV-09` |
 
 **手写原文与外置/直连 AI 产物的不可逾越边界（`INV-01` & `INV-03`）**：
 
@@ -208,7 +208,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 | **`<blink-embed>`** | `kind`（必填枚举：`ai`）；`id`（必填小写 UUIDv7，指向 `ai_syntheses` / `ai_user_principles`） | **仅用户 BFM**（**严禁**外置 AI 输出，杜绝递归嵌入循环） | 仅纯文本说明 | Surface 1 目标：行内渲染 `surface.aiDerived` 只读卡；Surface 2 目标：行内渲染紧凑预览横幅 + “打开完整页面”按钮；镜像：`> ✦ AI 派生视图：[说明](../../insights/<path>.html)（[纯文本摘要](../../insights/<path>.md)）` |
 | **`<blink-tag>`** | `name`（必填 1～64 字符路径，无空白/控制符）；`data-privacy`（仅当 `name == "private"` 时输出 `private`） | **仅用户 BFM** | 仅纯文本 `#<name>` | 原生标签胶囊（私密态采用 `privacy.private` 青绿锁标）；镜像原样保留 `#<name>` |
 | **`<blink-time>`** | `sec`（必填非负整数 `^[0-9]{1,7}$`） | **仅用户 BFM** | 仅纯文本 `mm:ss`/`hh:mm:ss` | `tabular-nums` 时间胶囊（语音条点击跳转播放进度）；镜像降级为行内代码 `` `14:25` `` |
-| **`<blink-math>`** | `display`（必填枚举：`inline` \| `block`） | **用户 BFM** 与 **AI 派生视图**（共享） | HTML 转义后的纯 LaTeX 文本 | M2～M4 呈现等宽 `<code class="math">`；可选后续接入纯 Dart 原生公式排版（`val_latex_flutter` / `flutter_math_fork_fork`）；镜像原样保留 `$...$` / `$$...$$` |
+| **`<blink-math>`** | `display`（必填枚举：`inline` \| `block`） | **用户 BFM** 与 **AI 派生视图**（共享） | HTML 转义后的纯 LaTeX 文本 | M3～M5 呈现等宽 `<code class="math">`；可选后续接入纯 Dart 原生公式排版（`val_latex_flutter` / `flutter_math_fork_fork`）；镜像原样保留 `$...$` / `$$...$$` |
 | **`<blink-grid>` / `<blink-card>` / `<blink-metric>` / `<blink-timeline>` / `<blink-compare>` / `<blink-chart>`** | 受控布局与数据属性（如 `cols`、`tone`、`label`、`value`、`chart-type`、`data-json` 经严格数值/结构校验） | **仅 AI Surface 1 `view_html`**（不从用户手写 BFM 解析） | 按对应原生组件子结构约束 | 由 `BlinkHtmlWidgetFactory` 直接映射为自适应双栏 Bento 网格、指标卡、演进时间轴、对比卡与原生 `fl_chart` 图表（零 WebView、动态绑定三态主题令牌） |
 
 <a id="sync"></a>
@@ -219,7 +219,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 无论写入来自端侧 UI、桌面端内嵌同步服务，还是外置 CLI/MCP 写入 `ai_*`（桌面在线走 loopback IPC，桌面离线退回 `BEGIN IMMEDIATE` WAL），均落入同一张 `sync_oplog` 表并携带统一的因果操作信封 `(device_id, client_op_id, hlc_ts, base_revision, entity_layer, op_origin, payload_json)`：
 
 - 端侧操作 `< 16 ms` 在本地 SQLite 单事务同时写入业务表与 `outbox_ops`（`INV-04`）；
-- M3 在同一 `SyncTransport` 抽象下统一落地两种互补通道（[DEC-023](../decisions.md#dec-023)），用户可按场景单选或混用：
+- M4 在同一 `SyncTransport` 抽象下统一落地两种互补通道（[DEC-023](../decisions.md#dec-023)），用户可按场景单选或混用：
 
 ```text
 [五端本地写操作 (raw_* / ai_*)] ──> 本地 drift SQLite 单事务 (< 16ms) + outbox_ops (UUIDv7 client_op_id + hlc_ts)

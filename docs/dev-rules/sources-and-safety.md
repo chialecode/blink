@@ -57,7 +57,7 @@ BLINK 在存储、同步与外置 AI 扩展边界上严格拆分为**原文正�
   1. 开发者机器相关的本机绝对路径（包括 Windows 盘符绝对路径与 Unix 用户主目录绝对路径；文档示例统一使用 `<BLINK_VAULT_DIR>`、`%LOCALAPPDATA%\blink`、`${XDG_DATA_HOME}`、`~/Library/...` 等符号化路径模板）；
   2. 真实私钥块、API 密钥、GitHub 令牌、内嵌账号密码的连接串、`.env` 实参文件或 `.sqlite`/`.db` 本地数据库文件；
   3. [本机参考索引](workflow.md#local-reference)（`BLINK_REFERENCE_DIR` 或上级 `reference/blink/`）中登记的任何参考项目名称，以及本机同级目录中的其他本地仓库名称（需要描述参考背景时只写通用功能领域）。
-- **门禁脚本与 `SKILL.md` 治理衔接**：`python scripts/check_docs.py` 在本地与 CI 强制执行上述静态扫描；M5 落地 `packages/blink_skills` 时，仅对 `packages/blink_skills/skills/**/SKILL.md` 显式豁免 `DEC-003` 的无 YAML 头限制（以满足 `agentskills.io` 规范）并附带专用 Frontmatter Schema 校验，其余全仓 Markdown 仍严格禁用 YAML 头。
+- **门禁脚本与 `SKILL.md` 治理衔接**：`python scripts/check_docs.py` 在本地与 CI 强制执行上述静态扫描；M6 落地 `packages/blink_skills` 时，仅对 `packages/blink_skills/skills/**/SKILL.md` 显式豁免 `DEC-003` 的无 YAML 头限制（以满足 `agentskills.io` 规范）并附带专用 Frontmatter Schema 校验，其余全仓 Markdown 仍严格禁用 YAML 头。
 
 <a id="html-sanitization-safety"></a>
 ### 2.4 纯 Dart HTML/SVG/CSS 白名单净化与双表面 CSP 安全红线

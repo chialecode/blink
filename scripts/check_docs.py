@@ -42,6 +42,27 @@ EXCLUDED = {
     ".codex",
 }
 
+# Flutter-generated, Git-ignored platform outputs. Exempt only at their real
+# locations (`<platform>/flutter/ephemeral`, `<platform>/.symlinks`,
+# `.../ephemeral/.plugin_symlinks`) so a tracked directory that merely shares
+# one of these names elsewhere is still fully checked.
+FLUTTER_PLATFORM_DIRS = frozenset({"windows", "linux", "macos", "ios"})
+FLUTTER_SYMLINK_DIRS = frozenset({".symlinks", ".plugin_symlinks"})
+
+
+def is_flutter_generated_dir(parent: Path, name: str) -> bool:
+    parent_name = parent.name.lower()
+    if name == "ephemeral":
+        return parent_name == "flutter" and parent.parent.name.lower() in FLUTTER_PLATFORM_DIRS
+    if name in FLUTTER_SYMLINK_DIRS:
+        return parent_name in FLUTTER_PLATFORM_DIRS or parent_name == "ephemeral"
+    return False
+
+
+FLUTTER_EPHEMERAL_FILE_RE = re.compile(
+    r"(?:^|/)(?:ios/Flutter|macos/Flutter/ephemeral)/flutter_export_environment\.sh$"
+)
+
 REQUIRED_ROOT_FILES = (
     "LICENSE",
     "README.md",
@@ -375,10 +396,17 @@ def check(
     forbidden_terms, info_msg = load_forbidden_repo_terms(root, ref_dir_override)
 
     for directory, children, files in os.walk(root, followlinks=False):
-        children[:] = sorted(name for name in children if name not in EXCLUDED)
+        current = Path(directory)
+        children[:] = sorted(
+            name
+            for name in children
+            if name not in EXCLUDED and not is_flutter_generated_dir(current, name)
+        )
         for filename in sorted(files):
             path = Path(directory) / filename
             rel = path.relative_to(root).as_posix()
+            if FLUTTER_EPHEMERAL_FILE_RE.search(rel):
+                continue
 
             try:
                 resolved = path.resolve()

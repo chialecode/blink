@@ -7,5 +7,4 @@ set -eu
 root=$(git rev-parse --show-toplevel)
 py=python
 command -v "$py" >/dev/null 2>&1 || py=python3
-"$py" -B "$root/scripts/check_docs.py"
-"$py" -B "$root/scripts/test_check_docs.py" 2>&1 | tail -n 3
+"$py" -B "$root/scripts/check.py" --quick

@@ -9,10 +9,10 @@ BLINK 采用**“纯 Flutter/Dart 五端自包含本地优先应用 + 单文件�
 
 - **五端 100% 离线优先闭环**：桌面端（`Windows / macOS / Linux`）与移动端（`Android / iOS`）共享同一套纯 Dart `packages/blink_core`（`drift 2.35.4` + `sqlite3 3.9.1` Native Assets），全部 BFM v1 流式录入、日记书写、待办核销、CJK `unicode61` 全文检索、网页/EPUB/PDF 后台 `Isolate` 解析及划词伴读均在本地单事务内 0ms 完成，完全不依赖任何远端服务器。
 - **单文件夹便携知识库（`<BLINK_VAULT_DIR>`）**：桌面端将全部资产收敛在单个目录（`vault.json`、`db/blink.db`、`db/backups/`、`index/fts.db`、`blobs/`、`mirror/`），拷贝该目录即完成整库备份与跨机迁移；桌面后台 `Isolate` 以 **5 秒防抖**单向增量导出纯文本 UTF-8 Markdown 与独立自适应 `insights/*.html` 只读开放镜像。移动端在应用沙盒内运行完全一致的 SQLite 结构与按需 LRU 媒体缓存池。
-- **统一混合多端同步（`SyncTransport`，M3 一次交付）**：
+- **统一混合多端同步（`SyncTransport`，M4 一次交付）**：
   1. **直连高速同步（`DirectShelfTransport`）**：桌面端托盘在后台 `Isolate` 内嵌纯 Dart `shelf` HTTP 同步服务，通过局域网 `bonsoir`（MIT）自动发现优先高速直连，离家后无缝回退 Tailscale / Headscale（WireGuard，`100.64.0.0/10`）虚拟私网；若需 24/7 无头节点，可直接将同一套 `packages/blink_cli` 以 `dart build cli` 编译为单一原生目录包运行 `blink sync serve` 挂载便携库；
   2. **端到端加密异步中继（`EncryptedObjectStoreTransport`）**：当主力电脑休眠时，支持经 WebDAV 或 S3 兼容存储同步不可变、按设备分前缀的追加式密文 OpLog 段与去重密文附件（客户端 `cryptography` `XChaCha20-Poly1305` 强制 E2EE，远端零明文，且可勾选“禁止经云中继同步 `#private`”）。
-- **双轨无服务端 AI 扩展（M5 交付）**：
+- **双轨无服务端 AI 扩展（M6 交付）**：
   1. **Track 1 外置 AI 主轨（CLI / MCP Server / `agentskills.io` Skills）**：由统一原生捆绑包 `packages/blink_cli`（`dart build cli` + `mcp_dart`）对外提供命令行、MCP Stdio 与回环 Streamable HTTP 接口；桌面运行态经 OS 运行目录 `0600` 令牌 `ipc.json` 向桌面回环端点提交衍生写入（毫秒级驱动 `drift.watch()` 刷新 UI 并分配单调 `seq_id`），桌面关闭态经 `BEGIN IMMEDIATE` WAL 冷写落库；默认强制 `--scope normal_only`；
   2. **Track 2 可选内置直连 OpenAI 兼容客户端（`OpenAiCompatClient`）**：在 `packages/blink_core` 基于既有 `dio` 预留轻量 `/v1/chat/completions` SSE 客户端，不依赖任何 BLINK 服务端即可从五端直连外部云 API、本地 `Ollama /v1` 或通用 AI 网关，按 `normal` / `private_local` 分流配置严格守卫 `#private`（`INV-03`）。
 
@@ -50,7 +50,7 @@ BLINK 采用**“纯 Flutter/Dart 五端自包含本地优先应用 + 单文件�
 <a id="repo-layout"></a>
 ## 2. 单一仓库目录结构（Monorepo Layout）
 
-全项目采用单一纯 Dart/Flutter 仓库（Dart Workspace）管理治理正本、共享核心包、净化器、外置技能包、CLI/MCP 捆绑包与五端客户端（M1 落地治理、需求、选型与架构基线，M2 起按[阶段路线](../delivery/roadmap.md#stages)逐步落位实现目录）：
+全项目采用单一纯 Dart/Flutter 仓库（Dart Workspace）管理治理正本、共享核心包、净化器、外置技能包、CLI/MCP 捆绑包与五端客户端（各目录按[阶段路线](../delivery/roadmap.md#stages)逐步落位，当前已落地状态见[交付状态](../delivery/status.md#current)与[工程规则](../dev-rules/engineering.md#toolchain)）：
 
 ```text
 blink/
@@ -63,27 +63,31 @@ blink/
 ├── SECURITY.md                        # 私密漏洞报告、#private 四层边界与密钥轮换规程
 ├── CHANGELOG.md                       # 正式版发布变更记录（v0.1.1 起）
 ├── LICENSE                            # Apache-2.0 许可证正本
-├── pubspec.yaml                       # Dart Workspace 根配置（M2+）
+├── .flutter-version                   # 固定 Flutter 稳定版本（3.50.0，已实现）
+├── pubspec.yaml                       # Dart Workspace 根配置与锁文件 pubspec.lock（已实现）
 ├── docs/                              # 二代精简文档体系（需求、决定、界面、设计、研究、交付、规则）
 ├── scripts/
-│   ├── check_docs.py                  # 零第三方依赖 Python 标准库文档与公开卫生门禁（M1 已实现，仅 CI 治理工具）
-│   ├── check.py                       # 统一质量门禁入口：--quick 快速门禁与完整阶段门禁（M2+）
-│   ├── deps.py                        # 7 天冷却期常规依赖盘点升级与 OSV 漏洞审计（M2+）
-│   └── package.py                     # 按通道打包：--install 静默更新本机 blink-dev 与 --cli 产出 dart build cli 包（M2+）
+│   ├── check_docs.py                  # 零第三方依赖 Python 标准库文档与公开卫生门禁（已实现，仅 CI 治理工具）
+│   ├── check.py                       # 统一质量门禁入口：--quick、完整门禁、--ci 与 --install-linux-flutter（已实现）
+│   ├── deps.py                        # 7 天冷却期依赖盘点、OSV 漏洞审计与校验和核对，附 flutter-checksums.json / deps-exceptions.json（已实现）
+│   ├── package.py                     # Windows 双通道打包、--install 静默更新本机 blink-dev 与 --rehearsal 演练（已实现；--cli 待实现）
+│   └── test_*.py                      # 上述门禁、依赖与打包脚本的零依赖 unittest 回归测试（已实现）
 ├── packages/
-│   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M2 核心 / M5 完整）
-│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：drift/sqlite3 WAL、BFM v1、AST、SyncTransport、Readability/EPUB/pdfrx_engine、Mirror、OpenAiCompatClient（M2+）
-│   ├── blink_cli/                     # 统一原生 CLI / MCP Server (mcp_dart) / 无头同步 (blink sync serve)，由 dart build cli 捆绑 libsqlite3（M3 同步 / M5 完整）
-│   └── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M5）
+│   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M3 核心 / M6 完整）
+│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：drift/sqlite3 WAL、BFM v1、AST、SyncTransport、Readability/EPUB/pdfrx_engine、Mirror、OpenAiCompatClient（M3+）
+│   ├── blink_cli/                     # 统一原生 CLI / MCP Server (mcp_dart) / 无头同步 (blink sync serve)，由 dart build cli 捆绑 libsqlite3（M4 同步 / M6 完整）
+│   └── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M6）
 └── apps/
-    └── blink_client/                  # 五端 Flutter 本地优先应用（M2+）
+    └── blink_client/                  # 五端 Flutter 本地优先应用（Windows 桌面外壳与打包已实现，五端业务层待实现）
         ├── pubspec.yaml
+        ├── assets/icons/              # 运行期托盘多尺寸 .ico（blink.ico、blink-dev.ico）
         ├── lib/
-        │   ├── ui/                    # 自适应外壳、BFM v1 编辑器、Surface 1 原生流与阅读器、Surface 2 沙盒全页视图、pdfrx 伴读、设置
-        │   ├── application/           # Riverpod 状态控制器、CJK IME 保护与自动补全、双表面路由协调
-        │   └── platform/              # 五端双通道路径解析 (blink vs blink-dev)、OS 密钥仓、单实例锁、桌面托盘与 WebView2 隔离
-        ├── windows/ macos/ linux/ android/ ios/
-        └── test/                      # 内存 SQLite 单元/组件测试与无焦点界面自动化测试
+        │   ├── app/                   # 最小桌面外壳：产品占位页、“关于”与关闭行为设置（已实现）
+        │   ├── ui/                    # 自适应外壳、BFM v1 编辑器、Surface 1 原生流与阅读器、Surface 2 沙盒全页视图、pdfrx 伴读、设置（待实现）
+        │   ├── application/           # Riverpod 状态控制器、CJK IME 保护与自动补全、双表面路由协调（待实现）
+        │   └── platform/              # 编译期信息、双通道路径解析、原子写入、桌面设置、单实例锁、控制管道、托盘与生命周期（Windows 已实现，其余平台与密钥仓待实现）
+        ├── windows/ macos/ linux/ android/ ios/   # windows/packaging/blink.iss 为 Inno Setup 7.1.x 按用户安装脚本（已实现）
+        └── test/                      # 单元、组件、Win32 IPC 与无焦点生命周期测试（已实现）
 ```
 
 <a id="contracts"></a>
@@ -140,6 +144,25 @@ blink/
 1. **临时文件 + `flush` + 原子重命名（`INV-07`）**：所有配置文件、开放镜像（`.md` 与 `insights/*.html`）、媒体仓二进制文件及 `packages/blink_skills` / MCP 配置补丁，一律先写入同目录 `.blink-tmp` / `.part` 临时文件并执行 `RandomAccessFile.flush()`（二进制同时校验长度与 `sha256`）后原子改名；桌面退出与 `--quit-for-update` 时执行 `PRAGMA wal_checkpoint(TRUNCATE)` 确保 `-wal`/`-shm` 合并入 `blink.db`。
 2. **迁移前原子热快照与损坏保留**：每次 `drift` 模式升级或手动备份均先执行 SQLite `VACUUM INTO`（或 `db.backup()`）生成 `< 1 s` 自包含一致性快照写入 `db/backups/`；检测到损坏文件先改名为 `<filename>.corrupt-<utc时间戳>` 保留现场再恢复；遇到高于当前程序版本的 `schema_version` 立即拒绝写入并提示升级。
 3. **日志与诊断脱敏（`INV-08`）**：统一日志清洗层严禁输出 `Authorization` 头、配对码、E2EE 主密钥、API Key、带签名参数 URL 及任何 `privacy_level = "private"` 正文与摘录。
+
+<a id="desktop-lifecycle"></a>
+### 4.3 Windows 安装身份与桌面生命周期（`DEC-027`）
+
+安装身份在构建期经 `--dart-define=BLINK_IDENTITY=<身份>` 与 `BLINK_CHANNEL`、`BLINK_VERSION`、`BLINK_GIT_SHA` 一并注入；`flutter run` 等源码构建不带安装身份，不注册互斥量与控制管道，可与已安装的 `blink-dev` 并存。测试身份只用于门禁安装演练，产物不分发。
+
+| 安装身份 | 通道 | AppId / 卸载键（`HKCU\...\Uninstall\<AppId>_is1`） | 可执行文件 | 默认安装目录 | 单实例互斥量 / 控制管道 | 数据根 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `blink` | 正式 | `io.github.chialecode.blink` | `blink.exe` | `%LOCALAPPDATA%\Programs\blink` | `blink-instance` / `\\.\pipe\blink-control` | `%LOCALAPPDATA%\blink` |
+| `blink-dev` | 开发 | `io.github.chialecode.blink-dev` | `blink-dev.exe` | `%LOCALAPPDATA%\Programs\blink-dev` | `blink-dev-instance` / `\\.\pipe\blink-dev-control` | `%LOCALAPPDATA%\blink-dev` |
+| `blink-test` / `blink-dev-test` | 门禁演练 | `io.github.chialecode.blink-test` / `io.github.chialecode.blink-dev-test` | `blink-test.exe` / `blink-dev-test.exe` | 演练临时目录（安装器 `/DIR=`） | `<身份>-instance` / `\\.\pipe\<身份>-control` | 演练临时目录（`BLINK_DATA_DIR`） |
+
+- **单实例**：已安装身份启动时创建命名互斥量 `<身份>-instance`（同时是安装器的 `AppMutex`）。第二个进程根据启动参数决定行为后退出：无参数时经控制管道转交 `focus`（转交前以 `GetNamedPipeServerProcessId` + `AllowSetForegroundWindow` 把前台权限只授予该管道服务端进程，使托盘常驻的主实例能真正前置窗口，安静模式不调用；成功退出码 `0`，管道或协议错误退出码 `1`）；带 `--background` 时直接以退出码 `0` 退出、不聚焦已有窗口；带 `--quit-for-update` 时，若无运行中实例则直接以 `0` 退出，有运行中实例则经控制管道请求保存后退出（接受 `{"ok": true}` 退出码 `0`，对端忙碌 `{"ok": false, "reason": "busy"}` 退出码 `2`，其他管道或协议错误退出码 `1`，并在存在附加标准输出时尽力写出 JSON 应答行）。
+- **控制管道**：`\\.\pipe\<身份>-control` 使用 `FILE_FLAG_FIRST_PIPE_INSTANCE`（`nMaxInstances = 1`）与 `PIPE_REJECT_REMOTE_CLIENTS`，安全描述符仅授予当前用户受保护 DACL（`D:P(A;;GA;;;<当前用户SID>)`）；单行上限 `4096` 字节 UTF-8，每个连接一行 JSON 请求 `{"cmd": "focus" | "quit-for-update" | "ping"}`，一行应答 `{"ok": true}` 或 `{"ok": false, "reason": "busy" | "unknown_command" | "invalid_request"}`（超长行、非法 UTF-8、畸形 JSON 或缺失 `cmd` 均返回 `invalid_request` 而不崩溃）。管道服务在独立 Isolate 中运行，命令交给 UI Isolate 执行，60 秒内无应答回执 `busy`；取消重叠 I/O 时统一执行 `CancelIoEx` + `GetOverlappedResult(..., true)` 排空后再释放或复用缓冲区。
+- **托盘与关闭**：原生窗口启动保持隐藏（零闪烁、不抢焦点），交互运行期间始终显示托盘图标（开发版图标带 `DEV` 徽标），左键或右键菜单“打开”恢复并聚焦主窗口，“退出”走保存后退出序列；关闭按钮默认隐藏到托盘，可在设置中改为直接退出（`<数据根>\settings\desktop.json`，原子写入；损坏时改名为 `desktop.json.corrupt-<UTC时间戳>` 保留现场并回退默认）。资源管理器重启时由原生窗口拦截 `TaskbarCreated` 并经 MethodChannel `io.github.chialecode.blink/desktop_shell` 通知 Dart 重新注册托盘图标。
+- **`--background`**：只显示托盘图标，不创建任务栏项、不打开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏。
+- **保存后退出**：`quit-for-update`、托盘“退出”与关闭设为退出时共用一个生命周期序列：检查忙碌（当前无常驻后台业务任务，默认空闲；后续接入离线队列刷盘、镜像末次写出与 `PRAGMA wal_checkpoint(TRUNCATE)`）→ 保存窗口几何与状态 → 原子写入 `<数据根>\run\lifecycle.json`（字段 `exitReason`、`windowWasVisible`、`version`、`identity`、`timestampUtc`）→ 移除托盘图标 → 释放控制管道与互斥量并退出（几何、`lifecycle.json` 或托盘移除失败只记入 `lastShutdownPersistenceError`、不阻断退出，避免进程卡在“退出中”而让后续 `quit-for-update` 空答 `ok`）（`quit-for-update` 预留 `80ms` 短暂延迟确保管道 Isolate 刷出 `{"ok": true}` 应答）。
+- **安静模式**：`BLINK_QUIET=1` 时不显示窗口、不创建托盘图标、不调用任何聚焦 API，供冒烟与安装演练使用。
+- **版本与外壳**：开发通道 `0.1.0-dev.<UTC 年月日时分>`、正式通道 `0.1.<n>`（工作区含未提交改动时带 `+dirty` 后缀）；完整版本字符串经 CMake 环境变量注入构建期生成头文件写入可执行文件 `ProductVersion`（不污染受跟踪源码）与安装器 `AppVersion`（卸载项 `DisplayVersion`），数值 `FileVersion` 固定为 `0.1.<n>.0`（开发通道 `0.1.0.0`）；最小桌面外壳位于 `apps/blink_client/lib/app/`，“关于”页显示版本、通道、安装身份与提交短哈希。
 
 <a id="invariants"></a>
 ## 5. 架构与数据不变量（`INV-01` ～ `INV-13`）

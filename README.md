@@ -6,7 +6,7 @@
 
 ## 状态
 
-当前处于 M1 基线阶段（修订 3 纯 Dart 架构收敛），范围见[当前计划](docs/delivery/stage-plan.md)，进展、后续迭代项与上游事项见[交付状态](docs/delivery/status.md)。工具链与门禁命令以[工程规则](docs/dev-rules/engineering.md#toolchain)记录的实际落地状态为准。
+当前阶段范围见[当前计划](docs/delivery/stage-plan.md)，已落地基线、后续迭代项与上游事项见[交付状态](docs/delivery/status.md)。工具链与门禁命令以[工程规则](docs/dev-rules/engineering.md#toolchain)记录的实际落地状态为准。
 
 ## 入口
 

@@ -1,0 +1,9 @@
+name: blink_workspace
+description: BLINK pure-Dart monorepo workspace.
+publish_to: none
+
+environment:
+  sdk: ^3.14.0
+
+workspace:
+  - apps/blink_client

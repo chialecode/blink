@@ -5,28 +5,29 @@
 <a id="toolchain"></a>
 ## 1. 工具链与跨端工程基线
 
-本节区分 **M1 已落地状态**、**开发机实测就绪基线**与 **M2+ 工程实施基线**，不把后续阶段才初始化的工程目录或待装工具写成已存在：
+本节区分**已实现基线**、**开发机实测就绪基线**与**后续规划基线**，不把后续阶段才初始化的工程目录或待装工具写成已存在：
 
 | 层级 | 组件与版本基线 | 锁定与契约约束 | 当前状态 |
 | --- | --- | --- | --- |
-| 仓库治理门禁（仅 CI/开发治理） | Python `3.12+` 标准库（`scripts/check_docs.py`） | 零第三方依赖；CI 固定使用 `ubuntu-24.04` 与 Python `3.12`；**仅服务于仓库文档卫生门禁，BLINK 运行时产品零 Python 依赖** | **已实现（M1）** |
-| 纯 Dart 共享核心与净化器（`packages/blink_core`、`packages/blink_sanitizer`） | Dart `>= 3.10`（Dart Workspace 统一管理） | `pubspec.lock` 精确锁定；`drift 2.35.4` + `sqlite3 3.9.1` Native Assets（Build Hooks 自动打包原生库）、`package:markdown 7.3.1`（BFM v1 唯一解析器）、`package:html 0.15.7` + W3C CSS Syntax L3 词法器、`package:archive 4.6.0` + `package:xml 7.1.0`、`pdfrx_engine 0.9.6`、`shelf 1.4.3` / `shelf_router 1.1.5`、`dio 5.5+`、`cryptography 2.9.0` + `aws_signature_v4 0.6.13`；严禁引入 `package:flutter/*`（`INV-02`） | 待实现（M2+） |
-| 五端客户端（`apps/blink_client/`） | Flutter / Dart 稳定版（需 Dart `>= 3.10`），目标平台：`Windows`、`macOS`、`Linux`、`Android`、`iOS` | `flutter_riverpod`、`drift_flutter 0.3.1`、`pdfrx 3.1.0`、`super_sliver_list`、`flutter_widget_from_html_core 0.17.4` + `fwfh_svg 0.16.1` + `fl_chart 1.3.1`（Surface 1）、`flutter_inappwebview 6.1.5` + `desktop_webview_window 0.4.3`（Surface 2，Linux 动态链接受 [DEC-026](../decisions.md#dec-026) 约束）、`bonsoir 7.1.6`、`record 6.2.x`、`flutter_secure_storage`。手写层坚持 BFM v1 原生 `TextField`（禁重型 WYSIWYG） | 待实现（M2+） |
-| 原生 CLI / MCP / 无头同步与技能包（`packages/blink_cli`、`packages/blink_skills`） | Dart `>= 3.10` + **`dart build cli`** | `mcp_dart 2.4.4`（封装于 `BlinkMcpAdapter`，可无缝切换 `dart_mcp`）、`args 2.7.0`、`shelf 1.4.3` / `shelf_router 1.1.5`；由 `dart build cli` 产出含 `libsqlite3` 的统一自包含目录包，同时承载 CLI、MCP Server 与无头 `blink sync serve`；`packages/blink_skills` 遵循 `agentskills.io` 开放规范 | 待实现（M3 同步 / M5 完整） |
+| 仓库治理、门禁与打包脚本（仅 CI/开发治理） | Python `3.12+` 标准库（`scripts/check_docs.py`、`check.py`、`deps.py`、`package.py` 与回归测试） | 零第三方依赖；CI 固定使用 `ubuntu-24.04` 与 Python `3.12`；**仅服务于仓库文档卫生、两级门禁、依赖审计与打包编排，BLINK 运行时产品零 Python 依赖** | **已实现** |
+| 纯 Dart 共享核心与净化器（`packages/blink_core`、`packages/blink_sanitizer`） | Dart `>= 3.10`（Dart Workspace 统一管理） | `pubspec.lock` 精确锁定；`drift 2.35.4` + `sqlite3 3.9.1` Native Assets（Build Hooks 自动打包原生库）、`package:markdown 7.3.1`（BFM v1 唯一解析器）、`package:html 0.15.7` + W3C CSS Syntax L3 词法器、`package:archive 4.6.0` + `package:xml 7.1.0`、`pdfrx_engine 0.9.6`、`shelf 1.4.3` / `shelf_router 1.1.5`、`dio 5.5+`、`cryptography 2.9.0` + `aws_signature_v4 0.6.13`；严禁引入 `package:flutter/*`（`INV-02`） | 待实现（M3+） |
+| 五端客户端（`apps/blink_client/`） | Flutter `3.50.0` / Dart `3.14.0`（根目录 `.flutter-version` 固定、Dart Workspace 统一管理），目标平台：`Windows`、`macOS`、`Linux`、`Android`、`iOS` | 桌面外壳已锁定 `material_ui 1.11.0`（Flutter 3.50 替代已弃用的 `flutter/material.dart`）、`window_manager 0.7.0`、`tray_manager 0.9.0`、`win32 6.4.0`、`ffi 2.2.0` 与 `flutter_lints 6.0.0`（`pubspec.lock` 入库）；后续业务层接入 `flutter_riverpod`、`drift_flutter 0.3.1`、`pdfrx 3.1.0`、`super_sliver_list`、`flutter_widget_from_html_core 0.17.4` + `fwfh_svg 0.16.1` + `fl_chart 1.3.1`（Surface 1）、`flutter_inappwebview 6.1.5` + `desktop_webview_window 0.4.3`（Surface 2，Linux 动态链接受 [DEC-026](../decisions.md#dec-026) 约束）、`bonsoir 7.1.6`、`record 6.2.x`、`flutter_secure_storage`。手写层坚持 BFM v1 原生 `TextField`（禁重型 WYSIWYG） | **已实现（Windows 桌面骨架与按用户打包）**；业务功能与其余四端待实现 |
+| 原生 CLI / MCP / 无头同步与技能包（`packages/blink_cli`、`packages/blink_skills`） | Dart `>= 3.10` + **`dart build cli`** | `mcp_dart 2.4.4`（封装于 `BlinkMcpAdapter`，可无缝切换 `dart_mcp`）、`args 2.7.0`、`shelf 1.4.3` / `shelf_router 1.1.5`；由 `dart build cli` 产出含 `libsqlite3` 的统一自包含目录包，同时承载 CLI、MCP Server 与无头 `blink sync serve`；`packages/blink_skills` 遵循 `agentskills.io` 开放规范 | 待实现（M4 同步 / M6 完整） |
 
 ### 1.1 开发环境工具链核验状态（2026-11-22 核对）
 
-经纯 Dart 零后端收敛后，**Docker、外置数据库服务与任何 Python 后端运行工具链均已从 M2 及全产品 MVP 前置清单彻底移除**；M2 编码开工前仅需补齐 **Flutter / Dart 稳定版 SDK（Dart `>= 3.10`）**：
+经纯 Dart 零后端收敛后，**Docker、外置数据库服务与任何 Python 后端运行工具链均已从全产品 MVP 前置清单彻底移除**；当前开发机已完成 Windows 桌面构建、打包与升级演练所需的全部核心工具链就绪核验：
 
 | 工具类别 | 组件与用途 | 当前实测状态 | 阶段准入节点与处置说明 |
 | --- | --- | --- | --- |
-| 版本控制与包管理基础 | `git 2.56.x`、`gh 2.103.x`、`winget 1.29.x` | **已就绪** | 支撑 M1+ 分支治理、远端规则核验与非交互式工具安装 |
-| 仓库文档门禁脚本运行时 | `Python 3.12.16` 标准库 | **已就绪** | 仅用于运行零外部依赖的 `scripts/check_docs.py` 与仓内编排脚本，不进入 BLINK 运行时产物 |
-| Windows 桌面 C++ 与系统 WebView 底座 | Visual Studio C++ Build Tools（MSVC `x64 19.51`、内置 `CMake 4.3`、`Windows 11 SDK 10.0.26100`）与 Windows 11 WebView2 Runtime | **已就绪** | 满足 M2 `flutter build windows`、`sqlite3` / PDFium FFI 及 M5 Surface 2 WebView2 运行前置条件 |
-| Flutter / Dart 客户端与 CLI 工具链 | `fvm` + Flutter `stable` SDK（要求内置 **Dart `>= 3.10`** 以支持 `dart build cli` Build Hooks） | **M2 前唯一核心待安装项** | M2 开工创建 Dart Workspace（`packages/blink_core`、`packages/blink_sanitizer`、`apps/blink_client`）及运行 `dart analyze` / `dart test` / `flutter test` 前安装并加入环境变量 |
-| Android 移动端构建链 | JDK `17`/`21` + Android SDK（`platform-tools`、`build-tools`、`platforms`） | **M2 移动端打包前待安装** | 不阻塞核心库与桌面端先行编码；构建 M2 Android `blink-dev` 安装包与联调前补齐 |
-| 异地虚拟私网（可选外部工具） | Tailscale 客户端 | **M3 跨设备 WAN 联调前** | M3 自动化门禁均通过 `127.0.0.1` 回环与模拟桩运行；跨设备外网同步实测前装妥 |
-| Linux Surface 2 构建开发库（仅 Linux 宿主机/CI） | `libwebkit2gtk-4.1-dev`、`libsoup-3.0-dev` | **M5 Linux Surface 2 构建前** | 仅在 Linux 桌面构建机或 Linux CI runner 安装；目标机运行期动态链接未修改的系统共享库（[DEC-026](../decisions.md#dec-026)），缺失时自动降级 Surface 1 |
+| 版本控制与包管理基础 | `git 2.56.x`、`gh 2.103.x`、`winget 1.29.x` | **已就绪** | 支撑分支治理、远端规则核验与非交互式工具安装 |
+| 仓库门禁与打包脚本运行时 | `Python 3.12.16` 标准库 | **已就绪** | 仅用于运行零外部依赖的 `scripts/{check_docs,check,deps,package}.py` 及测试，不进入 BLINK 运行时产物 |
+| Windows 桌面 C++ 与系统 WebView 底座 | Visual Studio Build Tools 2026（MSVC `x64`、内置 `CMake`、`Windows 11 SDK 10.0.26100`）与 Windows 11 WebView2 Runtime | **已就绪** | 满足 `flutter build windows`、`sqlite3` / PDFium FFI 及 Surface 2 WebView2 运行前置条件 |
+| Flutter / Dart 客户端与 CLI 工具链 | Flutter `3.50.0` stable（内置 Dart `3.14.0`），按用户安装于 `%LOCALAPPDATA%\Programs\flutter`，由 `.flutter-version` 固定（不使用 `fvm`） | **已就绪** | 官方归档 SHA-256 核验通过（`scripts/flutter-checksums.json`），分析上报与 CLI 动画已关闭，Windows 开发者模式已开启；`flutter doctor` Flutter/Windows/Visual Studio 项通过，门禁自动核对 `.flutter-version` |
+| Windows 按用户安装包编译器 | Inno Setup `7.1.1`（按用户安装于 `%LOCALAPPDATA%\Programs\Inno Setup 7`，`ISCC.exe`） | **已就绪** | `apps/blink_client/windows/packaging/blink.iss` 以 ISPP `Ver` 强制限定 7.1.x；仅构建期工具，不随产品分发 |
+| Android 移动端构建链 | JDK `17`/`21` + Android SDK（`platform-tools`、`build-tools`、`platforms`） | **M3 移动端打包前待安装** | 不阻塞核心库与桌面端先行编码；构建 Android `blink-dev` 安装包与联调前补齐 |
+| 异地虚拟私网（可选外部工具） | Tailscale 客户端 | **M4 跨设备 WAN 联调前** | 自动化门禁均通过 `127.0.0.1` 回环与模拟桩运行；跨设备外网同步实测前装妥 |
+| Linux Surface 2 构建开发库（仅 Linux 宿主机/CI） | `libwebkit2gtk-4.1-dev`、`libsoup-3.0-dev` | **M6 Linux Surface 2 构建前** | 仅在 Linux 桌面构建机或 Linux CI runner 安装；目标机运行期动态链接未修改的系统共享库（[DEC-026](../decisions.md#dec-026)），缺失时自动降级 Surface 1 |
 
 <a id="commands"></a>
 ## 2. 标准命令与双通道隔离
@@ -35,18 +36,19 @@
 
 | 命令 | 作用 | 状态 |
 | --- | --- | --- |
-| `python scripts/check_docs.py` | 零依赖检查必需文档布局、`CLAUDE.md` 单行引用、无 YAML 头（M5 起仅对 `packages/blink_skills/skills/**/SKILL.md` 豁免并做 Schema 校验）、相对链接与显式/标题锚点可达、禁止引用式链接、UTF-8 无 BOM 与 LF 行尾（仅 `.bat`/`.cmd` 允许 CRLF）、拦截本机绝对路径/敏感凭据/本机参考项目名与同级仓库名（含 `.githooks/`、`.gitignore` 等无扩展名文本） | **已实现（M1）** |
-| `python -B scripts/test_check_docs.py` | 门禁自身的零依赖回归夹具（`unittest`，全部在系统临时目录构造正反例，不写工作区）：断链、缺锚点、引用式链接、YAML 头、BOM、CRLF、非 kebab-case、`CLAUDE.md` 契约、本机路径、密钥特征、禁止文件与参考/同级仓库名拦截 | **已实现（M1）** |
-| `git config --local core.hooksPath .githooks` | 每个新克隆执行一次，启用 [`.githooks/pre-push`](../../.githooks/pre-push)：推送前运行上面两条命令。CI 上没有同级仓库与本机参考索引，参考名拦截只有在开发机上才有实际词表，因此本地 hook 是该项检查的主要执行点；hook 可被跳过，不能替代远端规则集 | **已实现（M1）** |
-| `git diff --check HEAD` | 检查受跟踪文件的尾随空白、行尾符与冲突标记（新增文件先 `git add`） | **已实现（M1）** |
-| `dart format --output=none --set-exit-if-changed .` | 全纯 Dart 工作区（`packages/*` 与 `apps/blink_client`）统一代码格式校验 | 待实现（M2） |
-| `dart analyze --fatal-infos` | 全工作区静态分析与类型安全校验（零警告零 info） | 待实现（M2） |
-| `dart test` / `flutter test` | 纯 Dart 核心包/净化器/CLI 单元测试与 Flutter 组件/离线交互测试 | 待实现（M2） |
-| `dart build cli -t packages/blink_cli/bin/blink.dart -o dist/blink-cli/` | 构建包含原生 `libsqlite3` Build Hooks 的统一自包含 CLI / MCP / 无头同步捆绑目录包（**禁用旧命令 `dart compile exe`**） | 待实现（M3/M5） |
-| `python scripts/check.py --quick` | 日常快速门禁（预算 ≤ 5～10 分钟）：运行 `check_docs.py`、`git diff --check`、增量 `dart analyze` 与改动关联的 `dart test` / `flutter test` | 待实现（M2） |
-| `python scripts/check.py` | 完整阶段门禁：串行执行全工作区格式/分析、单向依赖方向校验（`INV-02`）、全量纯 Dart 与 Flutter 单元/回环集成测试、安静进程冒烟、OSV 依赖漏洞审计、`check_docs.py` 与 `git diff --check` | 待实现（M2） |
-| `python scripts/deps.py [--audit]` | [7 天冷却期依赖盘点与 OSV 漏洞审计](workflow.md#dependency-inventory) | 待实现（M2） |
-| `python scripts/package.py [--install \| --cli]` | 构建开发通道客户端包（`dist/blink-dev/`，并随包产出 `blink-dev` CLI）、可选静默更新本机 `blink-dev` 并在托盘后台拉起，或单独产出跨平台无头 `dist/blink-cli/` 捆绑包 | 待实现（M2+） |
+| `python scripts/check_docs.py` | 零依赖检查必需文档布局、`CLAUDE.md` 单行引用、无 YAML 头（M6 起仅对 `packages/blink_skills/skills/**/SKILL.md` 豁免并做 Schema 校验）、相对链接与显式/标题锚点可达、禁止引用式链接、UTF-8 无 BOM 与 LF 行尾（仅 `.bat`/`.cmd` 允许 CRLF）、拦截本机绝对路径/敏感凭据/本机参考项目名与同级仓库名（自动跳过 Flutter Git 忽略的 `ephemeral`/`.symlinks`/`flutter_export_environment.sh`，覆盖 `.githooks/`、`.gitignore` 等无扩展名受控文本） | **已实现** |
+| `python -B scripts/test_check_docs.py` | 文档门禁自身的零依赖回归夹具（`unittest`，30 条，全部在系统临时目录构造正反例，不写工作区）：断链、缺锚点、引用式链接、YAML 头、BOM、CRLF、非 kebab-case、`CLAUDE.md` 契约、本机路径、Flutter 临时生成物豁免边界、密钥特征、禁止文件与参考/同级仓库名拦截 | **已实现** |
+| `git config --local core.hooksPath .githooks` | 每个新克隆执行一次，启用 [`.githooks/pre-push`](../../.githooks/pre-push)：推送前运行 `python -B scripts/check.py --quick`。CI 上没有同级仓库与本机参考索引，参考名拦截只有在开发机上才有实际词表，因此本地 hook 是该项检查的主要执行点；hook 可被跳过，不能替代远端规则集 | **已实现** |
+| `git diff --check HEAD` | 检查受跟踪文件的尾随空白、行尾符与冲突标记（新增文件先 `git add`） | **已实现** |
+| `dart format --output=none --set-exit-if-changed .` | 全纯 Dart / Flutter 工作区（`apps/blink_client` 及后续 `packages/*`）统一代码格式校验 | **已实现** |
+| `flutter analyze --fatal-infos`（后续并含工作区 `dart analyze --fatal-infos`） | 静态分析与类型安全校验（零警告零 info；在 `apps/blink_client` 执行，由 `check.py` 统一编排） | **已实现** |
+| `flutter test`（后续并含纯 Dart 包 `dart test`） | Flutter 桌面外壳、生命周期与原生通道单元/组件测试（纯 Dart 共享包随 `packages/*` 落地接入 `dart test`） | **已实现** |
+| `dart build cli -t packages/blink_cli/bin/blink.dart -o dist/blink-cli/` | 构建包含原生 `libsqlite3` Build Hooks 的统一自包含 CLI / MCP / 无头同步捆绑目录包（**禁用旧命令 `dart compile exe`**） | 待实现（M4/M6） |
+| `python scripts/check.py --quick` | 日常快速门禁（预算 ≤ 5～10 分钟，7 项）：`check_docs.py`、`git diff --check`、`.flutter-version` 核对、`scripts/test_*.py` 全量 Python 单测、`dart format`、`flutter analyze --fatal-infos` 与 `flutter test`；另支持 `--ci`（Linux CI 子集）与 `--install-linux-flutter <dir>`（按 `scripts/flutter-checksums.json` 先验 SHA-256 再解压） | **已实现** |
+| `python scripts/check.py` | 完整阶段门禁（11 项）：在 `--quick` 之上追加 `deps.py --audit`，并在 Windows 上执行 `package.py --channel blink-dev`、`--channel blink --version 0.1.0` 与 `--rehearsal`（非 Windows 对应打包项记 `not-run`；后续引入 `packages/*` 后叠加 `INV-02` 单向依赖与业务回归校验） | **已实现** |
+| `python scripts/deps.py [--audit]` | [7 天冷却期依赖盘点与 OSV 漏洞审计](workflow.md#dependency-inventory)：核对 pub.dev 直接依赖冷却期、`pubspec.lock` 全量托管包 OSV 漏洞（例外表 `scripts/deps-exceptions.json`）、`.flutter-version` 与官方 Windows/Linux 校验和、`.github/workflows/ci.yml` Action SHA 与白名单策略，结果原子写 `artifacts/audit/deps.json`；断网记 `not-run` 并以非零退出 | **已实现** |
+| `python scripts/package.py [--channel blink-dev\|blink] [--version <ver>] [--install] [--rehearsal]` | 构建 Windows 桌面客户端并用 Inno Setup `7.1.1` 产出按用户安装包（`dist/<通道>/`，附 `SHA256SUMS.txt` 与 `build-info.json`，单份留新原子替换）；`--install` 按 [§2.2](#dev-install) 静默更新本机 `blink-dev` 并写 `artifacts/package/install-dev.json`；`--rehearsal` 以测试身份 `blink-dev-test` 在临时目录执行安装/运行中升级/退出/卸载与宿主快照比对并写 `artifacts/package/rehearsal.json` | **已实现** |
+| `python scripts/package.py --cli` | 单独产出跨平台无头 `dist/blink-cli/` 捆绑包（随 CLI/同步阶段落地） | 待实现（M4/M6） |
 
 <a id="channels"></a>
 ### 2.1 全小写 `blink` / `blink-dev` 双通道路径隔离
@@ -65,13 +67,15 @@
 Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹；`<BLINK_VAULT_DIR>` 内严禁存放任何明文凭据与 `ipc.json`；所有非数据库状态文件均采用“同目录临时文件 + `flush` + 原子重命名”写入。
 
 <a id="dev-install"></a>
-### 2.2 开发版自动安装到本机托盘（M2+ 桌面端生效）
+### 2.2 开发版自动安装到本机托盘（M2+ Windows 桌面端生效）
 
 每当需要用户做 `H-*` 实机检查时（B 交付整个阶段、A 审查修复后、按用户反馈修复后），交接 Agent 自动执行 `python scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
 
-1. 仅检测并更新本机已安装的开发通道 `blink-dev`（含随包分发的 `blink-dev` CLI 捆绑目录），绝不读写正式版 `blink`。
-2. 若 `blink-dev` 正在运行，通过 `--quit-for-update` 通知现有实例安全刷盘离线队列、完成 `mirror/` 末次防抖写出、执行 `PRAGMA wal_checkpoint(TRUNCATE)` 并清理运行态 `ipc.json` 后自行退出（最多等待 30 秒，超时则放弃本次安装并说明原因，不强杀进程）。
-3. 静默覆盖安装并核对卸载项版本号一致后，**总是以 `--background` 参数在系统托盘后台拉起 `blink-dev`**（脱离当前命令沙箱作业对象，防止命令结束连带关闭常驻进程），将安装回执写入 `artifacts/package/install-dev.json`。
+1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（[H-002](../../USER-ACTIONS.md#h-002)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
+2. **请运行中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
+3. **静默安装并核对**：以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` 覆盖安装（Inno Setup `AppMutex=blink-dev-instance` 兜底等待），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
+4. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行、窗口是否打开，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
+5. **回执**：写 `artifacts/package/install-dev.json`（是否安装、旧/新版本、原先是否在运行、退出用时、是否已在托盘运行、是否仍在作业对象里、跳过或失败原因）。安装失败以非零退出；跳过不算失败。判断逻辑由注入假卸载项、假进程与假安装器的单元测试覆盖：未安装、未运行、运行中退出后重开、30 秒不退出、`busy`、安装失败、版本不符、仍在作业对象里、正式版不受影响。
 
 <a id="gates"></a>
 ## 3. 两级质量门禁与安静有界验证
@@ -96,10 +100,10 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 
 - **分支、提交与 DCO**：默认分支为 `main`，远端仓库为 [chialecode/blink](https://github.com/chialecode/blink)，本地固定配置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`（行尾统一由 `.gitattributes` 约束为 LF）。初始根提交 `642e618`（空 `README.md` + DCO 签名）永久不可改写。每个阶段遵循[单阶段单提交规则](workflow.md#git-stage)，采用 Conventional Commits 格式（如 `feat(m1): ...`），每次提交与 amend 均附带 DCO 签名（`git commit -s` / `git commit --amend -s`）。push、创建 PR、合并与发布均须用户逐项明确授权，严禁使用 `--all`、`--mirror` 或无授权强推，严禁轮询式长挂命令（如 `gh pr checks --watch`）。
 - **远端 `main-protection` 规则集与仓库治理**：`main` 激活仓库规则集 `main-protection`（无旁路豁免）：禁止直接推送、强推与删除，要求线性历史、全部评审讨论解决、仅允许 squash 合并（合并提交使用 PR 标题与正文，合并后自动删除源分支），必需状态检查固定为 `repository-quality`。仓库关闭 Issues、Wiki 与 Projects，仅开放 [Discussions](https://github.com/chialecode/blink/discussions)，PR 仅限协作者创建。
-- **CI 与 Actions 最小权限**：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 的必需 job 名固定为 `repository-quality`（无路径过滤，保证纯文档阶段 PR 同样产出必需检查），顶层权限 `contents: read`；工作流仅允许引用仓库白名单内锁定 40 位完整提交 SHA 的官方 Action（远端 `sha_pinning_required=true` 在服务端强制，见 [ACT-003](../../USER-ACTIONS.md#act-003)；修改选定白名单时须一并回读 `github_owned_allowed=false`）（当前为 `actions/checkout` 与 `actions/setup-python`，M2 起按需补齐锁定 SHA 的官方 Flutter/Dart 动作），不引入第三方未审计 Action；外部贡献者 Fork PR 运行工作流前须维护者批准。Dependabot（[`.github/dependabot.yml`](../../.github/dependabot.yml)）设置 7 天版本冷却期并禁用自动 rebase，告警与自动安全更新处于开启状态。
+- **CI 与 Actions 最小权限**：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 的必需 job 名固定为 `repository-quality`（无路径过滤，保证纯文档阶段 PR 同样产出必需检查；`runs-on: ubuntu-24.04`，`timeout-minutes: 15`），顶层权限 `contents: read`；工作流仅允许引用仓库白名单内锁定 40 位完整提交 SHA 的官方 Action（远端 `sha_pinning_required=true` 在服务端强制，见 [ACT-003](../../USER-ACTIONS.md#act-003)；修改选定白名单时须一并回读 `github_owned_allowed=false`），当前仅使用 `actions/checkout` 与 `actions/setup-python`，由 `python -B scripts/check.py --install-linux-flutter` 按 `.flutter-version` 与 `scripts/flutter-checksums.json` 下载并核对官方 Linux Flutter 归档 SHA-256 后运行 `python -B scripts/check.py --ci`，不新增第三方或未审计 Action；外部贡献者 Fork PR 运行工作流前须维护者批准。Dependabot（[`.github/dependabot.yml`](../../.github/dependabot.yml)）覆盖 `github-actions` 与根目录工作区 `pub`，设置 7 天版本冷却期并禁用自动 rebase，告警与自动安全更新处于开启状态。
 
 <a id="outputs"></a>
 ### 4.1 版本号与生成物目录
 
-- **版本号与发布标签**：不创建 `M1`、`M2` 等阶段标签；正式发行版从 `v0.1.1` 起递增（首个正式版前的开发包统一标为 `0.1.0-dev.<UTC年月日时分>`），开发通道与正式通道互不跨通道检查更新；正式发布说明唯一对应 [CHANGELOG](../../CHANGELOG.md) 中同名版本小节。
+- **版本号与发布标签**：不创建 `M1`、`M3` 等阶段标签；正式发行版从 `v0.1.1` 起递增（首个正式版前的开发包统一标为 `0.1.0-dev.<UTC年月日时分>`），开发通道与正式通道互不跨通道检查更新；正式发布说明唯一对应 [CHANGELOG](../../CHANGELOG.md) 中同名版本小节。
 - **生成物归口与单份保留**：所有构建缓存与运行输出只写入 `.gitignore` 忽略目录——`build/`、`.dart_tool/`、`tmp/` 随时可重建；`dist/<通道>/`（`blink-dev`、`blink`、`blink-cli`）与 `artifacts/<类别>/`（`smoke`、`uishots`、`package`、`audit`、`review`）每次采用临时目录校验后再原子替换，每类只保留最新一份；`.local/` 存放本机开发私密配置与测试沙盒库，不清理、不入库。
