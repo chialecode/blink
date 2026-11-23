@@ -19,7 +19,7 @@ jobs:
   repository-quality:
     name: repository-quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,8 +31,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run documentation and hygiene checks
-        run: python -B scripts/check_docs.py
+      - name: Install native build packages for desktop plugins
+        # The tray/window plugin compiles native code in its build hook and
+        # needs the GTK 3, X11 and Xi headers on Linux.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pkg-config libgtk-3-dev libx11-dev libxi-dev
 
-      - name: Run documentation gate regression tests
-        run: python -B scripts/test_check_docs.py
+      - name: Download and verify pinned Flutter SDK
+        run: |
+          python -B scripts/check.py --install-linux-flutter "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/flutter/bin" >> "${GITHUB_PATH}"
+
+      - name: Configure Flutter and fetch dependencies
+        run: |
+          flutter --suppress-analytics --disable-analytics
+          flutter --suppress-analytics config --no-cli-animations
+          flutter --suppress-analytics --version
+          (cd apps/blink_client && flutter --suppress-analytics pub get)
+
+      - name: Run repository quality gate
+        run: python -B scripts/check.py --ci

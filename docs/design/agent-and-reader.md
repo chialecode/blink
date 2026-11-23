@@ -78,7 +78,7 @@ BLINK 保留“写入态轻量整理 + 周期性深度综合 + 伴读即时追�
 - **对称 CLI 子命令树（`blink` / `blink-dev`）**：全部子命令支持 `--json` 输出结构化结果至 `stdout`，日志与告警严格走 `stderr`（不污染管道与 Stdio MCP 帧）：
   - 采集与检索：`blink add "<text>" [--kind blink|diary] [--private]`、`blink search "<q>" [--json]`、`blink list entries|sources|annotations|tasks|principles|syntheses [--since-seq N] [--json]`、`blink show entry|source|chapter|synthesis <id> [--json]`、`blink status [--json]`；
   - 派生写入与净化自检：`blink ai enrich <id> --stdin`、`blink ai echoes upsert --stdin`、`blink ai synth publish --kind <k> --period <p> --md <f> --html <f> [--surface 1|2]`、`blink ai principle propose --stdin`、`blink html validate --surface 1|2 --file <f|-> [--json]`；
-  - 人工治理与运维（不向 MCP 暴露）：`blink principle confirm|reject <id>`、`blink sync serve [--bind ...]`（M3 无头同步节点）、`blink backup <dest.db>`（`VACUUM INTO`）；
+  - 人工治理与运维（不向 MCP 暴露）：`blink principle confirm|reject <id>`、`blink sync serve [--bind ...]`（M4 无头同步节点）、`blink backup <dest.db>`（`VACUUM INTO`）；
   - MCP 与技能管理：`blink mcp serve [--transport stdio|http] [--scope normal_only|local_with_private] [--allow-capture]`、`blink mcp config export --client <target> [--stdout|--write]`、`blink mcp token create|list|revoke`、`blink skills list|inspect|install|verify`。
 
 <a id="skills-management"></a>
@@ -162,10 +162,10 @@ DNS 解析后固定校验目标 IP：   按用户设置直连云端 OpenAI 兼�
 
 | 输入模态 | 端侧离线采集表现 | 纯 Dart 后台 `Isolate` 解析管线（`packages/blink_core`） | 落库正本与五端伴读形态 |
 | --- | --- | --- | --- |
-| **网页长文 URL**（M4） | 系统分享面板或粘贴链接秒存 `raw_sources(ingest_state='queued')`，可附随手批注 | 防 SSRF 抓取 → 基于 `package:html 0.15.7` 的 CJK 调优 Readability 抽正文 → 图片去重入 `blobs/` → `packages/blink_sanitizer` 净化为双轨 Block AST | `super_sliver_list` + `flutter_widget_from_html_core` 纯原生块阅读、合并单元格表格与图文离线复读、`ast_range`（`.runes`）零漂移边注 |
-| **重排 EPUB 电子书**（M4） | 选择本地 `.epub` 计算 `sha256` 入 `blobs/`，零等待建档 | `archive 4.6.0` 安全解压（防 Zip-Slip/Zip-Bomb）→ `xml 7.1.0` 读 OPF/NCX/Nav → `html 0.15.7` + `packages/blink_sanitizer` 逐章转双轨 Block AST | 五端像素级一致纯原生虚拟滚动阅读器、目录跳章、跨段划词与锚定伴读 |
-| **PDF 文献与书籍**（M4） | 本地立即用 `pdfrx 3.1.0` 打开阅读与划词高亮 | 无 UI 依赖的 `pdfrx_engine 0.9.6` 提取目录大纲、封面缩略图与逐页文本入 `index/fts.db`；扫描无字页诚实标 `missing_ocr` | 五端 `pdfrx` 原生分瓦硬件加速缩放、`pdf_bbox` 归一化矩形高亮、双栏/半屏边注与按需缓存释放 |
-| **语音闪念与纸质书页拍照**（M6） | `record 6.2.x` 按住说话离线直录 Opus/AAC；相机拍书页配语音感悟，0ms 入时间流 | 原件字节按 `sha256` 永久只读存入 `blobs/`；转写原稿（`verbatim_transcript_text`）、整理稿（`clean_transcript_md`）与书页 OCR 引文（`ocr_extracted_quote`）由外置 AI 经 CLI/MCP 或可选直连 API 写入派生表 `ai_entry_enrichments` | 离线立即可回放原声与查看原图；派生转写/引文就绪后无感呈现并支持一键对照原声与原图，绝不篡改原文层 |
+| **网页长文 URL**（M5） | 系统分享面板或粘贴链接秒存 `raw_sources(ingest_state='queued')`，可附随手批注 | 防 SSRF 抓取 → 基于 `package:html 0.15.7` 的 CJK 调优 Readability 抽正文 → 图片去重入 `blobs/` → `packages/blink_sanitizer` 净化为双轨 Block AST | `super_sliver_list` + `flutter_widget_from_html_core` 纯原生块阅读、合并单元格表格与图文离线复读、`ast_range`（`.runes`）零漂移边注 |
+| **重排 EPUB 电子书**（M5） | 选择本地 `.epub` 计算 `sha256` 入 `blobs/`，零等待建档 | `archive 4.6.0` 安全解压（防 Zip-Slip/Zip-Bomb）→ `xml 7.1.0` 读 OPF/NCX/Nav → `html 0.15.7` + `packages/blink_sanitizer` 逐章转双轨 Block AST | 五端像素级一致纯原生虚拟滚动阅读器、目录跳章、跨段划词与锚定伴读 |
+| **PDF 文献与书籍**（M5） | 本地立即用 `pdfrx 3.1.0` 打开阅读与划词高亮 | 无 UI 依赖的 `pdfrx_engine 0.9.6` 提取目录大纲、封面缩略图与逐页文本入 `index/fts.db`；扫描无字页诚实标 `missing_ocr` | 五端 `pdfrx` 原生分瓦硬件加速缩放、`pdf_bbox` 归一化矩形高亮、双栏/半屏边注与按需缓存释放 |
+| **语音闪念与纸质书页拍照**（M7） | `record 6.2.x` 按住说话离线直录 Opus/AAC；相机拍书页配语音感悟，0ms 入时间流 | 原件字节按 `sha256` 永久只读存入 `blobs/`；转写原稿（`verbatim_transcript_text`）、整理稿（`clean_transcript_md`）与书页 OCR 引文（`ocr_extracted_quote`）由外置 AI 经 CLI/MCP 或可选直连 API 写入派生表 `ai_entry_enrichments` | 离线立即可回放原声与查看原图；派生转写/引文就绪后无感呈现并支持一键对照原声与原图，绝不篡改原文层 |
 
 ### 3.1 网页长文剪藏管线（防 SSRF + CJK Readability + `packages/blink_sanitizer`）
 
@@ -183,9 +183,9 @@ DNS 解析后固定校验目标 IP：   按用户设置直连云端 OpenAI 兼�
 
 1. **单引擎全栈统一**：前台五端阅读界面通过 `pdfrx 3.1.0`（MIT，底层 PDFium 为 Apache-2.0/BSD-3-Clause）实现本地零等待打开、硬件加速分瓦缩放、CJK 字体保真渲染与左上角归一化 `[0.0, 1.0]` 矩形框（`pdf_bbox`）伴读高亮；后台 `Isolate` 及 `blink_cli` 直接调用无 Flutter UI 依赖的 `pdfrx_engine 0.9.6`（`PdfDocument.loadOutline()`、`PdfPage.loadText()`、`PdfPage.render()`）提取书签大纲、封面缩略图与逐页文本写入 `index/fts.db`，零额外原生库体积增量，且原始 PDF 字节分毫不改（`INV-01`）。
 2. **扫描版无文本层诚实降级与外部回填（`INV-11`）**：当 `PdfPage.loadText()` 在整页位图 PDF 上提取有效字符低于阈值时，诚实将页面索引状态标为 `text_layer = "missing_ocr"`。用户无需等待即可直接在 `pdfrx` 上拉框高亮与写边注；后续可通过外置 OCR 工具经 `blink` CLI/MCP 将识别文字写入派生层恢复全文检索，而不修改原始 PDF 文件。
-3. **按需缓存回收（`INV-12`）**：移动端在存储紧张时可一键释放未置顶大体积书籍的本地 `blobs/` 副本，书目元数据与全部历史批注仍 100% 离线可读；再次点击阅读时经 M3 同步通道按 `Range` 断点重新拉取原件并原位恢复全部高亮。
+3. **按需缓存回收（`INV-12`）**：移动端在存储紧张时可一键释放未置顶大体积书籍的本地 `blobs/` 副本，书目元数据与全部历史批注仍 100% 离线可读；再次点击阅读时经 M4 同步通道按 `Range` 断点重新拉取原件并原位恢复全部高亮。
 
-### 3.4 语音闪念与纸质书页拍照采集管线（M6）
+### 3.4 语音闪念与纸质书页拍照采集管线（M7）
 
 1. **离线零等待采集**：移动端按住说话与桌面端录音通过 `record 6.2.x`（BSD-3-Clause）直录单声道 16kHz/24kHz Opus/AAC 音频（每分钟约 200～400 KiB），松手瞬间校验 `sha256` 写入 `blobs/` 并 0ms 创建 `raw_entries(entry_kind = "voice_note")`；拍摄实体纸质书页（可同时附语音感悟）同理原图直存 `blobs/` 并生成 `photo_note` 关联至书库 `book_record`。
 2. **派生层转写与 OCR 开放回填槽**：核心五端应用不捆绑数百 MB 的本地语音/OCR 权重，而是为语音与书页在派生表 `ai_entry_enrichments` 中预留标准字段（`verbatim_transcript_text`、`clean_transcript_md`、`ocr_extracted_quote`）：

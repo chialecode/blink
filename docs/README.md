@@ -5,8 +5,8 @@
 | 问题 | 正本 |
 | --- | --- |
 | 用户要什么、边界在哪 | [需求](requirements.md)（`B·L·I·N·K` 定位、核心不变量、`FR`/`NFR`，状态分已实现、本阶段、待实现） |
-| 分几步做、什么算基本可用、怎样验收 | [路线与验收](delivery/roadmap.md)（`M1`～`M6` 阶段划分、MVP 与 `LOOP` 边界、验收场景 `AC-*`） |
-| 已经定下哪些规则、产品与技术取舍 | [有效决定](decisions.md)（`DEC-001`～`DEC-026` 只增不改号台账） |
+| 分几步做、什么算基本可用、怎样验收 | [路线与验收](delivery/roadmap.md)（`M1`～`M7` 阶段划分、MVP 与 `LOOP` 边界、验收场景 `AC-*`） |
+| 已经定下哪些规则、产品与技术取舍 | [有效决定](decisions.md)（`DEC-001`～`DEC-027` 只增不改号台账） |
 | 纯 Dart 单仓拓扑、同步/IPC/CLI/MCP 契约、单文件夹存储安全与不变量是什么 | [系统架构](design/architecture.md) |
 | 原文层与派生层、BFM v1 与双轨块 AST、双表面受控 HTML、直连/E2EE 同步与开放镜像怎样工作 | [数据与同步设计](design/data-and-sync.md) |
 | 外置 AI（CLI/MCP/Skills）、可选内置直连 AI、`#private` 四层隐私边界与纯 Dart 伴读采集管线怎样工作 | [Agent 与阅读器设计](design/agent-and-reader.md) |

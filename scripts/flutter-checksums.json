@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "baseUrl": "https://storage.googleapis.com/flutter_infra_release/releases",
+  "channel": "stable",
+  "version": "3.50.0",
+  "dartSdkVersion": "3.14.0",
+  "releaseDate": "2026-11-11",
+  "archives": {
+    "windows": {
+      "arch": "x64",
+      "archive": "stable/windows/flutter_windows_3.50.0-stable.zip",
+      "sha256": "35fb843409c80a1c69b64bbae1756bba437222f909622d83540e266e1759aab8"
+    },
+    "linux": {
+      "arch": "x64",
+      "archive": "stable/linux/flutter_linux_3.50.0-stable.tar.xz",
+      "sha256": "6ea2d806fd57269ae783e6788e2a81fc26eaad782f1e0d0ff38623bb765ff9f5"
+    }
+  }
+}

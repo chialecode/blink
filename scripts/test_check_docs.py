@@ -162,6 +162,31 @@ class HygieneTests(FixtureCase):
         self.write(".env.local", "", raw=b"KEY=\n")
         self.assertFlags("forbidden sensitive or database file", self.run_check())
 
+    def test_flutter_ephemeral_outputs_are_excluded(self) -> None:
+        leak = "export FLUTTER_ROOT=" + "Q:" + "\\sdk\\flutter\n"
+        self.write("apps/blink_client/ios/Flutter/flutter_export_environment.sh", leak)
+        self.write("apps/blink_client/macos/Flutter/ephemeral/flutter_export_environment.sh", leak)
+        self.write("apps/blink_client/windows/flutter/ephemeral/generated.dart", "// " + "Q:" + "\\sdk\n")
+        self.write("apps/blink_client/ios/.symlinks/plugins/pkg/leak.dart", "// /" + "home/user/sdk\n")
+        self.assertEqual(self.run_check(), [])
+
+    def test_non_ephemeral_sh_and_dart_absolute_paths_still_fail(self) -> None:
+        self.write("scripts/sample.sh", "#!/bin/sh\nROOT=" + "Q:" + "\\sdk\\flutter\n")
+        self.assertFlags("Windows absolute path", self.run_check())
+        (self.root / "scripts" / "sample.sh").unlink()
+
+        self.write("apps/blink_client/lib/sample.dart", "const p = '/" + "home/someone/sdk';\n")
+        self.assertFlags("Unix home path", self.run_check())
+
+    def test_flutter_generated_names_outside_platform_dirs_are_still_checked(self) -> None:
+        leak = "// " + "Q:" + "\\sdk\n"
+        self.write("docs/flutter/ephemeral/notes.dart", leak)
+        self.assertFlags("Windows absolute path", self.run_check())
+        (self.root / "docs" / "flutter" / "ephemeral" / "notes.dart").unlink()
+
+        self.write("scripts/.symlinks/leak.dart", leak)
+        self.assertFlags("Windows absolute path", self.run_check())
+
 
 class ReferenceNameTests(FixtureCase):
     def test_sibling_repository_name(self) -> None:

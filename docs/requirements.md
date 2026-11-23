@@ -1,6 +1,6 @@
 # BLINK 需求
 
-本页是“用户要什么”的唯一正本。需求状态只分三种：**已实现**、**本阶段**、**待实现**。治理、产品与纯 Dart 技术栈决定见[有效决定](decisions.md#governance)（含 `DEC-022`～`DEC-026`），系统分层与边界见[系统架构](design/architecture.md#topology)，纯 Dart 选型查证见[纯 Dart 架构演进研究](research/2026-11-22-pure-dart-pivot.md#overview)。
+本页是“用户要什么”的唯一正本。需求状态只分三种：**已实现**、**本阶段**、**待实现**。治理、产品与纯 Dart 技术栈决定见[有效决定](decisions.md#governance)（含 `DEC-022`～`DEC-027`），系统分层与边界见[系统架构](design/architecture.md#topology)，纯 Dart 选型查证见[纯 Dart 架构演进研究](research/2026-11-22-pure-dart-pivot.md#overview)。
 
 表内“已实现”仅表示代码或治理门禁及对应自动化验证已完成（实际进展见[交付状态](delivery/status.md#current)），不代表产品人工验收通过（人工复核与待确认决策见 [USER-ACTIONS](../USER-ACTIONS.md#human-checks)）。
 
@@ -98,7 +98,7 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
 | FR-SYNC-001 | 统一 `SyncTransport`、本地 Outbox 与因果 OpLog 收敛：五端所有写操作先在单事务内落盘本地 `drift` SQLite 并追加带不可变 UUIDv7 `client_op_id` 与混合逻辑时钟 `hlc_ts` 的 `outbox_ops`；统一因果操作信封同时驱动直连单调 `seq_id` 拉取与对象存储分段重放（覆盖 `raw_*` 与 `ai_*` 两层）；网络中断随时续传；多设备离线并发编辑同一条 `body_md`/`note_md` 时强制**双本保留**并生成显式冲突待裁定副本，`privacy_level = 'private'` 单向锁存，绝不静默丢字（[同步契约](design/data-and-sync.md#sync)） | 待实现 |
-| FR-SYNC-002 | 全方案多端同步（直连 LAN/Tailscale + 无头同步节点 + E2EE WebDAV/S3 异步中继）：M3 统一交付两种互补同步通道——① **直连模式**：桌面端托盘后台 Isolate 内嵌纯 Dart `shelf` 同步服务，局域网通过 MIT 许可 `bonsoir` 自动发现，跨外网经 Tailscale 虚拟私网直连，同一代码经 `dart build cli` 输出无头 `blink sync serve` 供常驻 Mini-PC/NAS 运行，配一次性配对码与单设备吊销；② **异步中继模式**：面向主力电脑休眠时的手机同步，支持用户自选 WebDAV 或 S3 兼容存储，仅上传按设备隔离的追加式加密分段与去重密文附件（强制客户端 `XChaCha20-Poly1305` E2EE，永不上传活态 `blink.db`），支持二维码/恢复码分发主密钥及“禁止通过 WebDAV/S3 中继 `#private`”物理过滤开关（[DEC-023](decisions.md#dec-023)） | 待实现 |
+| FR-SYNC-002 | 全方案多端同步（直连 LAN/Tailscale + 无头同步节点 + E2EE WebDAV/S3 异步中继）：M4 统一交付两种互补同步通道——① **直连模式**：桌面端托盘后台 Isolate 内嵌纯 Dart `shelf` 同步服务，局域网通过 MIT 许可 `bonsoir` 自动发现，跨外网经 Tailscale 虚拟私网直连，同一代码经 `dart build cli` 输出无头 `blink sync serve` 供常驻 Mini-PC/NAS 运行，配一次性配对码与单设备吊销；② **异步中继模式**：面向主力电脑休眠时的手机同步，支持用户自选 WebDAV 或 S3 兼容存储，仅上传按设备隔离的追加式加密分段与去重密文附件（强制客户端 `XChaCha20-Poly1305` E2EE，永不上传活态 `blink.db`），支持二维码/恢复码分发主密钥及“禁止通过 WebDAV/S3 中继 `#private`”物理过滤开关（[DEC-023](decisions.md#dec-023)） | 待实现 |
 | FR-SYNC-003 | 单文件夹便携迁移与移动端大文件按需缓存：桌面端所有持久化数据统一收敛于 `<BLINK_VAULT_DIR>`（`vault.json`、`db/blink.db`、`index/fts.db`、`blobs/`、`mirror/`），退出时执行 `wal_checkpoint(TRUNCATE)`，复制单个文件夹即可无损备份或迁移至新电脑/NAS，且目录内零明文凭据；移动端全量离线同步全部文本、AST 与批注，体积较大的 PDF/EPUB 原件默认按需 `Range` 断点拉取到本地缓存并支持设置页一键释放未置顶副本（`INV-12`） | 待实现 |
 | FR-SYNC-004 | 桌面端 Dart 后台 Isolate 实时开放镜像（BFM 降级 `.md` + 独立自适应 `insights/*.html`）：监听 `sync_oplog` 与派生视图水位线，默认在写入静止 **5 秒防抖**后由纯 Dart `MirrorExporter` 原子单向写出 UTF-8 `.md` 主归档（将 BFM v1 的 `[[ref]]`、`:::fold`、`==mark==`、`![[ai:...]]` 无损降级为标准相对链接、`<details>`、`<mark>` 与标准 GFM），并在 `insights/` 下同步输出零 `<script>`、零外链、自适应日夜主题的独立 `.html` 综述页（支持 Surface 1/2 视图）；`#private` 物理分置于 `0700` `private/` 子树；同目录临时文件 + `flush()` + 原子改名，绝不反向覆盖数据库正本（[DEC-024](decisions.md#dec-024)、[Q-004](../USER-ACTIONS.md#q-004)） | 待实现 |
 
@@ -108,7 +108,7 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
 | NFR-PLAT-001 | 五端原生体验与双表面渲染对等性：单一 Flutter/Dart 代码库覆盖 `Windows`、`Android`、`Linux`、`macOS`、`iOS` 五端；桌面三端支持窗口无横向溢出缩放（最小 `760×560`）、键盘导航与托盘常驻，移动双端适配安全区、软键盘平滑避让与系统分享面板；Surface 1（时间流、长文/EPUB 伴读、轻卡片）全程纯 Flutter 原生组件树渲染（零 WebView 开销），Surface 2（AI 整页 HTML）在四端用 `flutter_inappwebview`、在 Linux 用 `desktop_webview_window` 动态链接系统 WebKitGTK 4.1 并在缺失系统库时优雅回退 Surface 1（[DEC-024](decisions.md#dec-024)、[DEC-026](decisions.md#dec-026)） | 待实现 |
-| NFR-PLAT-002 | 正式版与开发版双通道完全隔离：五端正式版 `blink` 与开发版 `blink-dev` 使用独立的应用标识、安装目录、默认 `<BLINK_VAULT_DIR>` 与 `vault.json` 通道守卫、OS 运行期 `ipc.json`、CLI/MCP 键名、Windows WebView2 `userDataFolder`、缓存目录、系统安全存储项与单实例文件锁，全路径小写命名，两通道可同机并行且互不污染（[存储与安全](design/architecture.md#storage-security)） | 待实现 |
+| NFR-PLAT-002 | 正式版与开发版双通道完全隔离：五端正式版 `blink` 与开发版 `blink-dev` 使用独立的应用标识、安装目录、默认 `<BLINK_VAULT_DIR>` 与 `vault.json` 通道守卫、OS 运行期 `ipc.json`、CLI/MCP 键名、Windows WebView2 `userDataFolder`、缓存目录、系统安全存储项与单实例文件锁，全路径小写命名，两通道可同机并行且互不污染（[存储与安全](design/architecture.md#storage-security)） | 已实现（Windows 安装身份、双通道数据根、单实例与安装包隔离）；便携库与其余四端待实现 |
 | NFR-PRIV-001 | `#private` 四重零云端出境硬隔离：① CLI/MCP 默认硬锁 `--scope normal_only`（只读 `v_normal_*` SQL 视图与隔离 `fts_normal`，不透明返回 `not_found` 并脱敏跨隐私 BFM 引用，进入 `local_with_private` 须经三门限本地授权）；② 可选内置直连 `OpenAiCompatClient` 对 `#private` 强制锁定仅解析为回环/RFC1918/Tailscale 地址的 `private_local` 配置，未就绪或地址越界立即返回 `privacy_blocked`；③ HTML 双表面离线 `default-src 'none'` CSP + 无痕模式与 Linux 落盘审计门禁；④ WebDAV/S3 同步强制 `XChaCha20-Poly1305` E2EE 且支持禁传 `#private`（`INV-03`） | 待实现 |
 | NFR-PRIV-002 | 凭据严格仅存 OS 原生密钥库与便携库零密钥卫生：设备同步令牌、WebDAV/S3 凭据、E2EE 同步主密钥、`local_with_private` 本地 MCP 令牌以及可选内置直连 OpenAI 兼容 API Key 仅加密保存在各设备 OS 原生安全密钥库（Windows DPAPI、macOS/iOS Keychain、Linux `libsecret`、Android Keystore），**严禁**写入 `<BLINK_VAULT_DIR>`、`vault.json`、`db/blink.db`、同步队列、导出配置或日志；数据库仅存配对设备令牌的 `SHA-256` 哈希；loopback `ipc.json` 仅存于 OS 运行期目录（`0600` 权限，每次重启轮换）（`INV-08`） | 待实现 |
 | NFR-PRIV-003 | 仓库公开内容与参考源卫生门禁：版本库严禁追踪 `.env`、`.sqlite`/`.db`、密钥文件，且所有受控文本严禁包含本机绝对路径、硬编码密钥或外部参考索引及同级仓库名称；由 `scripts/check_docs.py` 与 CI 自动强制检查（[信息源与安全](dev-rules/sources-and-safety.md#privacy-hygiene)） | 已实现 |
@@ -116,9 +116,10 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | NFR-DATA-001 | 原子文件写入、`VACUUM INTO` 热备份与版本守卫：全部非数据库文件写出（配置、`blobs/`、`mirror/` `.md` 与 `insights/*.html`）遵循纯 `dart:io` 同目录临时文件 + `RandomAccessFile.flush()` + 原子重命名（Windows 含文件锁退避重试，`INV-07`）；SQLite 模式迁移前自动执行 `VACUUM INTO` 一致性快照并保留备份；旧版程序遇到更高 `vault.json` / `schema_version` 明确拒写 | 待实现 |
 | NFR-DATA-002 | 崩溃不丢字与全派生层确定性可重建：本地写入经 SQLite WAL + `BEGIN IMMEDIATE` 持久化，桌面正常退出执行 `wal_checkpoint(TRUNCATE)` 确保单文件夹冷拷贝完整性；清空 `index/fts.db`、`ai_*` 与 `mirror/` 后仅凭 `raw_*` 与 `blobs/` 即可完整恢复用户资产并重建索引与镜像（`INV-09`） | 待实现 |
 | NFR-PERF-001 | 瞬时采集响应与大规模语料流畅渲染：冷启动至输入框可键入目标耗时桌面端 `≤ 800 ms`、主流移动端 `≤ 1200 ms`，本地 BFM 落盘 `< 16 ms`，`db/blink.db` `VACUUM INTO` 热快照 `< 1 s`；在 `50,000` 条合成流式条目（简单条目走 `package:markdown` AST 直出快速通道）、`1,000` 页 PDF 及 3,000+ 块长篇 EPUB 下虚拟化流畅滚动，后台解析与镜像导出均在独立 Isolate 执行、不卡 UI 帧 | 待实现 |
-| NFR-DEV-001 | 精简正本文档体系与零依赖校验门禁：单源正本精简文档（禁止 YAML frontmatter、禁用引用式链接、强制相对正斜杠链接与显式锚点校验，`CLAUDE.md` 单行指向 `@AGENTS.md`），由 `python scripts/check_docs.py` 在本地与 CI 一键校验；自 M5 引入 `agentskills.io` 技能包时仅对 `packages/blink_skills/skills/**/SKILL.md` 豁免 frontmatter 并增加专用字段模式校验（[工程规则](dev-rules/engineering.md#gates)） | 已实现 |
-| NFR-DEV-002 | 单阶段单提交治理、纯 Dart Monorepo 门禁与宽松许可冷却：执行“一阶段一分支一 DCO 签名提交一 Squash PR”与 `main-protection` 保护；依赖升级遵循 7 天冷却期与宽松许可红线（弱传染系统动态库须如 `DEC-026` 显式登记）；自 M2 起采用统一纯 Dart/Flutter 门禁（`dart analyze` / `dart test` / `flutter test` / `dart build cli`），无跨语言契约生成债务；全部测试安静、无焦点、仅监听 `127.0.0.1` 与临时隔离目录 | 已实现（治理与远端保护基线）；代码门禁待实现 |
+| NFR-DEV-001 | 精简正本文档体系与零依赖校验门禁：单源正本精简文档（禁止 YAML frontmatter、禁用引用式链接、强制相对正斜杠链接与显式锚点校验，`CLAUDE.md` 单行指向 `@AGENTS.md`），由 `python scripts/check_docs.py` 在本地与 CI 一键校验；自 M6 引入 `agentskills.io` 技能包时仅对 `packages/blink_skills/skills/**/SKILL.md` 豁免 frontmatter 并增加专用字段模式校验（[工程规则](dev-rules/engineering.md#gates)） | 已实现 |
+| NFR-DEV-002 | 单阶段单提交治理、纯 Dart Monorepo 门禁与宽松许可冷却：执行“一阶段一分支一 DCO 签名提交一 Squash PR”与 `main-protection` 保护；依赖升级遵循 7 天冷却期与宽松许可红线（弱传染系统动态库须如 `DEC-026` 显式登记）；自 M2 起采用统一纯 Dart/Flutter 门禁（`dart analyze` / `dart test` / `flutter test` / `dart build cli`），无跨语言契约生成债务；全部测试安静、无焦点、仅监听 `127.0.0.1` 与临时隔离目录 | 已实现（治理、两级门禁、依赖审计与 CI；`packages/*` 与 `dart build cli` 扩展待实现） |
+| NFR-DEV-003 | 桌面打包、版本与开发版自动安装更新：Windows 桌面端以 Inno Setup 产出 `blink` / `blink-dev` 两通道按用户（无需管理员）安装包，开发通道版本 `0.1.0-dev.<UTC 年月日时分>` 注入可执行文件版本资源与“关于”页；按安装身份的单实例与本用户控制管道支持 `--background` 托盘常驻、`focus` 与 `--quit-for-update` 保存后退出；需要人工检查时 Agent 一条命令完成构建、静默覆盖安装、版本双核对与托盘后台拉起，全程不触碰正式版与测试身份；正式版应用内联网更新与 macOS / Linux 安装包按 [Q-008](../USER-ACTIONS.md#q-008) 在正式版发布前落地 | 已实现 |
 
 ## 4. 验收场景索引
 
-全部可复现黑盒验收场景（`AC-01～AC-10`）及其与本页 `FR`/`NFR` 的映射见[路线与验收 §4](delivery/roadmap.md#acceptance)；涉及人工体验复核与待确认决策的事项统一在 [USER-ACTIONS](../USER-ACTIONS.md#recommended) 维护。
+全部可复现黑盒验收场景（`AC-01～AC-11`）及其与本页 `FR`/`NFR` 的映射见[路线与验收 §4](delivery/roadmap.md#acceptance)；涉及人工体验复核与待确认决策的事项统一在 [USER-ACTIONS](../USER-ACTIONS.md#recommended) 维护。
