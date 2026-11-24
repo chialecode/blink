@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 EXCLUDED = {
     ".git",
     ".local",
+    ".tools",
     ".venv",
     "node_modules",
     "target",
