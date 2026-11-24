@@ -30,7 +30,7 @@
 
 1. **开工**：`git status --short --branch`；从最新 `main` 切分支 `<type>/<issue号>-<简短描述>`（`feat`、`fix`、`chore`、`docs`、`refactor`、`test`、`ci`、`build`、`perf`）。跨模块或改公共契约（`packages/blink_core` 共享契约、同步与 MCP 协议、文档块 AST、数据库与同步结构）的改动，先在 issue 里写清方案再动手。
 2. **实现**：完整实现正常流程与关键失败恢复路径，严守原文层只读与 `#private` 零云端出境，同步更新受影响的文档正本。
-3. **验证**：跑[快速门禁](engineering.md#gates)；改到打包、安装、更新、签名或发布时跑完整门禁。
+3. **验证**：跑[快速门禁](engineering.md#gates)；发布前以及改到打包、安装、更新、签名或发布链路时跑完整门禁。
 4. **提交**：Conventional Commits（`feat: …`、`fix(tray): …`），每个提交 `git commit -s`。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
 5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
 6. **审查**：CI `repository-quality` 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。

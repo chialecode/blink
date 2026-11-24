@@ -72,7 +72,7 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 
 每次合并进 `main` 后（本机拉取 `main` 后）以及需要用户实机检查前，Agent 自动执行 `python -B scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
 
-1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（[H-002](https://github.com/chialecode/blink/issues/10)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
+1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（首次安装改为自动、安装器迁移到 NSIS 见 [#20](https://github.com/chialecode/blink/issues/20)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
 2. **请运行中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
 3. **静默安装并核对**：以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` 覆盖安装（Inno Setup `AppMutex=blink-dev-instance` 兜底等待），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
 4. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行、窗口是否打开，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
@@ -83,7 +83,7 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 
 - **两级门禁（Two-Tier Gate）**：
   1. **快速门禁（Quick Gate，日常编码与局部修复，单轮约 5～10 分钟）**：验证受改动包的 `dart format`、`dart analyze --fatal-infos`、相关 `dart test` / `flutter test`、`python scripts/check_docs.py` 与 `git diff --check HEAD`。只修改文档时仅需运行 `python scripts/check_docs.py` 与 `git diff --check HEAD`；改动门禁脚本时追加 `python -B scripts/test_check_docs.py`。
-  2. **完整门禁（Full Gate，改到打包、安装、更新、签名、发布或大范围改动时必跑）**：串行运行全工作区 `dart format --output=none --set-exit-if-changed .`、`dart analyze --fatal-infos`、向下依赖方向静态校验（禁止 `packages/*` 引用 Flutter UI，`INV-02`）、全量纯 Dart 与 Flutter 测试（含 `ExternalAiRepository` 原文层只读断言、BFM v1 一致性夹具、CJK `unicode61` 检索、离线 Outbox 与 E2EE WebDAV/S3 幂等收敛、`packages/blink_sanitizer` HTML/SVG/CSS 对抗净化与零外链/零硬编码色值断言、四层 `#private` 零出境哨兵断言、`VACUUM INTO` 热备份与冷拷贝断言）、安静进程冒烟、OSV 依赖漏洞审计、`check_docs.py` 与 `git diff --check HEAD`。
+  2. **完整门禁（Full Gate，发布前以及改到打包、安装、更新、签名或发布链路时必跑）**：串行运行全工作区 `dart format --output=none --set-exit-if-changed .`、`dart analyze --fatal-infos`、向下依赖方向静态校验（禁止 `packages/*` 引用 Flutter UI，`INV-02`）、全量纯 Dart 与 Flutter 测试（含 `ExternalAiRepository` 原文层只读断言、BFM v1 一致性夹具、CJK `unicode61` 检索、离线 Outbox 与 E2EE WebDAV/S3 幂等收敛、`packages/blink_sanitizer` HTML/SVG/CSS 对抗净化与零外链/零硬编码色值断言、四层 `#private` 零出境哨兵断言、`VACUUM INTO` 热备份与冷拷贝断言）、安静进程冒烟、OSV 依赖漏洞审计、`check_docs.py` 与 `git diff --check HEAD`。
 - **有界验证与真实状态记录**：日常单轮验证控制在约 10 分钟内，预计超出的压力或大数据量长测须先请用户授权。验证结果如实区分 `passed`、`failed`、`blocked`、`not-run`；缺平台工具链或硬件环境时记为 `not-run`，严禁靠删除、跳过或弱化断言来换取门禁通过。源码或契约变更后，旧构建包与旧跑次结果失效。
 
 <a id="quiet-tests"></a>

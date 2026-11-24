@@ -5,7 +5,7 @@
 <a id="principles"></a>
 ## 1. 交付原则
 
-- **先贯通核心闭环的 MVP，再按日常使用反馈进入 `LOOP` 深化**（[治理决定](../decisions.md#governance)）。每项核心能力先打通第 3 节“MVP 必须贯通的闭环流程”，投入真实日常记录与阅读使用，再按反馈迭代非阻塞打磨项；不因局部锦上添花功能阻塞主干演进。
+- **先贯通核心闭环的 MVP，再按日常使用反馈深化**（[治理决定](../decisions.md#governance)；深化项是带 `feature` 标签的 [issue](https://github.com/chialecode/blink/issues?q=is%3Aissue+label%3Afeature)）。每项核心能力先打通第 3 节“MVP 必须贯通的闭环流程”，投入真实日常记录与阅读使用，再按反馈迭代非阻塞打磨项；不因局部锦上添花功能阻塞主干演进。
 - **MVP 绝不放宽数据与隐私底线**：原文层神圣不可篡改（Raw Layer 与 `ai_*` 派生层硬隔离）、`<BLINK_VAULT_DIR>` 单文件夹零明文凭据便携迁移、`#private` 四层零云端出境、本地 SQLite 断网零延迟落盘不丢字、双表面受控 HTML 零脚本零外链、诚实错误与恢复提示、`blink` / `blink-dev` 双通道严格隔离，在任何阶段均不得降级妥协。
 - **以小 PR 为交付单位**：阶段只是能力分组；每个 issue 一个小 PR，CI 与独立审查通过后合并（[开发流程](../dev-rules/workflow.md#change-loop)）。严格区分**实现完成**、**审查通过**与**产品人工验收**三件事。
 - **非阻塞事项不阻塞主干**：不影响数据完整性与隐私边界的打磨项建为 `feature` issue；有合理可逆默认值的产品取舍先按默认值实现，值得用户回看的建 `needs-user` issue（[什么时候找用户](../dev-rules/workflow.md#user-actions)）。
@@ -48,7 +48,7 @@
 
 | 编号 | 关联需求 | 可复现黑盒验收场景 | 当前状态 |
 | --- | --- | --- | --- |
-| AC-01 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002` | **M1 治理、主干保护与文档门禁验证**：核验 `origin/main` 根提交 `642e618` 为带 DCO 签名的 0 字节 `README.md`；回读 GitHub 远端确认 Issues/Wiki/Projects 关闭、Discussions 开启、仅允许 Squash 合并且 `main-protection` 规则集（`27720076`）激活强制 `repository-quality` 检查且零绕过名单；运行 `python scripts/check_docs.py` 全仓通过（退出码 `0`），对注入断链、缺失锚点、YAML 头、本机绝对路径及同级参考仓库名的隔离夹具均准确非零拦截 | 已通过（#1） |
+| AC-01 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002` | **M1 治理、主干保护与文档门禁验证**：核验 `origin/main` 根提交 `642e618` 为带 DCO 签名的 0 字节 `README.md`；回读 GitHub 远端确认 Issues 与 Discussions 开启（Issues 自 [DEC-028](../decisions.md#dec-028) 起开启、只允许协作者创建）、Wiki/Projects 关闭、仅允许 Squash 合并且 `main-protection` 规则集（`27720076`）激活强制 `repository-quality` 检查且零绕过名单；运行 `python scripts/check_docs.py` 全仓通过（退出码 `0`），对注入断链、缺失锚点、YAML 头、本机绝对路径及同级参考仓库名的隔离夹具均准确非零拦截 | 已通过（#1） |
 | AC-02 | `FR-CAP-001`、`FR-CAP-005`、`FR-TASK-001`、`FR-SYNC-004`、`NFR-PLAT-001`、`NFR-DATA-001` | **单文件夹便携库、BFM v1 零延迟编辑与 CJK 输入法保护**：无网络状态下录入包含 9 类 BFM v1 原语（`[[wikilink]]`、`==高亮==`、`#标签`、`> [!callout]`、`- [ ]` 待办等）与中文拼音/双拼组合态的流式笔记与附件，组合态回车绝不误触发送，中途强杀进程重启草稿与已提交条目零丢失且 `< 16 ms` 本地可见；`FTS5`（CJK 预分词）精准召回中文词段；执行 `VACUUM INTO` 热备份并整夹复制到另一目录重启，全部数据与附件完整可用且 `<BLINK_VAULT_DIR>` 目录扫描零明文密钥与运行期令牌；桌面端 5 秒防抖原子输出 BFM 降级纯 `.md` 镜像 | 待实现（M3） |
 | AC-03 | `NFR-PLAT-002`、`NFR-DATA-001` | **双通道全路径物理隔离与安全清理**：同机同时安装并运行 `blink` 与 `blink-dev`，各自读写独立小写数据/缓存目录、独立 `vault.json` 通道锁、独立系统运行期 `ipc.json` 与系统密钥库条目；尝试跨通道打开对方库目录时被硬拦截拒绝；卸载或清理开发版后正式版数据、密钥与注册项分毫未动 | 待实现（M3） |
 | AC-04 | `FR-SYNC-001`、`FR-SYNC-002`、`NFR-PRIV-002`、`NFR-DATA-001` | **直连纯 Dart `shelf`（LAN/Tailscale）与 `blink sync serve` 幂等同步及并发冲突双本保留**：两台设备经局域网 `bonsoir` 或 Tailscale 私网与桌面端（或无头 `blink sync serve`）完成配对同步，模拟重传 `client_op_id` 零重复且大文件支持 `Range` 续传；双端离线同时编辑同一条笔记并分别修改 `privacy_level` 后重连，系统完整保留双本正文并展示并排冲突裁定视图且 `#private` 单向锁存恒胜；吊销单台设备令牌后该端同步立即失效 | 待实现（M4） |

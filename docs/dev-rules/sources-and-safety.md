@@ -22,7 +22,7 @@
 - **允许直接引入的依赖许可**：仅限 `MIT`、`Apache-2.0`、`BSD-2-Clause`、`BSD-3-Clause`、`ISC`、`zlib`、`Public Domain` 等宽松开源许可证（正式打包时自动完整收集并附带第三方许可证声明文件，特别包含 `package:html` 的组合 MIT/BSD-3-Clause 原始 `LICENSE` 文本及 PDFium 许可声明）。
 - **严禁引入强传染性许可依赖**：**一律拒绝将 `AGPL`、`GPL`（含 `GPL-2.0`/`GPL-3.0`/`AGPL-3.0`）许可的库或构建运行时作为依赖引入**（例如明确拒绝 `AGPL-3.0` 的 PDF/EPUB 库与 `Nuitka`、`GPL-2.0` 的 `PyInstaller`，亦明确避开未登记弱传染包如 `LGPL-2.1` 的 `zeroconf` 与含 `MPL-2.0` 组件的 `reader_mode`，见[拒绝清单](../research/2026-11-22-pure-dart-pivot.md#licenses)）。
 - **文件级弱传染动态链接专门登记**：若个别操作系统级可选能力涉及 `LGPL` 或 `MPL-2.0` 弱传染许可，必须先核实**仅动态链接系统未修改共享库**的使用边界并在[有效决定](../decisions.md#stack-decisions)专门登记后方可接入。当前全仓唯一登记项为 **[DEC-026](../decisions.md#dec-026)**：Linux 桌面端 Surface 2 整页视图通过 Apache-2.0 插件 `desktop_webview_window 0.4.3` 动态链接宿主机系统提供的未修改 `libwebkit2gtk-4.1-0` 与 `libsoup-3.0-0`（`LGPL-2.1+` / BSD），绝不静态链接、绝不修改随包分发，且在宿主机缺失对应库时自动平滑降级为纯 Flutter Surface 1。
-- **上游风险跟踪**：选型中发现的平台差异、上游已知缺陷或待验证假设，同步登记在[交付状态的开发与上游事项](../delivery/roadmap.md#oss)（`OSS-*`）。
+- **上游风险跟踪**：选型中发现的平台差异、上游已知缺陷或待验证假设，同步登记在[路线与验收的上游事项](../delivery/roadmap.md#oss)（`OSS-*`）。
 
 <a id="privacy-hygiene"></a>
 ## 2. 原文不可篡改、`#private` 四层隐私红线与公开内容卫生
