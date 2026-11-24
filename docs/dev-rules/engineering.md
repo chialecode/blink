@@ -24,7 +24,7 @@
 | 仓库门禁与打包脚本运行时 | `Python 3.12.16` 标准库 | **已就绪** | 仅用于运行零外部依赖的 `scripts/{check_docs,check,deps,package}.py` 及测试，不进入 BLINK 运行时产物 |
 | Windows 桌面 C++ 与系统 WebView 底座 | Visual Studio Build Tools 2026（MSVC `x64`、内置 `CMake`、`Windows 11 SDK 10.0.26100`）与 Windows 11 WebView2 Runtime | **已就绪** | 满足 `flutter build windows`、`sqlite3` / PDFium FFI 及 Surface 2 WebView2 运行前置条件 |
 | Flutter / Dart 客户端与 CLI 工具链 | Flutter `3.50.0` stable（内置 Dart `3.14.0`），按用户安装于 `%LOCALAPPDATA%\Programs\flutter`，由 `.flutter-version` 固定（不使用 `fvm`） | **已就绪** | 官方归档 SHA-256 核验通过（`scripts/flutter-checksums.json`），分析上报与 CLI 动画已关闭，Windows 开发者模式已开启；`flutter doctor` Flutter/Windows/Visual Studio 项通过，门禁自动核对 `.flutter-version` |
-| Windows 按用户安装包编译器 | Inno Setup `7.1.1`（按用户安装于 `%LOCALAPPDATA%\Programs\Inno Setup 7`，`ISCC.exe`） | **已就绪** | `apps/blink_client/windows/packaging/blink.iss` 以 ISPP `Ver` 强制限定 7.1.x；仅构建期工具，不随产品分发 |
+| Windows 按用户安装包编译器 | NSIS `3.13`（`scripts/package.py` 首次使用时下载官方 `nsis-3.13.zip`，核对固定的 SHA-256 后解压到 Git 忽略的 `.tools/nsis-3.13/`；也可用 `BLINK_MAKENSIS` 指向同版本的 `makensis.exe`） | **已就绪** | `apps/blink_client/windows/packaging/blink.nsi` 以 `!if "${NSIS_VERSION}" != "v3.13"` 拒绝其他版本，`makensis -WX` 把警告当错误；下载失败或校验不符时明确失败；仅构建期工具，不随产品分发（[DEC-029](../decisions.md#dec-029)） |
 | Android 移动端构建链 | JDK `17`/`21` + Android SDK（`platform-tools`、`build-tools`、`platforms`） | **M3 移动端打包前待安装** | 不阻塞核心库与桌面端先行编码；构建 Android `blink-dev` 安装包与联调前补齐 |
 | 异地虚拟私网（可选外部工具） | Tailscale 客户端 | **M4 跨设备 WAN 联调前** | 自动化门禁均通过 `127.0.0.1` 回环与模拟桩运行；跨设备外网同步实测前装妥 |
 | Linux Surface 2 构建开发库（仅 Linux 宿主机/CI） | `libwebkit2gtk-4.1-dev`、`libsoup-3.0-dev` | **M6 Linux Surface 2 构建前** | 仅在 Linux 桌面构建机或 Linux CI runner 安装；目标机运行期动态链接未修改的系统共享库（[DEC-026](../decisions.md#dec-026)），缺失时自动降级 Surface 1 |
@@ -47,7 +47,7 @@
 | `python scripts/check.py --quick` | 日常快速门禁（预算 ≤ 5～10 分钟，7 项）：`check_docs.py`、`git diff --check`、`.flutter-version` 核对、`scripts/test_*.py` 全量 Python 单测、`dart format`、`flutter analyze --fatal-infos` 与 `flutter test`；另支持 `--ci`（Linux CI 子集）与 `--install-linux-flutter <dir>`（按 `scripts/flutter-checksums.json` 先验 SHA-256 再解压） | **已实现** |
 | `python scripts/check.py` | 完整阶段门禁（11 项）：在 `--quick` 之上追加 `deps.py --audit`，并在 Windows 上执行 `package.py --channel blink-dev`、`--channel blink --version 0.1.0` 与 `--rehearsal`（非 Windows 对应打包项记 `not-run`；后续引入 `packages/*` 后叠加 `INV-02` 单向依赖与业务回归校验） | **已实现** |
 | `python scripts/deps.py [--audit]` | [7 天冷却期依赖盘点与 OSV 漏洞审计](workflow.md#dependency-inventory)：核对 pub.dev 直接依赖冷却期、`pubspec.lock` 全量托管包 OSV 漏洞（例外表 `scripts/deps-exceptions.json`）、`.flutter-version` 与官方 Windows/Linux 校验和、`.github/workflows/ci.yml` Action SHA 与白名单策略，结果原子写 `artifacts/audit/deps.json`；断网记 `not-run` 并以非零退出 | **已实现** |
-| `python scripts/package.py [--channel blink-dev\|blink] [--version <ver>] [--install] [--rehearsal]` | 构建 Windows 桌面客户端并用 Inno Setup `7.1.1` 产出按用户安装包（`dist/<通道>/`，附 `SHA256SUMS.txt` 与 `build-info.json`，单份留新原子替换）；`--install` 按 [§2.2](#dev-install) 静默更新本机 `blink-dev` 并写 `artifacts/package/install-dev.json`；`--rehearsal` 以测试身份 `blink-dev-test` 在临时目录执行安装/运行中升级/退出/卸载与宿主快照比对并写 `artifacts/package/rehearsal.json` | **已实现** |
+| `python scripts/package.py [--channel blink-dev\|blink] [--version <ver>] [--install] [--rehearsal]` | 构建 Windows 桌面客户端并用 NSIS `3.13` 产出按用户安装包（`dist/<通道>/`，附 `SHA256SUMS.txt` 与 `build-info.json`，单份留新原子替换）；`--install` 按 [§2.2](#dev-install) 静默安装或更新本机 `blink-dev`（首次也自动安装）并写 `artifacts/package/install-dev.json`；`--rehearsal` 以测试身份 `blink-dev-test` 在临时目录执行安装/运行中升级/退出/卸载与宿主快照比对并写 `artifacts/package/rehearsal.json` | **已实现** |
 | `python scripts/package.py --cli` | 单独产出跨平台无头 `dist/blink-cli/` 捆绑包（随 CLI/同步阶段落地） | 待实现（M4/M6） |
 
 <a id="channels"></a>
@@ -68,15 +68,24 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 
 <a id="packaging"></a>
 <a id="dev-install"></a>
-### 2.2 开发版自动安装到本机托盘（M2+ Windows 桌面端生效）
+### 2.2 安装包与开发版自动安装到本机托盘（M2+ Windows 桌面端生效）
 
-每次合并进 `main` 后（本机拉取 `main` 后）以及需要用户实机检查前，Agent 自动执行 `python -B scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
+**安装包**（[DEC-029](../decisions.md#dec-029)）：`apps/blink_client/windows/packaging/blink.nsi` 由 `scripts/package.py` 用 NSIS `3.13` 编译，按用户安装（不需要管理员），中文界面。
 
-1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（首次安装改为自动、安装器迁移到 NSIS 见 [#20](https://github.com/chialecode/blink/issues/20)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
-2. **请运行中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
-3. **静默安装并核对**：以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` 覆盖安装（Inno Setup `AppMutex=blink-dev-instance` 兜底等待），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
-4. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行、窗口是否打开，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
-5. **回执**：写 `artifacts/package/install-dev.json`（是否安装、旧/新版本、原先是否在运行、退出用时、是否已在托盘运行、是否仍在作业对象里、跳过或失败原因）。安装失败以非零退出；跳过不算失败。判断逻辑由注入假卸载项、假进程与假安装器的单元测试覆盖：未安装、未运行、运行中退出后重开、30 秒不退出、`busy`、安装失败、版本不符、仍在作业对象里、正式版不受影响。
+- **位置与卸载项**：默认装到 `%LOCALAPPDATA%\Programs\<身份>`；卸载项写在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<应用标识>`（如 `io.github.chialecode.blink-dev`），含 `DisplayName`、`DisplayVersion`、`DisplayIcon`、`Publisher`、`InstallLocation`、`UninstallString`、`QuietUninstallString`、`EstimatedSize`、`NoModify`、`NoRepair`；再次安装沿用卸载项里的 `InstallLocation`。
+- **命令行**：`/S` 静默；`/D=<目录>` 指定目录（放在最后、不加引号）；`/RELAUNCH` 静默更新完成后启动 BLINK；`/NODESKTOP` 让静默首次安装不建桌面快捷方式（安装演练用）。
+- **快捷方式**：开始菜单快捷方式每次安装都建；桌面快捷方式在交互安装时由完成页的勾选框决定（默认不勾），静默首次安装时自动建，静默覆盖安装不增不删。
+- **运行中的实例**：安装器与卸载器发现 `<身份>-instance` 互斥量时，调用已安装的 `<身份>.exe --quit-for-update` 请其保存后退出，最多等 30 秒；忙碌、超时或无法请求时放弃并以退出码 `3`（忙碌）、`4`（超时）、`5`（无法请求）结束，从不强杀。交互安装会先询问。
+- **覆盖升级清理**：每个版本的卸载器只删除自己安装的文件（构建时生成文件清单）。覆盖安装先以 `/S /UPDATE` 原地运行旧版本的卸载器，删掉旧版本的文件后再写入新文件，所以新版本去掉的文件不会残留；完整卸载再删快捷方式、卸载项与 `Uninstall.exe`，安装目录只在为空时删除，用户放进去的文件与数据根都不动。
+
+**开发版自动安装**：每次合并进 `main` 后（本机拉取 `main` 后）以及需要用户实机检查前，Agent 自动执行 `python -B scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
+
+1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev` 的 `InstallLocation` 与 `DisplayVersion`；没有卸载项就是首次安装，同样静默完成（装到默认目录）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
+2. **窗口开着时推迟**：`blink-dev` 在运行且已安装的 `blink-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时，说明用户正在使用，每 2 秒检查一次，等窗口关闭或隐藏到托盘；最多等 10 分钟，仍开着就跳过这次安装（跳过不算失败），回执记 `reason=window_open` 并提示关窗后重新运行。
+3. **请托盘中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
+4. **静默安装并核对**：以 `/S` 安装，从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
+5. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
+6. **回执**：写 `artifacts/package/install-dev.json`，字段统一为 camelCase：`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `dirty`、`installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`launchMethod`、`runningInTray`、`guidance`。安装失败以非零退出；跳过不算失败。判断逻辑由注入假卸载项、假进程、假窗口与假安装器的单元测试覆盖：未安装（自动首次安装）、未运行、窗口开着（推迟后安装）、窗口一直开着（跳过）、托盘中运行（退出后装并重开）、30 秒不退出、`busy`、安装失败、安装后卸载项缺失、版本不符、仍在作业对象里、正式版与测试身份不受影响。
 
 <a id="gates"></a>
 ## 3. 两级质量门禁与安静有界验证

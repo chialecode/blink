@@ -36,6 +36,8 @@ __pycache__/
 
 # Distribution and build outputs
 dist/
+# Pinned build tools fetched by scripts/package.py (NSIS)
+/.tools/
 coverage/
 node_modules/
 target/

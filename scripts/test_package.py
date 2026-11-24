@@ -1,7 +1,7 @@
-"""Zero-dependency unit tests for scripts/package.py and blink.iss.
+"""Zero-dependency unit tests for scripts/package.py and blink.nsi.
 
-Covers packaging version rules, single-latest artifact retention, Inno Setup 7.1.x
-compiler version guard, and the full dev auto-install decision matrix using
+Covers packaging version rules, single-latest artifact retention, the pinned NSIS
+fetch and script guards, and the full dev auto-install decision matrix using
 isolated temporary directories and injectable fakes.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -92,6 +94,8 @@ class FakeInstallHarness:
         breakaway_succeeds: bool = True,
         direct_succeeds: bool = True,
         tray_verified: bool = True,
+        window_open_polls: int = 0,
+        window_open_forever: bool = False,
     ) -> None:
         initial: dict[str, package.UninstallEntry] = {
             "blink": package.UninstallEntry(
@@ -123,6 +127,9 @@ class FakeInstallHarness:
         self._breakaway_ok = breakaway_succeeds
         self._direct_ok = direct_succeeds
         self._tray_verified = tray_verified
+        self._window_open_remaining = window_open_polls
+        self._window_open_forever = window_open_forever
+        self.window_checks: list[Path] = []
 
         self.quit_calls: list[tuple[Path, str, float]] = []
         self.installer_calls: list[Path] = []
@@ -138,6 +145,15 @@ class FakeInstallHarness:
             return True
         if self._running_remaining > 0:
             self._running_remaining -= 1
+            return True
+        return False
+
+    def _is_window_open(self, exe_path: Path) -> bool:
+        self.window_checks.append(exe_path)
+        if self._window_open_forever:
+            return True
+        if self._window_open_remaining > 0:
+            self._window_open_remaining -= 1
             return True
         return False
 
@@ -192,6 +208,7 @@ class FakeInstallHarness:
             launch_direct=self._launch_direct,
             verify_running_in_tray=self._verify_tray,
             clock=self.clock,
+            is_window_open=self._is_window_open,
         )
 
 
@@ -245,17 +262,18 @@ class VersionCalculationTests(unittest.TestCase):
         self.assertTrue(env["BLINK_FILE_DESCRIPTION"])
 
     def test_identity_specs_match_channel_isolation_contract(self) -> None:
+        # DEC-029: the uninstall key is the app id itself (no Inno "_is1" suffix).
         self.assertEqual(
-            package.IDENTITY_SPECS["blink"].uninstall_key_name,
-            "io.github.chialecode.blink_is1",
+            package.IDENTITY_SPECS["blink"].uninstall_subkey,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink",
         )
         self.assertEqual(
             package.IDENTITY_SPECS["blink-dev"].uninstall_key_name,
-            "io.github.chialecode.blink-dev_is1",
+            "io.github.chialecode.blink-dev",
         )
         self.assertEqual(
             package.IDENTITY_SPECS["blink-dev-test"].uninstall_key_name,
-            "io.github.chialecode.blink-dev-test_is1",
+            "io.github.chialecode.blink-dev-test",
         )
         self.assertEqual(package.IDENTITY_SPECS["blink-dev"].mutex_name, "blink-dev-instance")
         self.assertEqual(package.IDENTITY_SPECS["blink-dev"].pipe_name, r"\\.\pipe\blink-dev-control")
@@ -263,7 +281,7 @@ class VersionCalculationTests(unittest.TestCase):
         self.assertEqual(package.IDENTITY_SPECS["blink-dev"].icon_file, "blink-dev.ico")
 
 
-class PackagingRetentionAndIssGuardTests(unittest.TestCase):
+class PackagingRetentionAndNsisTests(unittest.TestCase):
     def test_atomic_replace_directory_keeps_only_latest_installer_set(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -292,85 +310,163 @@ class PackagingRetentionAndIssGuardTests(unittest.TestCase):
             parent_names = sorted(p.name for p in dest.parent.iterdir())
             self.assertEqual(parent_names, ["blink-dev"])
 
-    def test_missing_flutter_or_iscc_raises_clear_error(self) -> None:
+    def test_missing_flutter_or_makensis_raises_clear_error(self) -> None:
         with self.assertRaises(package.PackageError):
             package.find_flutter_executable({"PATH": ""})
-        with self.assertRaises(package.PackageError):
-            package.find_iscc_executable({"PATH": ""})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(package.PackageError, "NSIS 3.13 not found"):
+                package.find_makensis_executable({}, cache_dir=Path(tmp) / "nsis-3.13", fetch=False)
+            with self.assertRaisesRegex(package.PackageError, "BLINK_MAKENSIS"):
+                package.find_makensis_executable({"BLINK_MAKENSIS": str(Path(tmp) / "missing.exe")})
+            override = Path(tmp) / "makensis.exe"
+            override.write_bytes(b"stub")
+            self.assertEqual(package.find_makensis_executable({"BLINK_MAKENSIS": str(override)}), override)
 
-    def test_iss_script_enforces_inno_setup_7_1_x_and_per_user_defaults(self) -> None:
-        iss_path = package.ISS_PATH
-        self.assertTrue(iss_path.is_file(), "apps/blink_client/windows/packaging/blink.iss must exist")
-        raw = iss_path.read_bytes()
-        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "blink.iss must not have UTF-8 BOM")
-        self.assertNotIn(b"\r\n", raw, "blink.iss must use LF line endings")
+    @staticmethod
+    def _nsis_zip(entries: dict[str, bytes]) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as archive:
+            for name, data in entries.items():
+                archive.writestr(name, data)
+        return buf.getvalue()
+
+    def test_pinned_nsis_fetch_checks_sha256_and_unpacks_atomically(self) -> None:
+        good = self._nsis_zip({"nsis-3.13/makensis.exe": b"exe", "nsis-3.13/Stubs/uninst": b"stub"})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".tools" / "nsis-3.13"
+            with mock.patch.object(package, "NSIS_ZIP_SHA256", hashlib.sha256(good).hexdigest()):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    exe = package.find_makensis_executable({}, cache_dir=target, download=lambda url: good)
+            self.assertEqual(exe, target / "makensis.exe")
+            self.assertEqual((target / "Stubs" / "uninst").read_bytes(), b"stub")
+            self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["nsis-3.13"])
+
+            # A cached copy is used as is, without downloading.
+            again = package.find_makensis_executable(
+                {}, cache_dir=target, download=lambda url: self.fail("must not download")
+            )
+            self.assertEqual(again, exe)
+
+    def test_pinned_nsis_fetch_rejects_wrong_hash_and_unsafe_entries(self) -> None:
+        good = self._nsis_zip({"nsis-3.13/makensis.exe": b"exe"})
+        evil = self._nsis_zip({"nsis-3.13/../evil.exe": b"x", "nsis-3.13/makensis.exe": b"exe"})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".tools" / "nsis-3.13"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                with self.assertRaisesRegex(package.PackageError, "SHA-256 mismatch"):
+                    package.fetch_pinned_nsis(target, download=lambda url: good + b"tampered")
+                with mock.patch.object(package, "NSIS_ZIP_SHA256", hashlib.sha256(evil).hexdigest()):
+                    with self.assertRaisesRegex(package.PackageError, "Unsafe path"):
+                        package.fetch_pinned_nsis(target, download=lambda url: evil)
+
+                def offline(url: str) -> bytes:
+                    raise OSError("offline")
+
+                with self.assertRaisesRegex(package.PackageError, "Could not download NSIS"):
+                    package.fetch_pinned_nsis(target, download=offline)
+            self.assertFalse(target.exists())
+            self.assertFalse((Path(tmp) / "evil.exe").exists())
+            self.assertEqual(list(target.parent.iterdir()), [])
+
+    def test_remove_files_macro_lists_every_file_then_folders_deepest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            (app / "data" / "flutter_assets").mkdir(parents=True)
+            (app / "blink-dev.exe").write_bytes(b"x")
+            (app / "data" / "app.so").write_bytes(b"x")
+            (app / "data" / "flutter_assets" / "a$b.bin").write_bytes(b"x")
+            text = package.render_remove_files_nsh(app)
+        lines = text.splitlines()
+        self.assertEqual(lines[1], "!macro BLINK_REMOVE_INSTALLED_FILES")
+        self.assertEqual(lines[-1], "!macroend")
+        self.assertIn('  Delete "$INSTDIR\\blink-dev.exe"', lines)
+        self.assertIn('  Delete "$INSTDIR\\data\\flutter_assets\\a$$b.bin"', lines)
+        rmdirs = [line for line in lines if line.startswith("  RMDir")]
+        self.assertEqual(
+            rmdirs,
+            ['  RMDir "$INSTDIR\\data\\flutter_assets"', '  RMDir "$INSTDIR\\data"'],
+        )
+        self.assertNotIn("RMDir /r", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(package.PackageError):
+                package.render_remove_files_nsh(Path(tmp))
+
+    def test_silent_installer_uses_nsis_switches(self) -> None:
+        fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch.object(package.subprocess, "run", return_value=fake) as run_mock:
+            package.run_silent_installer(Path("setup.exe"), extra_args=["/NODESKTOP", "/D=C:\\x y"])
+        self.assertEqual(run_mock.call_args.args[0], ["setup.exe", "/S", "/NODESKTOP", "/D=C:\\x y"])
+
+    def test_nsi_script_pins_nsis_and_keeps_per_user_update_contract(self) -> None:
+        nsi_path = package.NSI_PATH
+        self.assertTrue(nsi_path.is_file(), "apps/blink_client/windows/packaging/blink.nsi must exist")
+        legacy_iss = package.CLIENT_DIR / "windows" / "packaging" / "blink.iss"
+        self.assertFalse(legacy_iss.exists(), "the Inno Setup script must be gone (DEC-029)")
+        raw = nsi_path.read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "blink.nsi must not have a UTF-8 BOM")
+        self.assertNotIn(b"\r\n", raw, "blink.nsi must use LF line endings")
 
         text = raw.decode("utf-8")
-        self.assertIn("Ver < EncodeVer(7, 1, 0) || Ver >= EncodeVer(7, 2, 0)", text)
-        self.assertIn("PrivilegesRequired=lowest", text)
-        self.assertIn(r"DefaultDirName={userpf}\{#BlinkIdentity}", text)
-        self.assertIn("AppId={#BlinkAppId}", text)
-        self.assertIn("AppVersion={#BlinkVersion}", text)
-        self.assertIn("AppMutex={#BlinkIdentity}-instance", text)
-        self.assertIn("CloseApplications=no", text)
-        self.assertIn("RestartApplications=no", text)
-        self.assertIn('AppUserModelID: "{#BlinkAppId}"', text)
-        self.assertIn('Name: "desktopicon"', text)
-        self.assertIn("Flags: unchecked", text)
-        self.assertNotIn("[UninstallDelete]", text)
+        for needle in (
+            '!if "${NSIS_VERSION}" != "v3.13"',
+            "RequestExecutionLevel user",
+            'InstallDir "$LOCALAPPDATA\\Programs\\${BLINK_IDENTITY}"',
+            '!define BLINK_UNINSTALL_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${BLINK_APP_ID}"',
+            'InstallDirRegKey HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"',
+            '!define BLINK_MUTEX "${BLINK_IDENTITY}-instance"',
+            "--quit-for-update",
+            '"/UPDATE"',
+            '"/RELAUNCH"',
+            '"/NODESKTOP"',
+            "MUI_FINISHPAGE_SHOWREADME_NOTCHECKED",
+            '!insertmacro MUI_LANGUAGE "SimpChinese"',
+            "!insertmacro BLINK_REMOVE_INSTALLED_FILES",
+        ):
+            self.assertIn(needle, text)
+        for value in (
+            "DisplayName",
+            "DisplayVersion",
+            "DisplayIcon",
+            "Publisher",
+            "InstallLocation",
+            "UninstallString",
+            "QuietUninstallString",
+        ):
+            self.assertIn(f'WriteRegStr HKCU "${{BLINK_UNINSTALL_KEY}}" "{value}"', text)
+        for value in ("NoModify", "NoRepair", "EstimatedSize"):
+            self.assertIn(f'WriteRegDWORD HKCU "${{BLINK_UNINSTALL_KEY}}" "{value}"', text)
+        # Never force-kill, never wipe a folder the user may have chosen.
+        for forbidden in ("TerminateProcess", "taskkill", "Stop-Process", "RMDir /r", "_is1"):
+            self.assertNotIn(forbidden, text)
 
         if sys.platform != "win32":
             return
-
         try:
-            iscc = package.find_iscc_executable()
+            makensis = package.find_makensis_executable(fetch=False)
         except package.PackageError:
-            self.skipTest("ISCC.exe not available on host")
+            self.skipTest("NSIS 3.13 not fetched on this host (run scripts/package.py once)")
 
+        spec = package.IDENTITY_SPECS["blink-dev-test"]
         with tempfile.TemporaryDirectory() as tmp:
             td = Path(tmp)
-            for bad_expr in ("EncodeVer(7, 0, 9)", "EncodeVer(7, 2, 0)", "EncodeVer(6, 4, 0)"):
-                wrapper = td / "bad_ver.iss"
-                wrapper.write_text(
-                    f'#define Ver {bad_expr}\n#include "{iss_path}"\n',
-                    encoding="utf-8",
-                )
-                proc = subprocess.run(
-                    [str(iscc), "--preprocess", str(wrapper)],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    creationflags=package.CREATE_NO_WINDOW,
-                )
-                self.assertNotEqual(
-                    proc.returncode,
-                    0,
-                    f"Expected blink.iss to reject compiler version {bad_expr}",
-                )
-                self.assertIn("7.1.x", proc.stderr + proc.stdout)
-
-            ok_proc = subprocess.run(
-                [
-                    str(iscc),
-                    "--preprocess",
-                    "/DBlinkIdentity=blink-dev-test",
-                    "/DBlinkAppId=io.github.chialecode.blink-dev-test",
-                    "/DBlinkProductName=BLINK Dev Test",
-                    "/DBlinkVersion=0.1.0-dev.202611230000",
-                    "/DBlinkFileVersionStr=0.1.0.0",
-                    f"/DBlinkSourceDir={td}",
-                    f"/DBlinkIconFile={td / 'dummy.ico'}",
-                    f"/DBlinkOutputDir={td}",
-                    str(iss_path),
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=package.CREATE_NO_WINDOW,
+            app = td / "app"
+            app.mkdir()
+            (app / spec.exe_name).write_bytes(b"MZ")
+            out = td / f"{spec.identity}-setup-0.1.0-dev.202611240000.exe"
+            package.compile_nsis_installer(
+                makensis,
+                nsi_path,
+                spec=spec,
+                version="0.1.0-dev.202611240000",
+                file_version="0.1.0.0",
+                app_dir=app,
+                icon_path=package.RESOURCES_DIR / spec.icon_file,
+                out_file=out,
+                work_dir=td,
             )
-            self.assertEqual(ok_proc.returncode, 0, ok_proc.stderr + ok_proc.stdout)
+            self.assertGreater(out.stat().st_size, 0)
 
     def test_snapshot_diff_detects_registry_and_start_menu_changes(self) -> None:
         base = {
@@ -388,16 +484,23 @@ class PackagingRetentionAndIssGuardTests(unittest.TestCase):
 
 
 class DevAutoInstallDecisionTests(unittest.TestCase):
+    OLD = "0.1.0-dev.202611220000"
+    NEW = "0.1.0-dev.202611230030"
+
+    def _entry(self) -> package.UninstallEntry:
+        return package.UninstallEntry(install_location=Path("mock_programs") / "blink-dev", display_version=self.OLD)
+
     def _run_case(
         self,
         harness: FakeInstallHarness,
         *,
         channel: str = "blink-dev",
         identity: str | None = None,
-        new_version: str = "0.1.0-dev.202611230030",
+        new_version: str = NEW,
         dirty: bool = False,
         env: dict[str, str] | None = None,
         platform_name: str = "win32",
+        defer_timeout_s: float = package.WINDOW_DEFER_TIMEOUT_SECONDS,
     ) -> tuple[int, dict[str, object]]:
         with tempfile.TemporaryDirectory() as tmp:
             td = Path(tmp)
@@ -417,102 +520,148 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
                 receipt_path=receipt_path,
                 repo_root=td,
                 platform_name=platform_name,
+                defer_timeout_s=defer_timeout_s,
             )
             self.assertTrue(receipt_path.is_file(), "install-dev.json receipt must be written")
             persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted, receipt)
             return rc, receipt
 
-    def test_not_installed_skips_cleanly_and_reports_installer_path(self) -> None:
-        harness = FakeInstallHarness(dev_entry=None)
-        rc, receipt = self._run_case(harness)
-
+    def _assert_installed(self, rc: int, receipt: dict[str, object], harness: FakeInstallHarness) -> None:
         self.assertEqual(rc, 0)
-        self.assertEqual(receipt["status"], "skipped")
-        self.assertFalse(receipt["installed"])
-        self.assertEqual(receipt["reason"], "not_installed")
-        self.assertIn("dist/blink-dev/blink-dev-setup-", str(receipt["guidance"]))
-        self.assertEqual(harness.quit_calls, [])
-        self.assertEqual(harness.installer_calls, [])
-        self.assertEqual(harness.direct_calls, [])
+        self.assertTrue(receipt["installed"])
+        self.assertFalse(receipt["skipped"])
+        self.assertIsNone(receipt["reason"])
+        self.assertIsNone(receipt["error"])
+        self.assertEqual(receipt["newVersion"], self.NEW)
+        self.assertEqual(receipt["verifiedRegistryVersion"], self.NEW)
+        self.assertEqual(receipt["verifiedExeVersion"], self.NEW)
+        self.assertTrue(receipt["relaunched"])
+        self.assertTrue(receipt["background"])
+        self.assertTrue(receipt["runningInTray"])
+        self.assertEqual(len(harness.installer_calls), 1)
         harness.registry.assert_only_dev_key_touched(self)
+
+    def test_receipt_uses_the_shared_camel_case_fields(self) -> None:
+        harness = FakeInstallHarness(
+            dev_entry=self._entry(), post_install_reg_version=self.NEW, post_install_exe_version=self.NEW
+        )
+        _, receipt = self._run_case(harness)
+        for key in (
+            "identity",
+            "installed",
+            "skipped",
+            "reason",
+            "error",
+            "firstInstall",
+            "oldVersion",
+            "newVersion",
+            "installLocation",
+            "wasRunning",
+            "windowOpen",
+            "deferred",
+            "deferMs",
+            "quitMs",
+            "relaunched",
+            "background",
+            "inJob",
+            "elapsedMs",
+            "at",
+        ):
+            self.assertIn(key, receipt)
+        for key in receipt:
+            self.assertNotIn("_", key, f"receipt field {key!r} is not camelCase")
+
+    def test_not_installed_runs_the_first_install_automatically(self) -> None:
+        harness = FakeInstallHarness(dev_entry=None, post_install_reg_version=self.NEW, post_install_exe_version=self.NEW)
+        rc, receipt = self._run_case(harness, env={"LOCALAPPDATA": "mock_local"})
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertTrue(receipt["firstInstall"])
+        self.assertIsNone(receipt["oldVersion"])
+        self.assertFalse(receipt["wasRunning"])
+        self.assertEqual(harness.quit_calls, [])
+        self.assertEqual(harness.direct_calls[0][1], ["--background"])
 
     def test_not_running_installs_verifies_and_launches_background_tray(self) -> None:
-        new_ver = "0.1.0-dev.202611230030"
         harness = FakeInstallHarness(
-            dev_entry=package.UninstallEntry(
-                install_location=Path("mock_programs") / "blink-dev",
-                display_version="0.1.0-dev.202611220000",
-            ),
-            running_polls_before_exit=0,
-            installer_rc=0,
-            post_install_reg_version=new_ver,
-            post_install_exe_version=new_ver,
-            in_job=False,
+            dev_entry=self._entry(), post_install_reg_version=self.NEW, post_install_exe_version=self.NEW
         )
-        rc, receipt = self._run_case(harness, new_version=new_ver)
+        rc, receipt = self._run_case(harness)
 
-        self.assertEqual(rc, 0)
-        self.assertEqual(receipt["status"], "installed")
-        self.assertTrue(receipt["installed"])
-        self.assertEqual(receipt["previous_version"], "0.1.0-dev.202611220000")
-        self.assertEqual(receipt["new_version"], new_ver)
-        self.assertFalse(receipt["was_running"])
-        self.assertIsNone(receipt["quit_elapsed_seconds"])
-        self.assertTrue(receipt["running_in_tray"])
+        self._assert_installed(rc, receipt, harness)
+        self.assertFalse(receipt["firstInstall"])
+        self.assertEqual(receipt["oldVersion"], self.OLD)
+        self.assertFalse(receipt["wasRunning"])
+        self.assertFalse(receipt["windowOpen"])
+        self.assertIsNone(receipt["quitMs"])
         self.assertFalse(receipt["inJob"])
-        self.assertEqual(receipt["launch_method"], "direct")
+        self.assertEqual(receipt["launchMethod"], "direct")
         self.assertEqual(harness.quit_calls, [])
-        self.assertEqual(len(harness.installer_calls), 1)
         self.assertEqual(len(harness.direct_calls), 1)
         self.assertEqual(harness.direct_calls[0][1], ["--background"])
-        harness.registry.assert_only_dev_key_touched(self)
 
-    def test_running_instance_quits_cleanly_installs_and_relaunches(self) -> None:
-        new_ver = "0.1.0-dev.202611230045+dirty"
+    def test_tray_instance_quits_cleanly_installs_and_relaunches(self) -> None:
         harness = FakeInstallHarness(
-            dev_entry=package.UninstallEntry(
-                install_location=Path("mock_programs") / "blink-dev",
-                display_version="0.1.0-dev.202611220000",
-            ),
+            dev_entry=self._entry(),
             running_polls_before_exit=3,
-            installer_rc=0,
-            post_install_reg_version=new_ver,
-            post_install_exe_version=new_ver,
-            in_job=False,
+            post_install_reg_version=self.NEW,
+            post_install_exe_version=self.NEW,
         )
-        rc, receipt = self._run_case(harness, new_version=new_ver, dirty=True)
+        rc, receipt = self._run_case(harness, dirty=True)
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertTrue(receipt["dirty"])
+        self.assertTrue(receipt["wasRunning"])
+        self.assertFalse(receipt["windowOpen"])
+        self.assertFalse(receipt["deferred"])
+        self.assertGreater(int(receipt["quitMs"]), 0)
+        self.assertEqual(len(harness.quit_calls), 1)
+        self.assertEqual(harness.direct_calls[0][1], ["--background"])
+
+    def test_open_window_defers_the_install_until_it_closes(self) -> None:
+        harness = FakeInstallHarness(
+            dev_entry=self._entry(),
+            stays_running_forever=False,
+            running_polls_before_exit=6,
+            window_open_polls=3,
+            post_install_reg_version=self.NEW,
+            post_install_exe_version=self.NEW,
+        )
+        rc, receipt = self._run_case(harness)
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertTrue(receipt["wasRunning"])
+        self.assertTrue(receipt["windowOpen"])
+        self.assertTrue(receipt["deferred"])
+        self.assertGreaterEqual(int(receipt["deferMs"]), 2 * int(package.WINDOW_DEFER_POLL_INTERVAL_SECONDS * 1000))
+        self.assertEqual(len(harness.quit_calls), 1, "the tray instance left after the window closed must be asked to quit")
+        self.assertTrue(all(exe.name == "blink-dev.exe" for exe in harness.window_checks))
+
+    def test_window_still_open_after_the_limit_skips_without_touching_the_app(self) -> None:
+        harness = FakeInstallHarness(dev_entry=self._entry(), stays_running_forever=True, window_open_forever=True)
+        rc, receipt = self._run_case(harness, defer_timeout_s=60.0)
 
         self.assertEqual(rc, 0)
-        self.assertEqual(receipt["status"], "installed")
-        self.assertTrue(receipt["installed"])
-        self.assertTrue(receipt["dirty"])
-        self.assertTrue(receipt["was_running"])
-        self.assertIsNotNone(receipt["quit_elapsed_seconds"])
-        self.assertGreater(float(receipt["quit_elapsed_seconds"]), 0.0)
-        self.assertTrue(receipt["running_in_tray"])
-        self.assertEqual(len(harness.quit_calls), 1)
-        self.assertEqual(len(harness.installer_calls), 1)
-        self.assertEqual(len(harness.direct_calls), 1)
-        self.assertEqual(harness.direct_calls[0][1], ["--background"])
-        harness.registry.assert_only_dev_key_touched(self)
+        self.assertFalse(receipt["installed"])
+        self.assertTrue(receipt["skipped"])
+        self.assertEqual(receipt["reason"], "window_open")
+        self.assertTrue(receipt["deferred"])
+        self.assertGreaterEqual(int(receipt["deferMs"]), 60_000)
+        self.assertIn("--install", str(receipt["guidance"]))
+        self.assertEqual(harness.quit_calls, [])
+        self.assertEqual(harness.installer_calls, [])
+        self.assertEqual(harness.force_kill_calls, 0)
 
     def test_running_instance_30s_timeout_aborts_without_force_kill(self) -> None:
-        harness = FakeInstallHarness(
-            dev_entry=package.UninstallEntry(
-                install_location=Path("mock_programs") / "blink-dev",
-                display_version="0.1.0-dev.202611220000",
-            ),
-            stays_running_forever=True,
-        )
+        harness = FakeInstallHarness(dev_entry=self._entry(), stays_running_forever=True)
         rc, receipt = self._run_case(harness)
 
         self.assertNotEqual(rc, 0)
-        self.assertEqual(receipt["status"], "failed")
         self.assertFalse(receipt["installed"])
-        self.assertTrue(receipt["was_running"])
+        self.assertTrue(receipt["wasRunning"])
         self.assertEqual(receipt["reason"], "quit_timeout")
-        self.assertGreaterEqual(float(receipt["quit_elapsed_seconds"]), 30.0)
+        self.assertGreaterEqual(int(receipt["quitMs"]), 30_000)
         self.assertEqual(harness.force_kill_calls, 0)
         self.assertEqual(harness.installer_calls, [])
         self.assertEqual(harness.explorer_calls, [])
@@ -522,19 +671,15 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
 
     def test_running_instance_busy_aborts_without_force_kill(self) -> None:
         harness = FakeInstallHarness(
-            dev_entry=package.UninstallEntry(
-                install_location=Path("mock_programs") / "blink-dev",
-                display_version="0.1.0-dev.202611220000",
-            ),
+            dev_entry=self._entry(),
             running_polls_before_exit=5,
             quit_result=package.QuitRequestResult(ok=False, busy=True, detail='{"ok":false,"reason":"busy"}'),
         )
         rc, receipt = self._run_case(harness)
 
         self.assertNotEqual(rc, 0)
-        self.assertEqual(receipt["status"], "failed")
         self.assertFalse(receipt["installed"])
-        self.assertTrue(receipt["was_running"])
+        self.assertTrue(receipt["wasRunning"])
         self.assertEqual(receipt["reason"], "busy")
         self.assertEqual(harness.force_kill_calls, 0)
         self.assertEqual(harness.installer_calls, [])
@@ -542,138 +687,111 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
         harness.registry.assert_only_dev_key_touched(self)
 
     def test_installer_failure_returns_nonzero_without_launching(self) -> None:
-        harness = FakeInstallHarness(
-            dev_entry=package.UninstallEntry(
-                install_location=Path("mock_programs") / "blink-dev",
-                display_version="0.1.0-dev.202611220000",
-            ),
-            installer_rc=5,
-        )
+        harness = FakeInstallHarness(dev_entry=self._entry(), installer_rc=5)
         rc, receipt = self._run_case(harness)
 
         self.assertNotEqual(rc, 0)
-        self.assertEqual(receipt["status"], "failed")
         self.assertFalse(receipt["installed"])
         self.assertEqual(receipt["reason"], "installer_failed_exit_5")
+        self.assertIn("5", str(receipt["error"]))
         self.assertEqual(harness.direct_calls, [])
         self.assertEqual(harness.explorer_calls, [])
         harness.registry.assert_only_dev_key_touched(self)
 
-    def test_registry_or_exe_version_mismatch_fails_without_launching(self) -> None:
-        new_ver = "0.1.0-dev.202611230030"
-        old_ver = "0.1.0-dev.202611220000"
+    def test_missing_uninstall_entry_after_install_fails(self) -> None:
+        harness = FakeInstallHarness(dev_entry=None, installer_rc=0, post_install_reg_version=None)
+        rc, receipt = self._run_case(harness)
 
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(receipt["installed"])
+        self.assertTrue(receipt["firstInstall"])
+        self.assertEqual(receipt["reason"], "uninstall_entry_missing")
+        self.assertEqual(harness.direct_calls, [])
+
+    def test_registry_or_exe_version_mismatch_fails_without_launching(self) -> None:
         for label, reg_v, exe_v in (
-            ("registry_mismatch", old_ver, new_ver),
-            ("exe_mismatch", new_ver, old_ver),
+            ("registry_mismatch", self.OLD, self.NEW),
+            ("exe_mismatch", self.NEW, self.OLD),
         ):
             with self.subTest(label):
                 harness = FakeInstallHarness(
-                    dev_entry=package.UninstallEntry(
-                        install_location=Path("mock_programs") / "blink-dev",
-                        display_version=old_ver,
-                    ),
-                    installer_rc=0,
+                    dev_entry=self._entry(),
                     post_install_reg_version=reg_v,
                     post_install_exe_version=exe_v,
                 )
-                rc, receipt = self._run_case(harness, new_version=new_ver)
+                rc, receipt = self._run_case(harness)
 
                 self.assertNotEqual(rc, 0)
-                self.assertEqual(receipt["status"], "failed")
                 self.assertFalse(receipt["installed"])
                 self.assertEqual(receipt["reason"], "version_mismatch")
-                self.assertEqual(receipt["verified_registry_version"], reg_v)
-                self.assertEqual(receipt["verified_exe_version"], exe_v)
+                self.assertEqual(receipt["verifiedRegistryVersion"], reg_v)
+                self.assertEqual(receipt["verifiedExeVersion"], exe_v)
                 self.assertEqual(harness.direct_calls, [])
                 self.assertEqual(harness.explorer_calls, [])
                 harness.registry.assert_only_dev_key_touched(self)
 
     def test_job_object_launch_fallback_order_and_in_job_true_receipt(self) -> None:
-        new_ver = "0.1.0-dev.202611230030"
-        dev_entry = package.UninstallEntry(
-            install_location=Path("mock_programs") / "blink-dev",
-            display_version="0.1.0-dev.202611220000",
-        )
+        def harness(**kwargs: bool) -> FakeInstallHarness:
+            return FakeInstallHarness(
+                dev_entry=self._entry(),
+                post_install_reg_version=self.NEW,
+                post_install_exe_version=self.NEW,
+                in_job=True,
+                **kwargs,
+            )
 
         # 1. Explorer shell succeeds -> detached from job.
-        h1 = FakeInstallHarness(
-            dev_entry=dev_entry,
-            post_install_reg_version=new_ver,
-            post_install_exe_version=new_ver,
-            in_job=True,
-            explorer_succeeds=True,
-        )
-        rc1, rec1 = self._run_case(h1, new_version=new_ver)
+        h1 = harness(explorer_succeeds=True)
+        rc1, rec1 = self._run_case(h1)
         self.assertEqual(rc1, 0)
-        self.assertEqual(rec1["launch_method"], "explorer_shell")
+        self.assertEqual(rec1["launchMethod"], "explorer_shell")
         self.assertFalse(rec1["inJob"])
-        self.assertEqual(len(h1.explorer_calls), 1)
         self.assertEqual(h1.explorer_calls[0][1], ["--background"])
         self.assertEqual(h1.breakaway_calls, [])
         self.assertEqual(h1.direct_calls, [])
 
         # 2. Explorer unavailable -> breakaway succeeds.
-        h2 = FakeInstallHarness(
-            dev_entry=dev_entry,
-            post_install_reg_version=new_ver,
-            post_install_exe_version=new_ver,
-            in_job=True,
-            explorer_succeeds=False,
-            breakaway_succeeds=True,
-        )
-        rc2, rec2 = self._run_case(h2, new_version=new_ver)
+        h2 = harness(explorer_succeeds=False, breakaway_succeeds=True)
+        rc2, rec2 = self._run_case(h2)
         self.assertEqual(rc2, 0)
-        self.assertEqual(rec2["launch_method"], "breakaway")
+        self.assertEqual(rec2["launchMethod"], "breakaway")
         self.assertFalse(rec2["inJob"])
         self.assertEqual(len(h2.explorer_calls), 1)
         self.assertEqual(len(h2.breakaway_calls), 1)
         self.assertEqual(h2.direct_calls, [])
 
-        # 3. Both explorer and breakaway unavailable -> direct launch records inJob=True + Start Menu guidance.
-        h3 = FakeInstallHarness(
-            dev_entry=dev_entry,
-            post_install_reg_version=new_ver,
-            post_install_exe_version=new_ver,
-            in_job=True,
-            explorer_succeeds=False,
-            breakaway_succeeds=False,
-            direct_succeeds=True,
-        )
-        rc3, rec3 = self._run_case(h3, new_version=new_ver)
+        # 3. Both unavailable -> direct launch records inJob=True + Start Menu guidance.
+        h3 = harness(explorer_succeeds=False, breakaway_succeeds=False, direct_succeeds=True)
+        rc3, rec3 = self._run_case(h3)
         self.assertEqual(rc3, 0)
-        self.assertEqual(rec3["launch_method"], "direct_in_job")
+        self.assertEqual(rec3["launchMethod"], "direct_in_job")
         self.assertTrue(rec3["inJob"])
         self.assertIn("Start Menu", str(rec3["guidance"]))
-        self.assertEqual(len(h3.direct_calls), 1)
         self.assertEqual(h3.direct_calls[0][1], ["--background"])
 
     def test_env_disable_and_ci_flags_skip_cleanly(self) -> None:
-        dev_entry = package.UninstallEntry(
-            install_location=Path("mock_programs") / "blink-dev",
-            display_version="0.1.0-dev.202611220000",
-        )
         for env_map, expected_reason in (
             ({"BLINK_DEV_AUTO_INSTALL": "0"}, "disabled_by_env"),
             ({"CI": "true"}, "ci_environment"),
             ({"CI": "1"}, "ci_environment"),
         ):
             with self.subTest(expected_reason):
-                harness = FakeInstallHarness(dev_entry=dev_entry)
+                harness = FakeInstallHarness(dev_entry=self._entry())
                 rc, receipt = self._run_case(harness, env=env_map)
                 self.assertEqual(rc, 0)
-                self.assertEqual(receipt["status"], "skipped")
+                self.assertTrue(receipt["skipped"])
                 self.assertFalse(receipt["installed"])
                 self.assertEqual(receipt["reason"], expected_reason)
                 self.assertEqual(harness.registry.read_keys, [])
                 self.assertEqual(harness.installer_calls, [])
                 self.assertEqual(harness.direct_calls, [])
 
-    def test_non_windows_install_reports_not_run(self) -> None:
+    def test_non_windows_install_reports_skipped(self) -> None:
         harness = FakeInstallHarness(dev_entry=None)
         rc, receipt = self._run_case(harness, platform_name="linux")
         self.assertEqual(rc, 0)
-        self.assertEqual(receipt["status"], "not-run")
+        self.assertTrue(receipt["skipped"])
+        self.assertEqual(receipt["reason"], "non_windows_platform")
         self.assertFalse(receipt["installed"])
         self.assertEqual(harness.registry.read_keys, [])
 
@@ -687,7 +805,7 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
                 harness = FakeInstallHarness(dev_entry=None)
                 rc, receipt = self._run_case(harness, channel=channel, identity=ident)
                 self.assertNotEqual(rc, 0)
-                self.assertEqual(receipt["status"], "failed")
+                self.assertFalse(receipt["installed"])
                 self.assertEqual(receipt["reason"], "invalid_channel_for_install")
                 self.assertEqual(harness.registry.read_keys, [])
                 self.assertEqual(harness.registry.written_keys, [])
@@ -698,6 +816,11 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
             result = package.read_dev_uninstall_entry()
         self.assertIsNone(result)
         patched.assert_called_once_with("blink-dev")
+
+    def test_window_probe_ignores_hidden_windows_of_other_programs(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("Windows-only window probe")
+        self.assertFalse(package.is_app_window_open(Path("mock_programs") / "blink-dev" / "blink-dev.exe"))
 
 
 class CliAndHelperTests(unittest.TestCase):
@@ -727,7 +850,7 @@ class CliAndHelperTests(unittest.TestCase):
                 rc = package.main(["--install"])
             self.assertEqual(rc, 0)
             receipt = json.loads((Path(tmp) / "install-dev.json").read_text(encoding="utf-8"))
-            self.assertEqual(receipt["status"], "skipped")
+            self.assertTrue(receipt["skipped"])
             self.assertEqual(receipt["reason"], "disabled_by_env")
 
     def test_quit_for_update_exit_code_classification(self) -> None:

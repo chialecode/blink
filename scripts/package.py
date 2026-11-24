@@ -1,9 +1,9 @@
 """Windows desktop packaging, dev auto-install, and rehearsal runner for BLINK.
 
 Standard-library only (Python 3.12+). Supports:
-  - Packaging Windows per-user installers via Flutter + Inno Setup 7.1.x:
+  - Packaging Windows per-user installers via Flutter + NSIS 3.13 (DEC-029):
       python scripts/package.py [--channel blink-dev|blink] [--version <ver>]
-  - Dev channel local auto-update to system tray (engineering.md 2.2):
+  - Dev channel local auto-install and update to the system tray (engineering.md 2.2):
       python scripts/package.py --install
   - Quiet isolated test-identity upgrade/uninstall rehearsal (AC-11 / M2-K08):
       python scripts/package.py --rehearsal
@@ -15,9 +15,10 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -25,19 +26,35 @@ import sys
 import tempfile
 import time
 from typing import Any, Callable, Mapping, Protocol
+import urllib.request
 import uuid
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLIENT_DIR = REPO_ROOT / "apps" / "blink_client"
-ISS_PATH = CLIENT_DIR / "windows" / "packaging" / "blink.iss"
+NSI_PATH = CLIENT_DIR / "windows" / "packaging" / "blink.nsi"
 RESOURCES_DIR = CLIENT_DIR / "windows" / "runner" / "resources"
 DIST_ROOT = REPO_ROOT / "dist"
 ARTIFACTS_PACKAGE_DIR = REPO_ROOT / "artifacts" / "package"
 
+# The pinned NSIS build (DEC-029). package.py fetches this exact archive once into
+# the ignored .tools/ folder and checks its SHA-256 before using it; blink.nsi also
+# refuses any other makensis version. BLINK_MAKENSIS may name another makensis.exe
+# of the same version (an offline copy, for example).
+NSIS_VERSION = "3.13"
+NSIS_ZIP_URL = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip"
+NSIS_ZIP_SHA256 = "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8"
+NSIS_CACHE_DIR = REPO_ROOT / ".tools" / f"nsis-{NSIS_VERSION}"
+NSIS_DOWNLOAD_TIMEOUT_SECONDS = 120.0
+
 UNINSTALL_REG_ROOT = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 QUIT_WAIT_TIMEOUT_SECONDS = 30.0
 QUIT_POLL_INTERVAL_SECONDS = 0.25
+# While the BLINK Dev window is open the install waits for it to close (or hide
+# to the tray), at most this long, then skips and says so (#20).
+WINDOW_DEFER_TIMEOUT_SECONDS = 600.0
+WINDOW_DEFER_POLL_INTERVAL_SECONDS = 2.0
 REHEARSAL_QUIT_TIMEOUT_SECONDS = 5.0
 TRAY_VERIFY_TIMEOUT_SECONDS = 5.0
 
@@ -79,7 +96,7 @@ class IdentitySpec:
 
     @property
     def uninstall_key_name(self) -> str:
-        return f"{self.app_id}_is1"
+        return self.app_id
 
     @property
     def uninstall_subkey(self) -> str:
@@ -198,6 +215,8 @@ class DevInstallDeps:
     launch_direct: Callable[[Path, list[str]], bool]
     verify_running_in_tray: Callable[[str, float], bool]
     clock: Clock
+    # True while a visible top-level window of the installed blink-dev.exe is open.
+    is_window_open: Callable[[Path], bool] = lambda _exe: False
 
 
 def utc_iso(dt: datetime | None = None) -> str:
@@ -365,29 +384,125 @@ def find_flutter_executable(env: Mapping[str, str] | None = None) -> Path:
     )
 
 
-def find_iscc_executable(env: Mapping[str, str] | None = None) -> Path:
+def find_makensis_executable(
+    env: Mapping[str, str] | None = None,
+    *,
+    cache_dir: Path | None = None,
+    fetch: bool = True,
+    download: Callable[[str], bytes] | None = None,
+) -> Path:
+    """Return makensis.exe of the pinned NSIS build, fetching the verified archive once if missing.
+
+    BLINK_MAKENSIS overrides the location; blink.nsi itself rejects any version but NSIS_VERSION.
+    """
     effective_env = env if env is not None else os.environ
-    for name in ("ISCC.exe", "ISCC"):
-        found = shutil.which(name, path=effective_env.get("PATH"))
-        if found:
-            return Path(found)
+    override = effective_env.get("BLINK_MAKENSIS", "").strip()
+    if override:
+        candidate = Path(override)
+        if not candidate.is_file():
+            raise PackageError(f"BLINK_MAKENSIS does not name a file: {override}")
+        return candidate
 
-    candidates: list[Path] = []
-    local_app_data = effective_env.get("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        candidates.append(Path(local_app_data) / "Programs" / "Inno Setup 7" / "ISCC.exe")
-    for pf_var in ("ProgramFiles(x86)", "ProgramFiles"):
-        pf = effective_env.get(pf_var, "").strip()
-        if pf:
-            candidates.append(Path(pf) / "Inno Setup 7" / "ISCC.exe")
+    target = cache_dir if cache_dir is not None else NSIS_CACHE_DIR
+    makensis = target / "makensis.exe"
+    if makensis.is_file():
+        return makensis
+    if not fetch:
+        raise PackageError(
+            f"NSIS {NSIS_VERSION} not found at .tools/{target.name}/makensis.exe; "
+            "run scripts/package.py once to fetch it, or set BLINK_MAKENSIS"
+        )
+    fetch_pinned_nsis(target, download=download)
+    if not makensis.is_file():
+        raise PackageError(f"NSIS {NSIS_VERSION} archive did not contain makensis.exe")
+    return makensis
 
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
 
-    raise PackageError(
-        "Inno Setup ISCC.exe not found in PATH or %LOCALAPPDATA%\\Programs\\Inno Setup 7\\ISCC.exe"
-    )
+def _download_bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "blink-package-script"})
+    with urllib.request.urlopen(request, timeout=NSIS_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        return response.read()
+
+
+def fetch_pinned_nsis(target: Path, *, download: Callable[[str], bytes] | None = None) -> None:
+    """Download the pinned NSIS zip, check its SHA-256 and unpack it into `target` atomically."""
+    print(f"[package] Fetching NSIS {NSIS_VERSION} (pinned SHA-256) into .tools/{target.name}...")
+    try:
+        data = (download or _download_bytes)(NSIS_ZIP_URL)
+    except OSError as exc:
+        raise PackageError(
+            f"Could not download NSIS {NSIS_VERSION} from {NSIS_ZIP_URL}: {exc}. "
+            "Download it by hand and set BLINK_MAKENSIS, or retry when online."
+        ) from exc
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != NSIS_ZIP_SHA256:
+        raise PackageError(
+            f"NSIS {NSIS_VERSION} archive SHA-256 mismatch: expected {NSIS_ZIP_SHA256}, got {digest}; not using it"
+        )
+
+    root = f"nsis-{NSIS_VERSION}/"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.staging-{uuid.uuid4().hex}"
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                name = info.filename.replace("\\", "/")
+                if not name.startswith(root):
+                    raise PackageError(f"Unexpected entry in NSIS archive: {info.filename!r}")
+                rel = PurePosixPath(name[len(root):])
+                if not rel.parts:
+                    continue
+                if rel.is_absolute() or ".." in rel.parts or ":" in rel.parts[0]:
+                    raise PackageError(f"Unsafe path in NSIS archive: {info.filename!r}")
+                dest = staging.joinpath(*rel.parts)
+                if info.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def nsis_escape(text: str) -> str:
+    """Escape text for an NSIS double-quoted string ($ starts a variable)."""
+    return text.replace("$", "$$")
+
+
+def render_remove_files_nsh(app_dir: Path) -> str:
+    """Return the BLINK_REMOVE_INSTALLED_FILES macro: every staged file, then its folders deepest first."""
+    files: list[PurePosixPath] = []
+    folders: set[PurePosixPath] = set()
+    for path in app_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = PurePosixPath(path.relative_to(app_dir).as_posix())
+        files.append(rel)
+        for parent in rel.parents:
+            if parent != PurePosixPath("."):
+                folders.add(parent)
+    if not files:
+        raise PackageError(f"No files to install in {app_dir}")
+
+    def win(rel: PurePosixPath) -> str:
+        return nsis_escape(str(rel).replace("/", "\\"))
+
+    lines = [
+        "; Generated by scripts/package.py: the files this version installs. Do not edit.",
+        "!macro BLINK_REMOVE_INSTALLED_FILES",
+    ]
+    lines += [f'  Delete "$INSTDIR\\{win(rel)}"' for rel in sorted(files, key=str)]
+    lines += [
+        f'  RMDir "$INSTDIR\\{win(rel)}"'
+        for rel in sorted(folders, key=lambda d: (-len(d.parts), str(d)))
+    ]
+    lines.append("!macroend")
+    return "\n".join(lines) + "\n"
 
 
 def read_git_state(repo_root: Path = REPO_ROOT) -> GitState:
@@ -923,13 +1038,8 @@ def run_silent_installer(
     *,
     extra_args: list[str] | None = None,
 ) -> int:
-    cmd = [
-        str(installer_path),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        *(extra_args or []),
-    ]
+    # NSIS: /S is silent; a /D=<folder> extra argument must come last and stay unquoted.
+    cmd = [str(installer_path), "/S", *(extra_args or [])]
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -939,6 +1049,83 @@ def run_silent_installer(
         creationflags=_subprocess_flags(),
     )
     return proc.returncode
+
+
+def is_app_window_open(exe_path: Path) -> bool:
+    """True when a process running exe_path shows a visible, unowned, non-tool top-level window.
+
+    A window hidden to the tray is not visible; a minimized one still counts as open.
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    gw_owner = 4
+    gwl_exstyle = -20
+    ws_ex_toolwindow = 0x00000080
+    process_query_limited_information = 0x1000
+
+    enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [enum_proc_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = wintypes.LONG
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    wanted = os.path.normcase(os.path.abspath(str(exe_path)))
+    image_by_pid: dict[int, str] = {}
+    found = False
+
+    def image_of(pid: int) -> str:
+        if pid not in image_by_pid:
+            image = ""
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if handle:
+                try:
+                    size = wintypes.DWORD(32768)
+                    buf = ctypes.create_unicode_buffer(size.value)
+                    if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                        image = os.path.normcase(buf.value)
+                finally:
+                    kernel32.CloseHandle(handle)
+            image_by_pid[pid] = image
+        return image_by_pid[pid]
+
+    def on_window(hwnd: int, _lparam: int) -> bool:
+        nonlocal found
+        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, gw_owner):
+            return True
+        if user32.GetWindowLongW(hwnd, gwl_exstyle) & ws_ex_toolwindow:
+            return True
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and image_of(pid.value) == wanted:
+            found = True
+            return False
+        return True
+
+    user32.EnumWindows(enum_proc_type(on_window), 0)
+    return found
 
 
 def verify_running_in_tray_windows(identity: str, timeout_s: float) -> bool:
@@ -968,6 +1155,7 @@ def build_default_dev_install_deps() -> DevInstallDeps:
         launch_direct=launch_direct,
         verify_running_in_tray=verify_running_in_tray_windows,
         clock=SystemClock(),
+        is_window_open=is_app_window_open,
     )
 
 
@@ -987,6 +1175,56 @@ def _locate_windows_release_dir(client_dir: Path, exe_name: str = "blink_client.
     raise PackageError("Windows release executable not found after flutter build")
 
 
+def compile_nsis_installer(
+    makensis_exe: Path,
+    nsi_path: Path,
+    *,
+    spec: IdentitySpec,
+    version: str,
+    file_version: str,
+    app_dir: Path,
+    icon_path: Path,
+    out_file: Path,
+    work_dir: Path,
+) -> None:
+    """Write the uninstall file list next to the staged app and compile blink.nsi into out_file."""
+    files_nsh = work_dir / "installed-files.nsh"
+    atomic_write_text(files_nsh, render_remove_files_nsh(app_dir))
+    cmd = [
+        str(makensis_exe),
+        "-V2",
+        # Warnings fail the build: the script must stay warning-free.
+        "-WX",
+        "-INPUTCHARSET",
+        "UTF8",
+        "-OUTPUTCHARSET",
+        "UTF8",
+        f"-DBLINK_IDENTITY={spec.identity}",
+        f"-DBLINK_APP_ID={spec.app_id}",
+        f"-DBLINK_PRODUCT_NAME={spec.product_name}",
+        f"-DBLINK_VERSION={version}",
+        f"-DBLINK_FILE_VERSION={file_version}",
+        f"-DBLINK_SOURCE_DIR={app_dir}",
+        f"-DBLINK_ICON={icon_path}",
+        f"-DBLINK_OUT_FILE={out_file}",
+        f"-DBLINK_FILES_NSH={files_nsh}",
+        str(nsi_path),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=_subprocess_flags(),
+    )
+    if proc.returncode != 0:
+        detail = f"{proc.stdout}\n{proc.stderr}".strip()
+        raise PackageError(f"makensis failed (rc={proc.returncode}):\n{detail}")
+    if not out_file.is_file() or out_file.stat().st_size == 0:
+        raise PackageError(f"Expected installer missing or empty: {out_file.name}")
+
+
 def build_windows_package(
     identity: str,
     *,
@@ -994,11 +1232,11 @@ def build_windows_package(
     dest_dir: Path | None = None,
     repo_root: Path = REPO_ROOT,
     client_dir: Path = CLIENT_DIR,
-    iss_path: Path = ISS_PATH,
+    nsi_path: Path = NSI_PATH,
     resources_dir: Path = RESOURCES_DIR,
     env: Mapping[str, str] | None = None,
 ) -> PackageResult:
-    """Build Windows release, verify PE ProductVersion, compile Inno Setup installer, and stage atomically."""
+    """Build Windows release, verify PE ProductVersion, compile the NSIS installer, and stage atomically."""
     if sys.platform != "win32":
         raise PackageError("Windows packaging requires a Windows host")
     if identity not in IDENTITY_SPECS:
@@ -1007,10 +1245,10 @@ def build_windows_package(
     spec = IDENTITY_SPECS[identity]
     effective_env = dict(env if env is not None else os.environ)
     flutter_exe = find_flutter_executable(effective_env)
-    iscc_exe = find_iscc_executable(effective_env)
+    makensis_exe = find_makensis_executable(effective_env)
 
-    if not iss_path.is_file():
-        raise PackageError(f"Inno Setup script not found: {iss_path}")
+    if not nsi_path.is_file():
+        raise PackageError(f"NSIS script not found: {nsi_path}")
     icon_path = resources_dir / spec.icon_file
     if not icon_path.is_file():
         raise PackageError(f"Channel icon not found: {icon_path}")
@@ -1072,34 +1310,20 @@ def build_windows_package(
             )
 
         output_base = f"{spec.identity}-setup-{version_info.version}"
-        iscc_cmd = [
-            str(iscc_exe),
-            f"/DBlinkIdentity={spec.identity}",
-            f"/DBlinkAppId={spec.app_id}",
-            f"/DBlinkProductName={spec.product_name}",
-            f"/DBlinkVersion={version_info.version}",
-            f"/DBlinkFileVersionStr={version_info.file_version_str}",
-            f"/DBlinkSourceDir={staged_app_dir}",
-            f"/DBlinkIconFile={icon_path}",
-            f"/DBlinkOutputDir={staged_out_dir}",
-            f"/DBlinkOutputBaseFilename={output_base}",
-            str(iss_path),
-        ]
-        print(f"[package] Compiling Inno Setup installer {output_base}.exe...")
-        iscc_proc = subprocess.run(
-            iscc_cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=_subprocess_flags(),
-        )
-        if iscc_proc.returncode != 0:
-            detail = (iscc_proc.stderr or iscc_proc.stdout).strip()
-            raise PackageError(f"ISCC compilation failed (rc={iscc_proc.returncode}):\n{detail}")
-
         installer_filename = f"{output_base}.exe"
         staged_installer = staged_out_dir / installer_filename
+        print(f"[package] Compiling NSIS installer {installer_filename}...")
+        compile_nsis_installer(
+            makensis_exe,
+            nsi_path,
+            spec=spec,
+            version=version_info.version,
+            file_version=version_info.file_version_str,
+            app_dir=staged_app_dir,
+            icon_path=icon_path,
+            out_file=staged_installer,
+            work_dir=tmp_root,
+        )
         if not staged_installer.is_file() or staged_installer.stat().st_size == 0:
             raise PackageError(f"Expected installer missing or empty: {installer_filename}")
 
@@ -1174,285 +1398,212 @@ def run_dev_auto_install(
     platform_name: str | None = None,
     quit_timeout_s: float = QUIT_WAIT_TIMEOUT_SECONDS,
     poll_interval_s: float = QUIT_POLL_INTERVAL_SECONDS,
+    defer_timeout_s: float = WINDOW_DEFER_TIMEOUT_SECONDS,
+    defer_poll_interval_s: float = WINDOW_DEFER_POLL_INTERVAL_SECONDS,
 ) -> tuple[int, dict[str, Any]]:
-    """Execute engineering.md 2.2 5-step dev auto-install decision flow with injectable deps."""
+    """Install the freshly built blink-dev on this machine (engineering.md 2.2, DEC-029).
+
+    Installs on first use too; waits while the BLINK Dev window is open (up to defer_timeout_s),
+    asks a tray-only instance to save and quit (never force-killed), installs silently, checks
+    the uninstall entry and the exe version, then starts it in the tray. The receipt uses the
+    shared camelCase fields.
+    """
     eff_platform = platform_name if platform_name is not None else sys.platform
     eff_identity = identity if identity is not None else channel
     rel_installer = _display_installer_path(installer_path, repo_root)
+    started = deps.clock.monotonic()
+    receipt: dict[str, Any] = {
+        "identity": eff_identity,
+        "installed": False,
+        "skipped": False,
+        "reason": None,
+        "error": None,
+        "firstInstall": False,
+        "oldVersion": None,
+        "newVersion": new_version,
+        "dirty": dirty,
+        "installLocation": None,
+        "installer": rel_installer,
+        "wasRunning": False,
+        "windowOpen": False,
+        "deferred": False,
+        "deferMs": None,
+        "quitMs": None,
+        "verifiedRegistryVersion": None,
+        "verifiedExeVersion": None,
+        "relaunched": False,
+        "background": False,
+        "launchMethod": None,
+        "runningInTray": False,
+        "inJob": False,
+        "guidance": None,
+        "elapsedMs": 0,
+        "at": utc_iso(deps.clock.utc_now()),
+    }
 
-    def _finish(
-        exit_code: int,
-        *,
-        status: str,
-        installed: bool,
-        previous_version: str | None = None,
-        was_running: bool = False,
-        quit_elapsed_seconds: float | None = None,
-        running_in_tray: bool = False,
-        in_job: bool = False,
-        launch_method: str | None = None,
-        verified_registry_version: str | None = None,
-        verified_exe_version: str | None = None,
-        reason: str | None = None,
-        guidance: str | None = None,
-    ) -> tuple[int, dict[str, Any]]:
-        receipt: dict[str, Any] = {
-            "status": status,
-            "installed": installed,
-            "channel": channel,
-            "identity": eff_identity,
-            "previous_version": previous_version,
-            "new_version": new_version,
-            "dirty": dirty,
-            "was_running": was_running,
-            "quit_elapsed_seconds": quit_elapsed_seconds,
-            "running_in_tray": running_in_tray,
-            "inJob": in_job,
-            "launch_method": launch_method,
-            "installer_path": rel_installer,
-            "verified_registry_version": verified_registry_version,
-            "verified_exe_version": verified_exe_version,
-            "reason": reason,
-            "guidance": guidance,
-            "timestamp_utc": utc_iso(deps.clock.utc_now()),
-        }
+    def elapsed_ms(since: float) -> int:
+        return int(round(max(0.0, deps.clock.monotonic() - since) * 1000))
+
+    def finish(exit_code: int, **fields: Any) -> tuple[int, dict[str, Any]]:
+        receipt.update(fields)
+        receipt["elapsedMs"] = elapsed_ms(started)
         atomic_write_json(receipt_path, receipt)
         return exit_code, receipt
 
-    # Guard 0: --install strictly accepts blink-dev channel & identity only (never blink or test identities).
+    def skip(reason: str, guidance: str) -> tuple[int, dict[str, Any]]:
+        return finish(0, skipped=True, reason=reason, guidance=guidance)
+
+    def fail(reason: str, error: str) -> tuple[int, dict[str, Any]]:
+        return finish(1, reason=reason, error=error)
+
+    # Guard 0: --install strictly accepts the blink-dev channel and identity (never blink or test identities).
     if channel != "blink-dev" or eff_identity != "blink-dev":
-        return _finish(
-            1,
-            status="failed",
-            installed=False,
-            reason="invalid_channel_for_install",
-            guidance="--install is strictly restricted to the blink-dev channel and identity.",
+        return fail(
+            "invalid_channel_for_install",
+            "--install is strictly restricted to the blink-dev channel and identity.",
         )
 
     # Guard 1: environment skip flags (BLINK_DEV_AUTO_INSTALL=0 or CI=true).
     if env.get("BLINK_DEV_AUTO_INSTALL", "").strip() == "0":
-        return _finish(
-            0,
-            status="skipped",
-            installed=False,
-            reason="disabled_by_env",
-            guidance="Skipped because BLINK_DEV_AUTO_INSTALL=0.",
-        )
-
+        return skip("disabled_by_env", "Skipped because BLINK_DEV_AUTO_INSTALL=0.")
     if env.get("CI", "").strip().lower() in ("true", "1"):
-        return _finish(
-            0,
-            status="skipped",
-            installed=False,
-            reason="ci_environment",
-            guidance="Skipped because CI is enabled.",
-        )
-
+        return skip("ci_environment", "Skipped because CI is enabled.")
     if eff_platform != "win32":
-        return _finish(
-            0,
-            status="not-run",
-            installed=False,
-            reason="non_windows_platform",
-            guidance=f"Windows-only dev auto-install skipped on {eff_platform}.",
-        )
-
+        return skip("non_windows_platform", f"Windows-only dev auto-install skipped on {eff_platform}.")
     if installer_path is None or not new_version:
-        return _finish(
-            1,
-            status="failed",
-            installed=False,
-            reason="missing_installer",
-            guidance="No blink-dev installer was built or provided.",
-        )
+        return fail("missing_installer", "No blink-dev installer was built or provided.")
 
-    # Step 1: Read ONLY blink-dev Uninstall entry.
+    # Step 1: read ONLY the blink-dev uninstall entry; without one this is the first install.
     existing = deps.read_dev_uninstall_entry()
-    if existing is None or not str(existing.install_location).strip() or str(existing.install_location) == ".":
-        hint = (
-            f"blink-dev is not installed on this machine yet. "
-            f"Run the installer manually once for H-002: {rel_installer}"
-        )
-        return _finish(
-            0,
-            status="skipped",
-            installed=False,
-            previous_version=None,
-            reason="not_installed",
-            guidance=hint,
-        )
+    if existing is not None and str(existing.install_location).strip() not in ("", "."):
+        install_dir = existing.install_location
+        receipt["oldVersion"] = existing.display_version or None
+    else:
+        receipt["firstInstall"] = True
+        local_app_data = env.get("LOCALAPPDATA", "").strip()
+        install_dir = Path(local_app_data) / "Programs" / "blink-dev" if local_app_data else Path("blink-dev")
+    receipt["installLocation"] = str(install_dir)
+    installed_exe = install_dir / "blink-dev.exe"
 
-    previous_version = existing.display_version or None
-    installed_exe = existing.install_location / "blink-dev.exe"
+    # Step 2: an open window means the user is working in BLINK Dev: wait for it to close or hide
+    # to the tray (bounded), then ask the tray instance to save and quit (max 30 s, never force-killed).
+    still_running = deps.is_running("blink-dev")
+    receipt["wasRunning"] = still_running
+    if still_running and deps.is_window_open(installed_exe):
+        receipt["windowOpen"] = True
+        receipt["deferred"] = True
+        defer_start = deps.clock.monotonic()
+        while still_running and deps.is_window_open(installed_exe):
+            waited = deps.clock.monotonic() - defer_start
+            if waited >= defer_timeout_s:
+                receipt["deferMs"] = elapsed_ms(defer_start)
+                return skip(
+                    "window_open",
+                    (
+                        f"The BLINK Dev window stayed open for {int(defer_timeout_s)}s, so this build was not "
+                        "installed. Close the window (or hide it to the tray) and run "
+                        "`python -B scripts/package.py --install` again."
+                    ),
+                )
+            deps.clock.sleep(min(defer_poll_interval_s, defer_timeout_s - waited))
+            still_running = deps.is_running("blink-dev")
+        receipt["deferMs"] = elapsed_ms(defer_start)
 
-    # Step 2: If running, ask existing instance to save & exit via --quit-for-update (max 30s, NEVER force-kill).
-    was_running = deps.is_running("blink-dev")
-    quit_elapsed: float | None = None
-    if was_running:
-        start_t = deps.clock.monotonic()
+    if still_running:
+        quit_start = deps.clock.monotonic()
         quit_res = deps.request_quit_for_update(installed_exe, "blink-dev", quit_timeout_s)
         if quit_res.busy:
-            elapsed = round(max(0.0, deps.clock.monotonic() - start_t), 3)
-            return _finish(
+            return finish(
                 1,
-                status="failed",
-                installed=False,
-                previous_version=previous_version,
-                was_running=True,
-                quit_elapsed_seconds=elapsed,
                 reason="busy",
-                guidance="Running BLINK Dev reported busy; aborted without force-killing.",
+                error="Running BLINK Dev reported busy; aborted without force-killing.",
+                quitMs=elapsed_ms(quit_start),
             )
         if not quit_res.ok:
-            elapsed = round(max(0.0, deps.clock.monotonic() - start_t), 3)
-            return _finish(
+            return finish(
                 1,
-                status="failed",
-                installed=False,
-                previous_version=previous_version,
-                was_running=True,
-                quit_elapsed_seconds=elapsed,
                 reason=quit_res.detail or "quit_request_failed",
-                guidance="Failed to request graceful quit from BLINK Dev; aborted without force-killing.",
+                error="Failed to request graceful quit from BLINK Dev; aborted without force-killing.",
+                quitMs=elapsed_ms(quit_start),
             )
-
         while deps.is_running("blink-dev"):
-            elapsed_now = deps.clock.monotonic() - start_t
-            if elapsed_now >= quit_timeout_s:
-                return _finish(
+            waited = deps.clock.monotonic() - quit_start
+            if waited >= quit_timeout_s:
+                return finish(
                     1,
-                    status="failed",
-                    installed=False,
-                    previous_version=previous_version,
-                    was_running=True,
-                    quit_elapsed_seconds=round(elapsed_now, 3),
                     reason="quit_timeout",
-                    guidance=(
+                    error=(
                         f"BLINK Dev did not exit within {int(quit_timeout_s)}s after --quit-for-update; "
                         "aborted without force-killing."
                     ),
+                    quitMs=elapsed_ms(quit_start),
                 )
-            remaining = quit_timeout_s - elapsed_now
-            deps.clock.sleep(min(poll_interval_s, remaining))
-
-        quit_elapsed = round(max(0.0, deps.clock.monotonic() - start_t), 3)
-        # Brief settle pause after mutex release so Windows finishes unlocking image handles.
+            deps.clock.sleep(min(poll_interval_s, quit_timeout_s - waited))
+        receipt["quitMs"] = elapsed_ms(quit_start)
+        # Brief settle pause after the mutex is released so Windows unlocks the image files.
         deps.clock.sleep(min(0.25, poll_interval_s))
 
-    # Step 3: Silent install + double version verification (HKCU Uninstall DisplayVersion + PE ProductVersion).
+    # Step 3: silent install, then check both the uninstall entry and the installed exe.
     rc = deps.run_installer(installer_path)
     if rc != 0:
-        return _finish(
-            1,
-            status="failed",
-            installed=False,
-            previous_version=previous_version,
-            was_running=was_running,
-            quit_elapsed_seconds=quit_elapsed,
-            reason=f"installer_failed_exit_{rc}",
-            guidance=f"Silent installer exited with non-zero code {rc}.",
-        )
+        return fail(f"installer_failed_exit_{rc}", f"Silent installer exited with non-zero code {rc}.")
 
     post_entry = deps.read_dev_uninstall_entry()
-    reg_version = post_entry.display_version if post_entry is not None else None
-    post_exe = (post_entry.install_location / "blink-dev.exe") if post_entry is not None else installed_exe
-
+    if post_entry is None:
+        return fail("uninstall_entry_missing", "The blink-dev uninstall entry is missing after a silent install.")
+    reg_version = post_entry.display_version
+    receipt["verifiedRegistryVersion"] = reg_version
+    receipt["installLocation"] = str(post_entry.install_location)
+    post_exe = post_entry.install_location / "blink-dev.exe"
     try:
         exe_version = deps.read_exe_product_version(post_exe)
     except Exception as exc:
-        return _finish(
-            1,
-            status="failed",
-            installed=False,
-            previous_version=previous_version,
-            was_running=was_running,
-            quit_elapsed_seconds=quit_elapsed,
-            verified_registry_version=reg_version,
-            verified_exe_version=None,
-            reason="version_read_failed",
-            guidance=f"Could not read ProductVersion from installed blink-dev.exe: {exc}",
-        )
-
+        return fail("version_read_failed", f"Could not read ProductVersion from installed blink-dev.exe: {exc}")
+    receipt["verifiedExeVersion"] = exe_version
     if reg_version != new_version or exe_version != new_version:
-        return _finish(
-            1,
-            status="failed",
-            installed=False,
-            previous_version=previous_version,
-            was_running=was_running,
-            quit_elapsed_seconds=quit_elapsed,
-            verified_registry_version=reg_version,
-            verified_exe_version=exe_version,
-            reason="version_mismatch",
-            guidance=(
-                f"Version mismatch after install: expected={new_version!r}, "
-                f"registry={reg_version!r}, exe={exe_version!r}."
-            ),
+        return fail(
+            "version_mismatch",
+            f"Version mismatch after install: expected={new_version!r}, registry={reg_version!r}, exe={exe_version!r}.",
         )
+    receipt["installed"] = True
 
-    # Step 4: Always launch installed blink-dev.exe --background (escaping Job Object if present).
+    # Step 4: always start the installed blink-dev.exe --background, leaving this command's job object if any.
     launch_args = ["--background"]
-    caller_in_job = deps.is_in_job_object()
-    launch_method: str
-    child_in_job: bool
     guidance: str | None = None
-    launched: bool
-
-    if caller_in_job:
+    if deps.is_in_job_object():
         if deps.launch_via_explorer_shell(post_exe, launch_args):
-            launched = True
-            launch_method = "explorer_shell"
-            child_in_job = False
+            launched, launch_method, child_in_job = True, "explorer_shell", False
         elif deps.launch_with_breakaway(post_exe, launch_args):
-            launched = True
-            launch_method = "breakaway"
-            child_in_job = False
+            launched, launch_method, child_in_job = True, "breakaway", False
         else:
             launched = deps.launch_direct(post_exe, launch_args)
-            launch_method = "direct_in_job"
-            child_in_job = True
+            launch_method, child_in_job = "direct_in_job", True
             guidance = (
                 "BLINK Dev was launched inside the current job object (inJob=true) and may exit "
                 "when this command session ends. Please open BLINK Dev once from the Start Menu."
             )
     else:
         launched = deps.launch_direct(post_exe, launch_args)
-        launch_method = "direct"
-        child_in_job = False
+        launch_method, child_in_job = "direct", False
 
     if not launched:
-        return _finish(
+        return finish(
             1,
-            status="failed",
-            installed=True,
-            previous_version=previous_version,
-            was_running=was_running,
-            quit_elapsed_seconds=quit_elapsed,
-            running_in_tray=False,
-            in_job=child_in_job,
-            launch_method=launch_method,
-            verified_registry_version=reg_version,
-            verified_exe_version=exe_version,
             reason="launch_failed",
-            guidance="Installed successfully, but failed to launch blink-dev.exe --background.",
+            error="Installed successfully, but failed to launch blink-dev.exe --background.",
+            launchMethod=launch_method,
+            inJob=child_in_job,
         )
 
     running_in_tray = deps.verify_running_in_tray("blink-dev", TRAY_VERIFY_TIMEOUT_SECONDS)
-
-    # Step 5: Write final install receipt.
-    return _finish(
+    # Step 5: write the final receipt.
+    return finish(
         0,
-        status="installed",
-        installed=True,
-        previous_version=previous_version,
-        was_running=was_running,
-        quit_elapsed_seconds=quit_elapsed,
-        running_in_tray=running_in_tray,
-        in_job=child_in_job,
-        launch_method=launch_method,
-        verified_registry_version=reg_version,
-        verified_exe_version=exe_version,
-        reason=None,
+        relaunched=True,
+        background=True,
+        launchMethod=launch_method,
+        runningInTray=running_in_tray,
+        inJob=child_in_job,
         guidance=guidance,
     )
 
@@ -1636,11 +1787,11 @@ def _resolve_uninstaller_path(entry: UninstallEntry | None, install_dir: Path) -
                     candidates.append(Path(cleaned[1:end_quote]))
             else:
                 candidates.append(Path(cleaned.split()[0]))
-    candidates.append(install_dir / "unins000.exe")
+    candidates.append(install_dir / "Uninstall.exe")
     for cand in candidates:
         if cand.is_file():
             return cand
-    raise PackageError("Uninstaller executable unins000.exe not found for blink-dev-test")
+    raise PackageError("Uninstaller executable Uninstall.exe not found for blink-dev-test")
 
 
 def run_rehearsal(
@@ -1719,7 +1870,7 @@ def run_rehearsal(
         # Step R1: Silent install A into isolated temp dir without desktop shortcut.
         rc_a = run_silent_installer(
             pkg_a.installer_path,
-            extra_args=[f"/DIR={install_dir}", "/MERGETASKS=!desktopicon"],
+            extra_args=["/NODESKTOP", f"/D={install_dir}"],
         )
         if rc_a != 0:
             raise PackageError(f"Rehearsal installer A failed with exit code {rc_a}")
@@ -1814,7 +1965,7 @@ def run_rehearsal(
 
         rc_b = run_silent_installer(
             pkg_b.installer_path,
-            extra_args=[f"/DIR={install_dir}", "/MERGETASKS=!desktopicon"],
+            extra_args=["/NODESKTOP", f"/D={install_dir}"],
         )
         if rc_b != 0:
             raise PackageError(f"Rehearsal installer B failed with exit code {rc_b}")
@@ -1879,7 +2030,7 @@ def run_rehearsal(
         time.sleep(0.25)
         unins_exe = _resolve_uninstaller_path(entry_b, install_dir)
         unins_proc = subprocess.run(
-            [str(unins_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            [str(unins_exe), "/S"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1891,7 +2042,8 @@ def run_rehearsal(
             raise PackageError(f"Silent uninstaller exited with {unins_proc.returncode}")
         installed_for_cleanup = False
 
-        # Wait briefly for Inno Setup temp uninstaller child to finish removing install_dir & reg key.
+        # The NSIS uninstaller re-runs itself from a temp copy and returns at once: wait for that
+        # copy to remove the install dir and the uninstall entry.
         wait_deadline = time.monotonic() + 8.0
         while time.monotonic() < wait_deadline:
             reg_still = read_uninstall_entry_for_identity(identity) is not None
@@ -1947,7 +2099,7 @@ def run_rehearsal(
                 cur_entry = read_uninstall_entry_for_identity(identity)
                 unins_fallback = _resolve_uninstaller_path(cur_entry, install_dir)
                 subprocess.run(
-                    [str(unins_fallback), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                    [str(unins_fallback), "/S"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -2023,7 +2175,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Build blink-dev and run engineering.md 2.2 5-step local dev auto-install.",
+        help="Build blink-dev and install it on this machine (first install too; engineering.md 2.2).",
     )
     parser.add_argument(
         "--rehearsal",
@@ -2070,7 +2222,7 @@ def main(argv: list[str] | None = None) -> int:
                 deps=deps,
                 receipt_path=receipt_path,
             )
-            print(f"FAIL: {receipt.get('guidance') or receipt.get('reason')}", file=sys.stderr)
+            print(f"FAIL: {receipt.get('error') or receipt.get('reason')}", file=sys.stderr)
             return rc
 
         # Fast-path env skip (BLINK_DEV_AUTO_INSTALL=0 / CI=true) or non-Windows without requiring build tools.
@@ -2088,7 +2240,7 @@ def main(argv: list[str] | None = None) -> int:
                 deps=deps,
                 receipt_path=receipt_path,
             )
-            print(f"{receipt['status']}: {receipt.get('guidance') or receipt.get('reason')}")
+            print(f"skipped: {receipt.get('guidance') or receipt.get('reason')}")
             return rc
 
         try:
@@ -2101,24 +2253,13 @@ def main(argv: list[str] | None = None) -> int:
             atomic_write_json(
                 receipt_path,
                 {
-                    "status": "failed",
-                    "installed": False,
-                    "channel": "blink-dev",
                     "identity": "blink-dev",
-                    "previous_version": None,
-                    "new_version": None,
-                    "dirty": False,
-                    "was_running": False,
-                    "quit_elapsed_seconds": None,
-                    "running_in_tray": False,
-                    "inJob": False,
-                    "launch_method": None,
-                    "installer_path": None,
-                    "verified_registry_version": None,
-                    "verified_exe_version": None,
+                    "installed": False,
+                    "skipped": False,
                     "reason": "build_failed",
-                    "guidance": str(exc),
-                    "timestamp_utc": utc_iso(),
+                    "error": str(exc),
+                    "newVersion": None,
+                    "at": utc_iso(),
                 },
             )
             print(f"FAIL: {exc}", file=sys.stderr)
@@ -2134,16 +2275,17 @@ def main(argv: list[str] | None = None) -> int:
             receipt_path=receipt_path,
         )
         if rc != 0:
-            print(f"FAIL: dev auto-install failed ({receipt.get('reason')}): {receipt.get('guidance')}", file=sys.stderr)
+            print(f"FAIL: dev auto-install failed ({receipt.get('reason')}): {receipt.get('error')}", file=sys.stderr)
+        elif receipt["skipped"]:
+            print(f"SKIPPED ({receipt.get('reason')}): {receipt.get('guidance')}")
         else:
-            status = receipt["status"]
-            msg = receipt.get("guidance") or (
-                f"Installed blink-dev {receipt['new_version']} "
-                f"(was_running={receipt['was_running']}, running_in_tray={receipt['running_in_tray']}, "
-                f"inJob={receipt['inJob']}, launch={receipt['launch_method']})."
+            print(
+                f"INSTALLED: blink-dev {receipt['newVersion']} "
+                f"(firstInstall={receipt['firstInstall']}, wasRunning={receipt['wasRunning']}, "
+                f"deferred={receipt['deferred']}, runningInTray={receipt['runningInTray']}, "
+                f"inJob={receipt['inJob']}, launch={receipt['launchMethod']})."
             )
-            print(f"{status.upper()}: {msg}")
-            if receipt.get("inJob") and receipt.get("guidance"):
+            if receipt.get("guidance"):
                 print(f"NOTE: {receipt['guidance']}")
         return rc
 

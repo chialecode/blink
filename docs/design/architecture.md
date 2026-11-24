@@ -86,7 +86,7 @@ blink/
         │   ├── ui/                    # 自适应外壳、BFM v1 编辑器、Surface 1 原生流与阅读器、Surface 2 沙盒全页视图、pdfrx 伴读、设置（待实现）
         │   ├── application/           # Riverpod 状态控制器、CJK IME 保护与自动补全、双表面路由协调（待实现）
         │   └── platform/              # 编译期信息、双通道路径解析、原子写入、桌面设置、单实例锁、控制管道、托盘与生命周期（Windows 已实现，其余平台与密钥仓待实现）
-        ├── windows/ macos/ linux/ android/ ios/   # windows/packaging/blink.iss 为 Inno Setup 7.1.x 按用户安装脚本（已实现）
+        ├── windows/ macos/ linux/ android/ ios/   # windows/packaging/blink.nsi 为 NSIS 3.13 按用户安装脚本（已实现，DEC-029）
         └── test/                      # 单元、组件、Win32 IPC 与无焦点生命周期测试（已实现）
 ```
 
@@ -150,13 +150,13 @@ blink/
 
 安装身份在构建期经 `--dart-define=BLINK_IDENTITY=<身份>` 与 `BLINK_CHANNEL`、`BLINK_VERSION`、`BLINK_GIT_SHA` 一并注入；`flutter run` 等源码构建不带安装身份，不注册互斥量与控制管道，可与已安装的 `blink-dev` 并存。测试身份只用于门禁安装演练，产物不分发。
 
-| 安装身份 | 通道 | AppId / 卸载键（`HKCU\...\Uninstall\<AppId>_is1`） | 可执行文件 | 默认安装目录 | 单实例互斥量 / 控制管道 | 数据根 |
+| 安装身份 | 通道 | 应用标识 / 卸载键（`HKCU\...\Uninstall\<应用标识>`） | 可执行文件 | 默认安装目录 | 单实例互斥量 / 控制管道 | 数据根 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `blink` | 正式 | `io.github.chialecode.blink` | `blink.exe` | `%LOCALAPPDATA%\Programs\blink` | `blink-instance` / `\\.\pipe\blink-control` | `%LOCALAPPDATA%\blink` |
 | `blink-dev` | 开发 | `io.github.chialecode.blink-dev` | `blink-dev.exe` | `%LOCALAPPDATA%\Programs\blink-dev` | `blink-dev-instance` / `\\.\pipe\blink-dev-control` | `%LOCALAPPDATA%\blink-dev` |
-| `blink-test` / `blink-dev-test` | 门禁演练 | `io.github.chialecode.blink-test` / `io.github.chialecode.blink-dev-test` | `blink-test.exe` / `blink-dev-test.exe` | 演练临时目录（安装器 `/DIR=`） | `<身份>-instance` / `\\.\pipe\<身份>-control` | 演练临时目录（`BLINK_DATA_DIR`） |
+| `blink-test` / `blink-dev-test` | 门禁演练 | `io.github.chialecode.blink-test` / `io.github.chialecode.blink-dev-test` | `blink-test.exe` / `blink-dev-test.exe` | 演练临时目录（安装器 `/D=`） | `<身份>-instance` / `\\.\pipe\<身份>-control` | 演练临时目录（`BLINK_DATA_DIR`） |
 
-- **单实例**：已安装身份启动时创建命名互斥量 `<身份>-instance`（同时是安装器的 `AppMutex`）。第二个进程根据启动参数决定行为后退出：无参数时经控制管道转交 `focus`（转交前以 `GetNamedPipeServerProcessId` + `AllowSetForegroundWindow` 把前台权限只授予该管道服务端进程，使托盘常驻的主实例能真正前置窗口，安静模式不调用；成功退出码 `0`，管道或协议错误退出码 `1`）；带 `--background` 时直接以退出码 `0` 退出、不聚焦已有窗口；带 `--quit-for-update` 时，若无运行中实例则直接以 `0` 退出，有运行中实例则经控制管道请求保存后退出（接受 `{"ok": true}` 退出码 `0`，对端忙碌 `{"ok": false, "reason": "busy"}` 退出码 `2`，其他管道或协议错误退出码 `1`，并在存在附加标准输出时尽力写出 JSON 应答行）。
+- **单实例**：已安装身份启动时创建命名互斥量 `<身份>-instance`（安装器与卸载器据此发现运行中的实例，先请其 `--quit-for-update`，见[工程规则 §2.2](../dev-rules/engineering.md#packaging)）。第二个进程根据启动参数决定行为后退出：无参数时经控制管道转交 `focus`（转交前以 `GetNamedPipeServerProcessId` + `AllowSetForegroundWindow` 把前台权限只授予该管道服务端进程，使托盘常驻的主实例能真正前置窗口，安静模式不调用；成功退出码 `0`，管道或协议错误退出码 `1`）；带 `--background` 时直接以退出码 `0` 退出、不聚焦已有窗口；带 `--quit-for-update` 时，若无运行中实例则直接以 `0` 退出，有运行中实例则经控制管道请求保存后退出（接受 `{"ok": true}` 退出码 `0`，对端忙碌 `{"ok": false, "reason": "busy"}` 退出码 `2`，其他管道或协议错误退出码 `1`，并在存在附加标准输出时尽力写出 JSON 应答行）。
 - **控制管道**：`\\.\pipe\<身份>-control` 使用 `FILE_FLAG_FIRST_PIPE_INSTANCE`（`nMaxInstances = 1`）与 `PIPE_REJECT_REMOTE_CLIENTS`，安全描述符仅授予当前用户受保护 DACL（`D:P(A;;GA;;;<当前用户SID>)`）；单行上限 `4096` 字节 UTF-8，每个连接一行 JSON 请求 `{"cmd": "focus" | "quit-for-update" | "ping"}`，一行应答 `{"ok": true}` 或 `{"ok": false, "reason": "busy" | "unknown_command" | "invalid_request"}`（超长行、非法 UTF-8、畸形 JSON 或缺失 `cmd` 均返回 `invalid_request` 而不崩溃）。管道服务在独立 Isolate 中运行，命令交给 UI Isolate 执行，60 秒内无应答回执 `busy`；取消重叠 I/O 时统一执行 `CancelIoEx` + `GetOverlappedResult(..., true)` 排空后再释放或复用缓冲区。
 - **托盘与关闭**：原生窗口启动保持隐藏（零闪烁、不抢焦点），交互运行期间始终显示托盘图标（开发版图标带 `DEV` 徽标），左键或右键菜单“打开”恢复并聚焦主窗口，“退出”走保存后退出序列；关闭按钮默认隐藏到托盘，可在设置中改为直接退出（`<数据根>\settings\desktop.json`，原子写入；损坏时改名为 `desktop.json.corrupt-<UTC时间戳>` 保留现场并回退默认）。资源管理器重启时由原生窗口拦截 `TaskbarCreated` 并经 MethodChannel `io.github.chialecode.blink/desktop_shell` 通知 Dart 重新注册托盘图标。
 - **`--background`**：只显示托盘图标，不创建任务栏项、不打开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏。

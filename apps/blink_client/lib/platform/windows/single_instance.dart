@@ -6,8 +6,9 @@ import 'package:win32/win32.dart';
 
 import 'package:blink_client/platform/windows/win32_bindings.dart';
 
-/// Named Win32 mutex single-instance lock (`<identity>-instance`), matching
-/// Inno Setup `AppMutex` (architecture §4.3).
+/// Named Win32 mutex single-instance lock (`<identity>-instance`); the NSIS
+/// installer and uninstaller probe it to ask a running copy to quit for the
+/// update (architecture §4.3).
 ///
 /// Source builds (`BLINK_IDENTITY == ""`) must NEVER call this class.
 class SingleInstanceLock {
