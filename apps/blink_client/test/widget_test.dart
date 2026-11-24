@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_app.dart';
+import 'package:blink_client/app/blink_brand_mark.dart';
+import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/cli_args.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
@@ -104,6 +106,77 @@ void main() {
         expect(find.text('a1b2c3d'), findsOneWidget);
         expect(find.text(tempDir.path), findsOneWidget);
 
+        // Brand mark, unified brand blue accent, and dev channel pill styling.
+        final brandMarkFinder = find.byKey(const Key('brand_mark'));
+        expect(brandMarkFinder, findsOneWidget);
+        expect(tester.getSize(brandMarkFinder), const Size(24, 24));
+        expect(
+          tester.widget<BlinkBrandMark>(brandMarkFinder).size,
+          equals(24.0),
+        );
+
+        final materialApp = tester.widget<MaterialApp>(
+          find.byType(MaterialApp),
+        );
+        expect(materialApp.themeMode, ThemeMode.system);
+        expect(
+          materialApp.theme?.colorScheme.primary,
+          BlinkColorTokens.day.accentPrimary,
+        );
+        expect(
+          materialApp.darkTheme?.colorScheme.primary,
+          BlinkColorTokens.dark.accentPrimary,
+        );
+
+        final devBadgeText = tester.widget<Text>(find.text('DEV 开发通道'));
+        expect(devBadgeText.style?.color, BlinkBrandColors.devPillText);
+        final devBadgeContainer = tester.widget<Container>(
+          find.ancestor(
+            of: find.text('DEV 开发通道'),
+            matching: find.byType(Container),
+          ),
+        );
+        expect(
+          (devBadgeContainer.decoration as BoxDecoration).color,
+          BlinkBrandColors.devPill,
+        );
+
+        // Typography weights, tabular figures, and monospace stacks.
+        expect(
+          tester.widget<Text>(find.text('BLINK Dev')).style?.fontWeight,
+          FontWeight.w700,
+        );
+        expect(
+          tester.widget<Text>(find.text('设置')).style?.fontWeight,
+          FontWeight.w600,
+        );
+        expect(
+          tester.widget<Text>(find.text('关于')).style?.fontWeight,
+          FontWeight.w600,
+        );
+
+        final versionText = tester.widget<SelectableText>(
+          find.byKey(const Key('about_version')),
+        );
+        expect(
+          versionText.style?.fontFeatures,
+          contains(const FontFeature.tabularFigures()),
+        );
+
+        final shaText = tester.widget<SelectableText>(
+          find.byKey(const Key('about_git_sha')),
+        );
+        expect(shaText.style?.fontFamily, BlinkTypography.monoFontFamily);
+        expect(
+          shaText.style?.fontFeatures,
+          contains(const FontFeature.tabularFigures()),
+        );
+
+        final dataRootText = tester.widget<SelectableText>(
+          find.byKey(const Key('about_data_root')),
+        );
+        expect(dataRootText.style?.fontFamily, BlinkTypography.monoFontFamily);
+
         // Default close behavior is hide-to-tray.
         expect(
           controller.settings.closeButtonBehavior,
@@ -166,6 +239,72 @@ void main() {
           find.byKey(const Key('corrupt_settings_notice')),
           findsOneWidget,
         );
+        expect(find.byKey(const Key('brand_mark')), findsOneWidget);
+
+        final prodBadgeText = tester.widget<Text>(find.text('正式通道'));
+        expect(prodBadgeText.style?.color, BlinkColorTokens.day.accentPrimary);
+        final prodBadgeContainer = tester.widget<Container>(
+          find.ancestor(
+            of: find.text('正式通道'),
+            matching: find.byType(Container),
+          ),
+        );
+        expect(
+          (prodBadgeContainer.decoration as BoxDecoration).color,
+          BlinkColorTokens.day.accentSubtle,
+        );
+
+        final corruptNotice = tester.widget<Text>(
+          find.byKey(const Key('corrupt_settings_notice')),
+        );
+        expect(corruptNotice.style?.color, BlinkColorTokens.day.statusWarn);
+      },
+    );
+
+    testWidgets(
+      'adapts to system dark mode without overflow at 760x560 and 960x640',
+      (tester) async {
+        tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+        addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final paths = BlinkPaths(dataRoot: tempDir);
+        paths.desktopSettingsFile.parent.createSync(recursive: true);
+        paths.desktopSettingsFile.writeAsStringSync('{invalid');
+
+        final buildInfo = BlinkBuildInfo.normalized(
+          channel: 'blink-dev',
+          identity: 'blink-dev',
+          version: '0.1.0-dev.202611240000',
+          gitSha: 'deadbeefcafe',
+        );
+        final store = DesktopSettingsStore(file: paths.desktopSettingsFile);
+        final controller = DesktopLifecycleController(
+          buildInfo: buildInfo,
+          paths: paths,
+          settingsStore: store,
+          windowAdapter: _NoopWindowAdapter(),
+          trayAdapter: _NoopTrayAdapter(),
+        );
+        await controller.initializeStartup(
+          const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+        );
+
+        for (final viewport in const <Size>[Size(760, 560), Size(960, 640)]) {
+          tester.view.physicalSize = viewport;
+          await tester.pumpWidget(BlinkApp(controller: controller));
+          await tester.pumpAndSettle();
+
+          expect(tester.takeException(), isNull);
+          final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
+          expect(scaffold.backgroundColor, BlinkColorTokens.dark.canvas);
+
+          final corruptNotice = tester.widget<Text>(
+            find.byKey(const Key('corrupt_settings_notice')),
+          );
+          expect(corruptNotice.style?.color, BlinkColorTokens.dark.statusWarn);
+        }
       },
     );
   });
