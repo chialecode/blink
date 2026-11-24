@@ -94,7 +94,7 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 
 每周（或开始一批较大改动前）做一次，结果写在维护 PR 里：
 
-1. **Dependabot**：pub 依赖的版本更新 PR（[.github/dependabot.yml](../../.github/dependabot.yml)）CI 通过后按低风险合并，改到构建、打包或运行时主版本的按高风险处理；GitHub Actions 的更新 PR 改的是 `.github/workflows/`，按[高风险](#high-risk)加 `risk:high` 等用户合并。**安全修复随时尽快处理**，不等每周。
+1. **Dependabot**：pub 依赖的版本更新 PR（[.github/dependabot.yml](../../.github/dependabot.yml)，所有 pub 更新合在一个 PR）只含小版本时 CI 通过后按低风险合并，含任一主版本变化就整个 PR 按高风险处理；GitHub Actions 的更新 PR 改的是 `.github/workflows/`，按[高风险](#high-risk)加 `risk:high` 等用户合并。**安全修复随时尽快处理**，不等每周，但风险分级不变（Actions 的安全修复同样等用户合并）。
 2. **7 天冷却**：用 `python -B scripts/deps.py` 检查 Flutter/Dart 与 GitHub Actions 直接依赖，默认升级发布满 7 天的稳定兼容版本，不满 7 天的只记录；升级后门禁失败就回退并写明原因。
 3. **漏洞审计**：业务代码实际调用链命中的漏洞必须修复；上游暂无补丁且不可达的，登记例外理由与复查日期 `reviewBy`（[scripts/deps-exceptions.json](../../scripts/deps-exceptions.json)）。联网不可用时记 `not-run`。
 4. **生成物**：`dist/<通道>/` 与 `artifacts/<类别>/` 每类只保留最新一份；严禁 `git clean -fdx` 或跨目录通配删除，严禁触碰 `.local/`、`.env.local` 与用户数据目录。
