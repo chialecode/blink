@@ -12,7 +12,7 @@ Windows 安装包由 Inno Setup `7.1.1` 换成 NSIS `3.13`（用户决定见 [DE
 
 | 维度 | 结论 |
 | --- | --- |
-| 组件与来源 | NSIS（Nullsoft Scriptable Install System）。官方网站 `https://nsis.sourceforge.io/`，发布文件在 SourceForge 项目 `nsis` 的 `NSIS 3/3.13/` 目录。所评估版本为 `3.13`，取官方便携包 `nsis-3.13.zip`，SHA-256 `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8`（与 SourceForge 页面给出的 MD5 一致）。发布日期 `unknown`：本次只核对了文件本身，没有找到可引用的官方发布日期 |
+| 组件与来源 | NSIS（Nullsoft Scriptable Install System）。官方网站 `https://nsis.sourceforge.io/`，发布文件在 SourceForge 项目 `nsis` 的 `NSIS 3/3.13/` 目录。所评估版本为 `3.13`，取官方便携包 `nsis-3.13.zip`，SHA-256 `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8`（这份文件的 MD5 与 SourceForge 页面给出的一致，SHA-256 由同一份文件算出）。发布日期 `unknown`：本次只核对了文件本身，没有找到可引用的官方发布日期 |
 | 版本与维护状态 | 包内 `COPYING` 的版权年份写到 2026，`3.13` 是近期版本；仓库是否活跃、缺陷修复节奏没有逐项查证，记为 `unknown` |
 | 许可证 | 包内 `COPYING`：NSIS 源码、插件、头文件与安装器存根为 zlib/libpng 许可；zlib 压缩模块为 zlib/libpng；bzip2 模块为 bzip2 许可；LZMA 模块为 CPL-1.0，附“链接到它的代码不受 CPL 约束”的特别例外，但模块本身仍是 CPL。安装包内嵌的是存根加所选压缩模块的解压代码 |
 | 五端/中文/离线适配 | 只用于 Windows 桌面端安装包，其他四端不受影响；中文界面用自带的 `SimpChinese` 语言文件，脚本以 UTF-8 编译；构建在首次下载后离线可用（缓存在 Git 忽略的 `.tools/nsis-3.13/`） |

@@ -73,7 +73,7 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 **安装包**（[DEC-029](../decisions.md#dec-029)）：`apps/blink_client/windows/packaging/blink.nsi` 由 `scripts/package.py` 用 NSIS `3.13` 编译，按用户安装（不需要管理员），中文界面，用 zlib 压缩（选型与许可证见[NSIS 安装器选型记录](../research/2026-11-24-nsis-installer.md)）。
 
 - **位置与卸载项**：默认装到 `%LOCALAPPDATA%\Programs\<身份>`；卸载项写在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<应用标识>`（如 `io.github.chialecode.blink-dev`），含 `DisplayName`、`DisplayVersion`、`DisplayIcon`、`Publisher`、`InstallLocation`、`UninstallString`、`QuietUninstallString`、`EstimatedSize`、`NoModify`、`NoRepair`。
-- **目录**：首次交互安装可选目录；已安装时不再显示目录页，更新装回卸载项里的 `InstallLocation`。`/D=` 指向另一个目录时先完整卸载原目录里的旧副本再装到新目录，始终只有一份安装与一个卸载项。目录里已有不属于本身份的 `Uninstall.exe`（别的程序或另一通道）时拒绝安装：交互安装留在目录页提示换目录，静默安装以退出码 `7` 结束，不运行也不覆盖那个卸载程序。
+- **目录**：首次交互安装可选目录；已安装时不再显示目录页，更新装回卸载项里的 `InstallLocation`。`/D=` 指向另一个目录时先完整卸载原目录里的旧副本再装到新目录，始终只有一份安装与一个卸载项。目录里已有不属于本身份的 `Uninstall.exe`（别的程序或另一通道；本身份的副本丢了卸载项但 `<身份>.exe` 还在时照常原地更新）时拒绝安装：交互安装留在目录页提示换目录，静默安装以退出码 `7` 结束，不运行也不覆盖那个卸载程序。
 - **命令行**：`/S` 静默；`/D=<目录>` 指定目录（放在最后、不加引号，路径有空格也不加；`package.py` 因此拼命令行字符串而不是参数列表）；`/RELAUNCH` 静默更新完成后启动 BLINK；`/NODESKTOP` 让静默首次安装不建桌面快捷方式（安装演练用）。
 - **快捷方式**：开始菜单快捷方式每次安装都建；桌面快捷方式在交互安装时由完成页的勾选框决定（默认不勾），静默首次安装时自动建，静默覆盖安装不增不删。
 - **运行中的实例**：安装器与卸载器发现 `<身份>-instance` 互斥量时，调用已安装的 `<身份>.exe --quit-for-update` 请其保存后退出，最多等 30 秒；忙碌、超时或无法请求（请求没送达且它仍在运行）时放弃并以退出码 `3`（忙碌）、`4`（超时）、`5`（无法请求）结束，从不强杀。交互安装会先询问。
@@ -84,7 +84,7 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev` 的 `InstallLocation` 与 `DisplayVersion`；没有卸载项就是首次安装，同样静默完成（装到默认目录）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
 2. **窗口开着时推迟**：`blink-dev` 在运行且已安装的 `blink-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时，说明用户正在使用，每 2 秒检查一次，等窗口关闭或隐藏到托盘；最多等 10 分钟，仍开着就跳过这次安装（跳过不算失败），回执记 `reason=window_open` 并提示关窗后重新运行。
 3. **请托盘中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
-4. **静默安装并核对**：以 `/S` 安装（安装器 10 分钟仍未结束按失败记 `installer_failed_exit_-1`），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
+4. **静默安装并核对**：以 `/S` 安装（安装器 10 分钟仍未结束时结束安装器进程并按失败记 `installer_failed_exit_-1`，这时安装目录可能只复制了一部分，重新运行即可），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
 5. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
 6. **回执**：写 `artifacts/package/install-dev.json`，字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `dirty`、`installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`launchMethod`、`runningInTray`、`guidance`；构建失败时也写全部字段（`reason=build_failed`）。窗口检测按已安装的 `blink-dev.exe` 路径匹配，从构建目录直接运行的 `blink_client.exe` 不算。安装失败以非零退出；跳过不算失败。判断逻辑由注入假卸载项、假进程、假窗口与假安装器的单元测试覆盖：未安装（自动首次安装）、未运行、窗口开着（推迟后安装）、窗口一直开着（跳过）、托盘中运行（退出后装并重开）、30 秒不退出、`busy`、安装失败、安装后卸载项缺失、版本不符、仍在作业对象里、正式版与测试身份不受影响。
 

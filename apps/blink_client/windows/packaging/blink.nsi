@@ -213,6 +213,12 @@ Function BlinkFolderTaken
     ReadRegStr $0 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
     ${If} $0 != $INSTDIR
       StrCpy $1 "1"
+      ; Our own copy whose uninstall entry is gone (an interrupted install, a
+      ; registry cleaner) is updated in place instead.
+      ${If} $0 == ""
+      ${AndIf} ${FileExists} "$INSTDIR\${BLINK_EXE}"
+        StrCpy $1 "0"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
   Exch $1
@@ -255,30 +261,32 @@ Section "Install"
 
   StrCpy $FirstInstall "1"
   ReadRegStr $0 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
-  ${If} $0 != ""
-    ${If} $0 == $INSTDIR
-      ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
-        StrCpy $FirstInstall "0"
-        ; The installed version's uninstaller removes exactly its own files
-        ; (/UPDATE keeps the shortcuts and the uninstall entry), so files this
-        ; version no longer ships do not linger. _?= runs it in place and waits.
-        ClearErrors
-        ExecWait '"$INSTDIR\Uninstall.exe" /S /UPDATE _?=$INSTDIR'
-        ${If} ${Errors}
-          DetailPrint "旧版本的卸载程序没能运行，旧版本独有的文件可能留在 $INSTDIR。"
-        ${EndIf}
-      ${EndIf}
-    ${ElseIf} ${FileExists} "$0\Uninstall.exe"
-      ; Installed in another folder (a different /D=): uninstall that copy
-      ; completely first, so one copy and one uninstall entry remain.
+  ${If} $0 == ""
+  ${OrIf} $0 == $INSTDIR
+    ; Installed here (or our own copy here lost its entry; the folder check refused anything else).
+    ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
+      StrCpy $FirstInstall "0"
+      ; The installed version's uninstaller removes exactly its own files
+      ; (/UPDATE keeps the shortcuts and the uninstall entry), so files this
+      ; version no longer ships do not linger. _?= runs it in place and waits.
       ClearErrors
-      ExecWait '"$0\Uninstall.exe" /S _?=$0'
+      ExecWait '"$INSTDIR\Uninstall.exe" /S /UPDATE _?=$INSTDIR'
       ${If} ${Errors}
-        DetailPrint "没能卸载 $0 里的旧副本。"
-      ${Else}
-        Delete "$0\Uninstall.exe"
-        RMDir "$0"
+        DetailPrint "旧版本的卸载程序没能运行，旧版本独有的文件可能留在 $INSTDIR。"
       ${EndIf}
+    ${EndIf}
+  ${ElseIf} ${FileExists} "$0\Uninstall.exe"
+    ; Installed in another folder (a different /D=): uninstall that copy
+    ; completely first, so one copy and one uninstall entry remain.
+    ClearErrors
+    ExecWait '"$0\Uninstall.exe" /S _?=$0' $1
+    ${If} ${Errors}
+    ${OrIf} $1 <> 0
+      ; Keep its uninstaller: the old copy is still there and can be removed later.
+      DetailPrint "没能卸载 $0 里的旧副本。"
+    ${Else}
+      Delete "$0\Uninstall.exe"
+      RMDir "$0"
     ${EndIf}
   ${EndIf}
 
