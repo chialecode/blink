@@ -66,12 +66,13 @@
 
 Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹；`<BLINK_VAULT_DIR>` 内严禁存放任何明文凭据与 `ipc.json`；所有非数据库状态文件均采用“同目录临时文件 + `flush` + 原子重命名”写入。
 
+<a id="packaging"></a>
 <a id="dev-install"></a>
 ### 2.2 开发版自动安装到本机托盘（M2+ Windows 桌面端生效）
 
-每当需要用户做 `H-*` 实机检查时（B 交付整个阶段、A 审查修复后、按用户反馈修复后），交接 Agent 自动执行 `python scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
+每次合并进 `main` 后（本机拉取 `main` 后）以及需要用户实机检查前，Agent 自动执行 `python -B scripts/package.py --install`（仅做自动验证的构建不带 `--install`；设 `BLINK_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过）：
 
-1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（[H-002](../../USER-ACTIONS.md#h-002)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
+1. **只碰开发版**：读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.blink-dev_is1` 的 `InstallLocation` 与 `DisplayVersion`；未安装则跳过，并提示首次手动运行 `dist/blink-dev/` 下的安装包（[H-002](https://github.com/chialecode/blink/issues/10)）。只接受 `blink-dev` 通道产物，绝不读写正式版 `blink` 与测试身份 `blink-test` / `blink-dev-test` 的安装。
 2. **请运行中的实例保存后退出**：用已安装的 `blink-dev.exe --quit-for-update` 启动第二个实例，经单实例控制管道 `\\.\pipe\blink-dev-control`（只接受本机同一用户、拒绝远程客户端）把请求转给运行中的实例；实例走与托盘“退出”相同的生命周期序列（后续阶段再扩展为刷盘离线队列、末次镜像写出与 `PRAGMA wal_checkpoint(TRUNCATE)`），记下“为本机更新而退出”后退出，忙碌时回执 `busy`。工具最多等 30 秒，未退出即放弃本次安装、不强杀，并说明原因。
 3. **静默安装并核对**：以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` 覆盖安装（Inno Setup `AppMutex=blink-dev-instance` 兜底等待），从卸载项与已安装可执行文件的版本资源双重核对版本等于新包。
 4. **总是在托盘后台拉起**：安装成功后，不论原先是否在运行、窗口是否打开，**总是以 `--background` 启动 `blink-dev`**（只显示托盘图标、不开主窗口、不抢焦点；托盘不可用时回退为最小化到任务栏）。工具自身在作业对象里时（Agent 命令沙箱结束会连带结束作业内进程），先经桌面外壳 `explorer.exe`（`Shell.Application.ShellExecute`）启动，使其成为外壳的子进程；外壳不可用再请求 `CREATE_BREAKAWAY_FROM_JOB`；都不行则照常启动，在回执记 `inJob=true` 并提示从开始菜单打开一次。
@@ -82,7 +83,7 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 
 - **两级门禁（Two-Tier Gate）**：
   1. **快速门禁（Quick Gate，日常编码与局部修复，单轮约 5～10 分钟）**：验证受改动包的 `dart format`、`dart analyze --fatal-infos`、相关 `dart test` / `flutter test`、`python scripts/check_docs.py` 与 `git diff --check HEAD`。只修改文档时仅需运行 `python scripts/check_docs.py` 与 `git diff --check HEAD`；改动门禁脚本时追加 `python -B scripts/test_check_docs.py`。
-  2. **完整阶段门禁（Full Stage Gate，B 阶段交付与 A 集中审查收尾必跑）**：串行运行全工作区 `dart format --output=none --set-exit-if-changed .`、`dart analyze --fatal-infos`、向下依赖方向静态校验（禁止 `packages/*` 引用 Flutter UI，`INV-02`）、全量纯 Dart 与 Flutter 测试（含 `ExternalAiRepository` 原文层只读断言、BFM v1 一致性夹具、CJK `unicode61` 检索、离线 Outbox 与 E2EE WebDAV/S3 幂等收敛、`packages/blink_sanitizer` HTML/SVG/CSS 对抗净化与零外链/零硬编码色值断言、四层 `#private` 零出境哨兵断言、`VACUUM INTO` 热备份与冷拷贝断言）、安静进程冒烟、OSV 依赖漏洞审计、`check_docs.py` 与 `git diff --check HEAD`。
+  2. **完整门禁（Full Gate，改到打包、安装、更新、签名、发布或大范围改动时必跑）**：串行运行全工作区 `dart format --output=none --set-exit-if-changed .`、`dart analyze --fatal-infos`、向下依赖方向静态校验（禁止 `packages/*` 引用 Flutter UI，`INV-02`）、全量纯 Dart 与 Flutter 测试（含 `ExternalAiRepository` 原文层只读断言、BFM v1 一致性夹具、CJK `unicode61` 检索、离线 Outbox 与 E2EE WebDAV/S3 幂等收敛、`packages/blink_sanitizer` HTML/SVG/CSS 对抗净化与零外链/零硬编码色值断言、四层 `#private` 零出境哨兵断言、`VACUUM INTO` 热备份与冷拷贝断言）、安静进程冒烟、OSV 依赖漏洞审计、`check_docs.py` 与 `git diff --check HEAD`。
 - **有界验证与真实状态记录**：日常单轮验证控制在约 10 分钟内，预计超出的压力或大数据量长测须先请用户授权。验证结果如实区分 `passed`、`failed`、`blocked`、`not-run`；缺平台工具链或硬件环境时记为 `not-run`，严禁靠删除、跳过或弱化断言来换取门禁通过。源码或契约变更后，旧构建包与旧跑次结果失效。
 
 <a id="quiet-tests"></a>
@@ -98,9 +99,9 @@ Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹�
 <a id="git-ci-release"></a>
 ## 4. Git、远端保护、CI 与发布约定
 
-- **分支、提交与 DCO**：默认分支为 `main`，远端仓库为 [chialecode/blink](https://github.com/chialecode/blink)，本地固定配置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`（行尾统一由 `.gitattributes` 约束为 LF）。初始根提交 `642e618`（空 `README.md` + DCO 签名）永久不可改写。每个阶段遵循[单阶段单提交规则](workflow.md#git-stage)，采用 Conventional Commits 格式（如 `feat(m1): ...`），每次提交与 amend 均附带 DCO 签名（`git commit -s` / `git commit --amend -s`）。push、创建 PR、合并与发布均须用户逐项明确授权，严禁使用 `--all`、`--mirror` 或无授权强推，严禁轮询式长挂命令（如 `gh pr checks --watch`）。
-- **远端 `main-protection` 规则集与仓库治理**：`main` 激活仓库规则集 `main-protection`（无旁路豁免）：禁止直接推送、强推与删除，要求线性历史、全部评审讨论解决、仅允许 squash 合并（合并提交使用 PR 标题与正文，合并后自动删除源分支），必需状态检查固定为 `repository-quality`。仓库关闭 Issues、Wiki 与 Projects，仅开放 [Discussions](https://github.com/chialecode/blink/discussions)，PR 仅限协作者创建。
-- **CI 与 Actions 最小权限**：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 的必需 job 名固定为 `repository-quality`（无路径过滤，保证纯文档阶段 PR 同样产出必需检查；`runs-on: ubuntu-24.04`，`timeout-minutes: 15`），顶层权限 `contents: read`；工作流仅允许引用仓库白名单内锁定 40 位完整提交 SHA 的官方 Action（远端 `sha_pinning_required=true` 在服务端强制，见 [ACT-003](../../USER-ACTIONS.md#act-003)；修改选定白名单时须一并回读 `github_owned_allowed=false`），当前仅使用 `actions/checkout` 与 `actions/setup-python`，由 `python -B scripts/check.py --install-linux-flutter` 按 `.flutter-version` 与 `scripts/flutter-checksums.json` 下载并核对官方 Linux Flutter 归档 SHA-256 后运行 `python -B scripts/check.py --ci`，不新增第三方或未审计 Action；外部贡献者 Fork PR 运行工作流前须维护者批准。Dependabot（[`.github/dependabot.yml`](../../.github/dependabot.yml)）覆盖 `github-actions` 与根目录工作区 `pub`，设置 7 天版本冷却期并禁用自动 rebase，告警与自动安全更新处于开启状态。
+- **分支、提交与 DCO**：默认分支为 `main`，远端仓库为 [chialecode/blink](https://github.com/chialecode/blink)，本地固定配置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`（行尾统一由 `.gitattributes` 约束为 LF）。初始根提交 `642e618` 永久不可改写。一个 issue 一个小 PR，分支 `<type>/<issue号>-<简短描述>`，Conventional Commits，每个提交 `git commit -s`（DCO）；PR 合并时 squash 成一个提交（[每次改动的流程](workflow.md#change-loop)）。push 与建 PR 长期授权；低风险 PR 由 Agent 在 CI 与独立审查通过后用 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并，[高风险](workflow.md#high-risk) PR 由用户合并。严禁 `--all`、`--mirror`、强推与轮询式长挂命令（如 `gh pr checks --watch`）。
+- **远端 `main-protection` 规则集与仓库治理**：`main` 激活仓库规则集 `main-protection`（无旁路豁免）：禁止直接推送、强推与删除，要求线性历史、全部评审讨论解决、仅允许 squash 合并（合并提交使用 PR 标题与正文，合并后自动删除源分支），必需状态检查固定为 `repository-quality`。仓库开启 [Issues](https://github.com/chialecode/blink/issues)（只允许协作者创建）与 [Discussions](https://github.com/chialecode/blink/discussions)，关闭 Wiki 与 Projects；PR 只允许协作者创建；允许自动合并与更新分支；网页提交要求 DCO 签名。远端设置的镜像是 [`.github/repository-settings.json`](../../.github/repository-settings.json)、[`.github/rulesets/main.json`](../../.github/rulesets/main.json) 与 [`.github/actions-policy.json`](../../.github/actions-policy.json)，改远端设置时同步回读并更新镜像。
+- **CI 与 Actions 最小权限**：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 的必需 job 名固定为 `repository-quality`（无路径过滤，保证纯文档阶段 PR 同样产出必需检查；`runs-on: ubuntu-24.04`，`timeout-minutes: 15`），顶层权限 `contents: read`；工作流仅允许引用仓库白名单内锁定 40 位完整提交 SHA 的官方 Action（远端 `sha_pinning_required=true` 在服务端强制；修改选定白名单时须一并回读 `github_owned_allowed=false`），当前仅使用 `actions/checkout` 与 `actions/setup-python`，由 `python -B scripts/check.py --install-linux-flutter` 按 `.flutter-version` 与 `scripts/flutter-checksums.json` 下载并核对官方 Linux Flutter 归档 SHA-256 后运行 `python -B scripts/check.py --ci`，不新增第三方或未审计 Action；外部贡献者 Fork PR 运行工作流前须维护者批准。Dependabot（[`.github/dependabot.yml`](../../.github/dependabot.yml)）覆盖 `github-actions` 与根目录工作区 `pub`，设置 7 天版本冷却期并禁用自动 rebase，告警与自动安全更新处于开启状态。
 
 <a id="outputs"></a>
 ### 4.1 版本号与生成物目录

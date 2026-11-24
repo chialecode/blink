@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-仓库治理、产品需求、纯 Dart 架构基线与 Windows 桌面打包自动化（当前进展见[交付状态](docs/delivery/status.md#current)与[当前计划](docs/delivery/stage-plan.md#scope)）：
+仓库治理、产品需求、纯 Dart 架构基线与 Windows 桌面打包自动化：
 
 - 建立精简二代文档治理结构、远端 `main-protection` 分支保护规则集与零依赖文档门禁 `scripts/check_docs.py`（附回归夹具 `scripts/test_check_docs.py` 与本地 `pre-push` hook）。
 - 确立 **BLINK（`B·L·I·N·K`）** 纯 Flutter / Dart 五端本地优先个人知识库、单文件夹便携库、多媒体锚定伴读与双轨无服务端 AI 扩展的产品需求基线（`FR`/`NFR`）与七阶段交付路线（`M1`～`M7`，`M2` 按 `DEC-027` 插入桌面打包与开发版自动安装更新）。
