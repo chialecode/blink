@@ -1,6 +1,6 @@
 version: 2
 # Version updates wait 7 days after a release (cooldown). Their PRs are not
-# merged one by one: they are handled together when a stage starts
+# merged one by one: they are handled together in the weekly maintenance
 # (docs/dev-rules/workflow.md#dependency-inventory). Security updates are not
 # delayed by the cooldown.
 updates:

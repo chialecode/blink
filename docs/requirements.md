@@ -2,7 +2,7 @@
 
 本页是“用户要什么”的唯一正本。需求状态只分三种：**已实现**、**本阶段**、**待实现**。治理、产品与纯 Dart 技术栈决定见[有效决定](decisions.md#governance)（含 `DEC-022`～`DEC-027`），系统分层与边界见[系统架构](design/architecture.md#topology)，纯 Dart 选型查证见[纯 Dart 架构演进研究](research/2026-11-22-pure-dart-pivot.md#overview)。
 
-表内“已实现”仅表示代码或治理门禁及对应自动化验证已完成（实际进展见[交付状态](delivery/status.md#current)），不代表产品人工验收通过（人工复核与待确认决策见 [USER-ACTIONS](../USER-ACTIONS.md#human-checks)）。
+表内“已实现”仅表示代码或治理门禁及对应自动化验证已完成，不代表产品人工验收通过（人工复核与待确认决策见 [`needs-user` issue](https://github.com/chialecode/blink/issues?q=is%3Aissue+label%3Aneeds-user)）。
 
 核心术语：
 
@@ -46,7 +46,7 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 - **不做强制目录树维护与全局力导向图谱炫技**：不迫使用户手工整理多层文件夹、维护复杂属性表，也不做缺乏行动价值的全局球形关系图。
 - **不做类 Notion 重型富文本块级所见即所得编辑器**：人工流式采集与手写批注坚持原生 `TextField` + BFM v1（[DEC-024](decisions.md#dec-024)），从根源规避重型富文本组件在移动端中文输入法（CJK IME）组合态与软键盘升降时的吞字跳光标陷阱。
 - **不在应用本体内捆绑 Docker、外部数据库、Python/Node 运行时或重型本地大模型权重**：保持单应用开箱即用与移动端低耗电，重型 AI 合成、向量化、本地语音转写与离线版面 OCR 通过外置 CLI/MCP/Skills 或可选直连 HTTP API 解耦执行（[DEC-022](decisions.md#dec-022)、[DEC-025](decisions.md#dec-025)）。
-- **不在 AI 卡片与整页 HTML 渲染中允许任意未授权脚本执行或外部网络回连**：Surface 1 严格限定在纯 Flutter 原生组件树，Surface 2 严格限定在零 `<script>`、离线 `default-src 'none'` CSP 沙盒与 `blink-ref://` 原生桥接内；内置交互微件脚本延后至 [LOOP-006](delivery/status.md#loop) 审慎评估。
+- **不在 AI 卡片与整页 HTML 渲染中允许任意未授权脚本执行或外部网络回连**：Surface 1 严格限定在纯 Flutter 原生组件树，Surface 2 严格限定在零 `<script>`、离线 `default-src 'none'` CSP 沙盒与 `blink-ref://` 原生桥接内；内置交互微件脚本延后至 [#18](https://github.com/chialecode/blink/issues/18) 审慎评估。
 - **不做企业级复杂项目管理（GTD / 看板 / 甘特图）与厂商托管多租户公网云服务**：系统专为单人长期私密认知积累构建，不做多人协同看板或公网社交广场。
 
 <a id="scope"></a>
@@ -70,7 +70,7 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | --- | --- | --- |
 | FR-READ-001 | 书库导入、内容寻址去重与跨端进度同步：支持导入本地 PDF、EPUB 书籍并汇总已剪藏的网页长文；纯 Dart 后台 Isolate 按 `SHA-256` 写入 `blobs/` 去重并提取封面、目录、作者与页数/章节元数据；五端书库按“正在阅读 / 未读 / 已读完”与来源筛选，自动同步精确阅读位置（PDF 页码与视口坐标、块级阅读器的 `chapter + block_id + char_offset`）；损坏文件或受 DRM 加密文件在导入时直接说明原因并拒收 | 待实现 |
 | FR-READ-002 | 五端原生 PDF 伴读与统一文本提取引擎：基于 `pdfrx` 与纯 Dart `pdfrx_engine`（PDFium FFI）在五端统一提供硬件加速分瓦渲染、连续/单页阅读、目录大纲跳转、文本层与字符坐标提取、页内搜索与双栏裁白边；支持跨行文本选区并持久化 `page_index + normalized_bbox[]` 高亮；纯扫描无文本层页面诚实标记 `text_layer = "missing_ocr"`，允许用户立即框选矩形区域挂载边注，并开放外置 OCR/AI 工具经 CLI/MCP 回填检索文本，原始 PDF 字节分毫不改（`INV-01`） | 待实现 |
-| FR-READ-003 | 长文与 EPUB 统一块级受控语义 HTML 原生阅读器：纯 Dart 后台 Isolate 通过 `package:archive`（Zip-Slip/Zip-Bomb 防护）+ `package:xml` + `package:html` + `packages/blink_sanitizer` 将重排型 EPUB XHTML 与剪藏网页统一归一化为双轨 Block AST（`plain_text` 基于 Dart `.runes` Unicode 标量码点偏移 + `html_sanitized` 完整保留 `rowspan`/`colspan` 表格、提示框、上下标与 `ruby` 注音）；五端共用 `super_sliver_list` + `flutter_widget_from_html_core` + `fwfh_svg` + `SelectableRegion` 纯原生虚拟列表渲染；调节字号、行距、版心宽度或日/纸/夜主题后全部高亮零漂移；遇到极少数固定版式页面如实提示并提供系统外部阅读器打开兜底（[Q-001](../USER-ACTIONS.md#q-001)） | 待实现 |
+| FR-READ-003 | 长文与 EPUB 统一块级受控语义 HTML 原生阅读器：纯 Dart 后台 Isolate 通过 `package:archive`（Zip-Slip/Zip-Bomb 防护）+ `package:xml` + `package:html` + `packages/blink_sanitizer` 将重排型 EPUB XHTML 与剪藏网页统一归一化为双轨 Block AST（`plain_text` 基于 Dart `.runes` Unicode 标量码点偏移 + `html_sanitized` 完整保留 `rowspan`/`colspan` 表格、提示框、上下标与 `ruby` 注音）；五端共用 `super_sliver_list` + `flutter_widget_from_html_core` + `fwfh_svg` + `SelectableRegion` 纯原生虚拟列表渲染；调节字号、行距、版心宽度或日/纸/夜主题后全部高亮零漂移；遇到极少数固定版式页面如实提示并提供系统外部阅读器打开兜底（[Q-001](https://github.com/chialecode/blink/issues/4)） | 待实现 |
 | FR-READ-004 | 锚定边注与页内上下文伴读：在 PDF 或块级阅读器中划选正文后浮出紧凑操作条（四色高亮、写边注、复制引文及启用直连 AI 时的“问 AI”）；桌面端在右侧分栏展开锚定边注轨，移动端弹出半屏/全屏伴读抽屉；手写批注以 BFM v1 存入原文层；若用户启用可选内置直连 OpenAI 兼容接口，可携带选中引文、局部章节上下文与本书既有批注进行流式问答并固化至只增不改的 `raw_marginalia_turns`；外置 AI 亦可经 MCP 完整读取六元锚点与边注上下文 | 待实现 |
 
 <a id="agt-scope"></a>
@@ -79,10 +79,10 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
 | FR-AGT-001 | 原文层与派生层硬隔离及全量重算：存储层、CLI/MCP 契约与界面将用户原文（`RawRepository`）与 AI 派生产出（`AiIndexRepository` / `ExternalAiRepository`）物理分表分接口隔离；界面对全部 AI 产出标注 `✦ AI 派生` 与模型/来源标识；设置页提供“清空并重算全部派生索引（`ai_*` 与 `index/fts.db`）”，全程零改动原文层（[双轨 AI 设计](design/agent-and-reader.md#dual-speed-agent)） | 待实现 |
-| FR-AGT-002 | 外置 AI 一等公民接口——纯 Dart 原生 CLI、MCP Server 与 `agentskills.io` 技能管理：`packages/blink_cli` 通过 `dart build cli` 产出零 Python/Node/Dart SDK 依赖的原生二进制包（含捆绑 `libsqlite3`），同时暴露 `blink` 命令行与支持 Stdio / Streamable HTTP 的 MCP Server（`mcp_dart` 封装于 `BlinkMcpAdapter` 后）；桌面端运行时写入走 loopback IPC 实时刷新 UI 并推进 `seq_id`，关闭时无缝回退 `BEGIN IMMEDIATE` WAL；读取走零阻塞只读 WAL；内置管理 5 套 `agentskills.io` `SKILL.md` 技能（含指导外部 AI 生成合规卡片的 `blink-html-card-author`）及一键非破坏式 MCP 配置导出（Claude Desktop / Claude Code / Cursor / Antigravity / Codex），默认硬锁 `--scope normal_only` 且默认关闭原始条目写入（[DEC-025](decisions.md#dec-025)、[Q-007](../USER-ACTIONS.md#q-007)） | 待实现 |
+| FR-AGT-002 | 外置 AI 一等公民接口——纯 Dart 原生 CLI、MCP Server 与 `agentskills.io` 技能管理：`packages/blink_cli` 通过 `dart build cli` 产出零 Python/Node/Dart SDK 依赖的原生二进制包（含捆绑 `libsqlite3`），同时暴露 `blink` 命令行与支持 Stdio / Streamable HTTP 的 MCP Server（`mcp_dart` 封装于 `BlinkMcpAdapter` 后）；桌面端运行时写入走 loopback IPC 实时刷新 UI 并推进 `seq_id`，关闭时无缝回退 `BEGIN IMMEDIATE` WAL；读取走零阻塞只读 WAL；内置管理 5 套 `agentskills.io` `SKILL.md` 技能（含指导外部 AI 生成合规卡片的 `blink-html-card-author`）及一键非破坏式 MCP 配置导出（Claude Desktop / Claude Code / Cursor / Antigravity / Codex），默认硬锁 `--scope normal_only` 且默认关闭原始条目写入（[DEC-025](decisions.md#dec-025)、[Q-007](https://github.com/chialecode/blink/issues/8)） | 待实现 |
 | FR-AGT-003 | 派生富化回写与跨时空观点回响（Echoes）：外置 AI 代理或外部网关可按 `since_seq` 增量拉取新增记录，经 MCP/CLI 回写意图标签、关联书目、语音清洗稿、书页 OCR 引文、待办候选（`ai_task_candidates`）以及标记为 `resonance`（共鸣）/ `contrast`（张力）/ `evolution`（演进）的跨时空观点回响（`ai_echo_links`）；所有派生写入同步落入 `sync_oplog` 分配 `seq_id` 自动同步至全部设备；在伴读侧栏与写作视图静默呈现 1～5 条高相关回响，无匹配时保持留白 | 待实现 |
 | FR-AGT-004 | 双表面高表现力 HTML 卡片与整页综述视图（Surface 1 + Surface 2）：外置 AI 或可选内置直连 AI 产出的晨间简报、周度复盘、单书深度综述与专题页面统一双轨存储 `summary_md` 与经 `packages/blink_sanitizer` 白名单净化的 `view_html`（Surface 1）/ `artifact_html`（Surface 2）——**Surface 1** 在列表与侧栏由 `flutter_widget_from_html_core` + `fwfh_svg` + `fl_chart` 及 `<blink-grid\|card\|metric\|timeline\|compare\|chart\|ref>` 纯原生渲染；**Surface 2** 在独立全屏/详页按需由零 JS、离线 `default-src 'none'` CSP 沙盒视图渲染完整 CSS Grid/SVG 杂志页面（Linux 缺 WebKitGTK 时自动回退 Surface 1）；用户在 BFM 日记中可通过 `![[ai:<uuid>\|说明]]` 只读嵌入任意 Surface 1 卡片或 Surface 2 预览横幅；全部 `<blink-ref>` 入库前强制校验目标存在性与隐私范围（[DEC-024](decisions.md#dec-024)、[双表面 HTML 规范](ui.md#semantic-html)） | 待实现 |
-| FR-AGT-005 | 个人认知原则账本与可选内置直连 OpenAI 兼容对话（Chat-to-Note）：外置或内置 AI 提炼的个人判断准则严格以 `status = 'candidate'` 写入 `ai_user_principles`（可附新旧对照 `view_html` 与 `<blink-ref>` 证据），仅经用户显式点击“确认纳入”才升格 `confirmed` 并沿 `supersedes_id` 保留演化链；此外，用户可在设置页按需启用零后端直连 `OpenAiCompatClient`（基于 `dio` + SSE，拆分 `normal` 与 `private_local` 配置，API Key 仅存于 OS 安全密钥库），在应用内与 AI 对话讨论并在对话结束后一键提炼为派生卡片，或经用户确认保存为一条**全新的**原文层 BFM 笔记（保留对话溯源、绝不覆写既有笔记，[DEC-025](decisions.md#dec-025)、[Q-003](../USER-ACTIONS.md#q-003)） | 待实现 |
+| FR-AGT-005 | 个人认知原则账本与可选内置直连 OpenAI 兼容对话（Chat-to-Note）：外置或内置 AI 提炼的个人判断准则严格以 `status = 'candidate'` 写入 `ai_user_principles`（可附新旧对照 `view_html` 与 `<blink-ref>` 证据），仅经用户显式点击“确认纳入”才升格 `confirmed` 并沿 `supersedes_id` 保留演化链；此外，用户可在设置页按需启用零后端直连 `OpenAiCompatClient`（基于 `dio` + SSE，拆分 `normal` 与 `private_local` 配置，API Key 仅存于 OS 安全密钥库），在应用内与 AI 对话讨论并在对话结束后一键提炼为派生卡片，或经用户确认保存为一条**全新的**原文层 BFM 笔记（保留对话溯源、绝不覆写既有笔记，[DEC-025](decisions.md#dec-025)、[Q-003](https://github.com/chialecode/blink/issues/5)） | 待实现 |
 
 <a id="task-scope"></a>
 ### 2.4 内生柔性待办（FR-TASK）
@@ -100,7 +100,7 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | FR-SYNC-001 | 统一 `SyncTransport`、本地 Outbox 与因果 OpLog 收敛：五端所有写操作先在单事务内落盘本地 `drift` SQLite 并追加带不可变 UUIDv7 `client_op_id` 与混合逻辑时钟 `hlc_ts` 的 `outbox_ops`；统一因果操作信封同时驱动直连单调 `seq_id` 拉取与对象存储分段重放（覆盖 `raw_*` 与 `ai_*` 两层）；网络中断随时续传；多设备离线并发编辑同一条 `body_md`/`note_md` 时强制**双本保留**并生成显式冲突待裁定副本，`privacy_level = 'private'` 单向锁存，绝不静默丢字（[同步契约](design/data-and-sync.md#sync)） | 待实现 |
 | FR-SYNC-002 | 全方案多端同步（直连 LAN/Tailscale + 无头同步节点 + E2EE WebDAV/S3 异步中继）：M4 统一交付两种互补同步通道——① **直连模式**：桌面端托盘后台 Isolate 内嵌纯 Dart `shelf` 同步服务，局域网通过 MIT 许可 `bonsoir` 自动发现，跨外网经 Tailscale 虚拟私网直连，同一代码经 `dart build cli` 输出无头 `blink sync serve` 供常驻 Mini-PC/NAS 运行，配一次性配对码与单设备吊销；② **异步中继模式**：面向主力电脑休眠时的手机同步，支持用户自选 WebDAV 或 S3 兼容存储，仅上传按设备隔离的追加式加密分段与去重密文附件（强制客户端 `XChaCha20-Poly1305` E2EE，永不上传活态 `blink.db`），支持二维码/恢复码分发主密钥及“禁止通过 WebDAV/S3 中继 `#private`”物理过滤开关（[DEC-023](decisions.md#dec-023)） | 待实现 |
 | FR-SYNC-003 | 单文件夹便携迁移与移动端大文件按需缓存：桌面端所有持久化数据统一收敛于 `<BLINK_VAULT_DIR>`（`vault.json`、`db/blink.db`、`index/fts.db`、`blobs/`、`mirror/`），退出时执行 `wal_checkpoint(TRUNCATE)`，复制单个文件夹即可无损备份或迁移至新电脑/NAS，且目录内零明文凭据；移动端全量离线同步全部文本、AST 与批注，体积较大的 PDF/EPUB 原件默认按需 `Range` 断点拉取到本地缓存并支持设置页一键释放未置顶副本（`INV-12`） | 待实现 |
-| FR-SYNC-004 | 桌面端 Dart 后台 Isolate 实时开放镜像（BFM 降级 `.md` + 独立自适应 `insights/*.html`）：监听 `sync_oplog` 与派生视图水位线，默认在写入静止 **5 秒防抖**后由纯 Dart `MirrorExporter` 原子单向写出 UTF-8 `.md` 主归档（将 BFM v1 的 `[[ref]]`、`:::fold`、`==mark==`、`![[ai:...]]` 无损降级为标准相对链接、`<details>`、`<mark>` 与标准 GFM），并在 `insights/` 下同步输出零 `<script>`、零外链、自适应日夜主题的独立 `.html` 综述页（支持 Surface 1/2 视图）；`#private` 物理分置于 `0700` `private/` 子树；同目录临时文件 + `flush()` + 原子改名，绝不反向覆盖数据库正本（[DEC-024](decisions.md#dec-024)、[Q-004](../USER-ACTIONS.md#q-004)） | 待实现 |
+| FR-SYNC-004 | 桌面端 Dart 后台 Isolate 实时开放镜像（BFM 降级 `.md` + 独立自适应 `insights/*.html`）：监听 `sync_oplog` 与派生视图水位线，默认在写入静止 **5 秒防抖**后由纯 Dart `MirrorExporter` 原子单向写出 UTF-8 `.md` 主归档（将 BFM v1 的 `[[ref]]`、`:::fold`、`==mark==`、`![[ai:...]]` 无损降级为标准相对链接、`<details>`、`<mark>` 与标准 GFM），并在 `insights/` 下同步输出零 `<script>`、零外链、自适应日夜主题的独立 `.html` 综述页（支持 Surface 1/2 视图）；`#private` 物理分置于 `0700` `private/` 子树；同目录临时文件 + `flush()` + 原子改名，绝不反向覆盖数据库正本（[DEC-024](decisions.md#dec-024)、[Q-004](https://github.com/chialecode/blink/issues/6)） | 待实现 |
 
 <a id="nfr"></a>
 ## 3. 非功能需求
@@ -117,9 +117,9 @@ BLINK（`B·L·I·N·K`）是面向长期个人思考、深度伴读与自我认
 | NFR-DATA-002 | 崩溃不丢字与全派生层确定性可重建：本地写入经 SQLite WAL + `BEGIN IMMEDIATE` 持久化，桌面正常退出执行 `wal_checkpoint(TRUNCATE)` 确保单文件夹冷拷贝完整性；清空 `index/fts.db`、`ai_*` 与 `mirror/` 后仅凭 `raw_*` 与 `blobs/` 即可完整恢复用户资产并重建索引与镜像（`INV-09`） | 待实现 |
 | NFR-PERF-001 | 瞬时采集响应与大规模语料流畅渲染：冷启动至输入框可键入目标耗时桌面端 `≤ 800 ms`、主流移动端 `≤ 1200 ms`，本地 BFM 落盘 `< 16 ms`，`db/blink.db` `VACUUM INTO` 热快照 `< 1 s`；在 `50,000` 条合成流式条目（简单条目走 `package:markdown` AST 直出快速通道）、`1,000` 页 PDF 及 3,000+ 块长篇 EPUB 下虚拟化流畅滚动，后台解析与镜像导出均在独立 Isolate 执行、不卡 UI 帧 | 待实现 |
 | NFR-DEV-001 | 精简正本文档体系与零依赖校验门禁：单源正本精简文档（禁止 YAML frontmatter、禁用引用式链接、强制相对正斜杠链接与显式锚点校验，`CLAUDE.md` 单行指向 `@AGENTS.md`），由 `python scripts/check_docs.py` 在本地与 CI 一键校验；自 M6 引入 `agentskills.io` 技能包时仅对 `packages/blink_skills/skills/**/SKILL.md` 豁免 frontmatter 并增加专用字段模式校验（[工程规则](dev-rules/engineering.md#gates)） | 已实现 |
-| NFR-DEV-002 | 单阶段单提交治理、纯 Dart Monorepo 门禁与宽松许可冷却：执行“一阶段一分支一 DCO 签名提交一 Squash PR”与 `main-protection` 保护；依赖升级遵循 7 天冷却期与宽松许可红线（弱传染系统动态库须如 `DEC-026` 显式登记）；自 M2 起采用统一纯 Dart/Flutter 门禁（`dart analyze` / `dart test` / `flutter test` / `dart build cli`），无跨语言契约生成债务；全部测试安静、无焦点、仅监听 `127.0.0.1` 与临时隔离目录 | 已实现（治理、两级门禁、依赖审计与 CI；`packages/*` 与 `dart build cli` 扩展待实现） |
-| NFR-DEV-003 | 桌面打包、版本与开发版自动安装更新：Windows 桌面端以 Inno Setup 产出 `blink` / `blink-dev` 两通道按用户（无需管理员）安装包，开发通道版本 `0.1.0-dev.<UTC 年月日时分>` 注入可执行文件版本资源与“关于”页；按安装身份的单实例与本用户控制管道支持 `--background` 托盘常驻、`focus` 与 `--quit-for-update` 保存后退出；需要人工检查时 Agent 一条命令完成构建、静默覆盖安装、版本双核对与托盘后台拉起，全程不触碰正式版与测试身份；正式版应用内联网更新与 macOS / Linux 安装包按 [Q-008](../USER-ACTIONS.md#q-008) 在正式版发布前落地 | 已实现 |
+| NFR-DEV-002 | 小 PR 治理、纯 Dart Monorepo 门禁与宽松许可冷却：执行“一个 issue 一个小 PR、DCO 签名、Squash 合并”与 `main-protection` 保护；依赖升级遵循 7 天冷却期与宽松许可红线（弱传染系统动态库须如 `DEC-026` 显式登记）；自 M2 起采用统一纯 Dart/Flutter 门禁（`dart analyze` / `dart test` / `flutter test` / `dart build cli`），无跨语言契约生成债务；全部测试安静、无焦点、仅监听 `127.0.0.1` 与临时隔离目录 | 已实现（治理、两级门禁、依赖审计与 CI；`packages/*` 与 `dart build cli` 扩展待实现） |
+| NFR-DEV-003 | 桌面打包、版本与开发版自动安装更新：Windows 桌面端以 Inno Setup 产出 `blink` / `blink-dev` 两通道按用户（无需管理员）安装包，开发通道版本 `0.1.0-dev.<UTC 年月日时分>` 注入可执行文件版本资源与“关于”页；按安装身份的单实例与本用户控制管道支持 `--background` 托盘常驻、`focus` 与 `--quit-for-update` 保存后退出；需要人工检查时 Agent 一条命令完成构建、静默覆盖安装、版本双核对与托盘后台拉起，全程不触碰正式版与测试身份；正式版应用内联网更新与 macOS / Linux 安装包按 [Q-008](https://github.com/chialecode/blink/issues/9) 在正式版发布前落地 | 已实现 |
 
 ## 4. 验收场景索引
 
-全部可复现黑盒验收场景（`AC-01～AC-11`）及其与本页 `FR`/`NFR` 的映射见[路线与验收 §4](delivery/roadmap.md#acceptance)；涉及人工体验复核与待确认决策的事项统一在 [USER-ACTIONS](../USER-ACTIONS.md#recommended) 维护。
+全部可复现黑盒验收场景（`AC-01～AC-11`）及其与本页 `FR`/`NFR` 的映射见[路线与验收 §4](delivery/roadmap.md#acceptance)；涉及人工体验复核与待确认决策的事项统一用 [`needs-user` issue](https://github.com/chialecode/blink/issues?q=is%3Aissue+label%3Aneeds-user) 跟踪。

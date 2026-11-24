@@ -6,12 +6,12 @@
 
 ## 状态
 
-当前阶段范围见[当前计划](docs/delivery/stage-plan.md)，已落地基线、后续迭代项与上游事项见[交付状态](docs/delivery/status.md)。工具链与门禁命令以[工程规则](docs/dev-rules/engineering.md#toolchain)记录的实际落地状态为准。
+阶段路线、MVP 边界与上游风险见[路线与验收](docs/delivery/roadmap.md#stages)；进行中的需求、缺陷与后续迭代项见 [Issues](https://github.com/chialecode/blink/issues)。工具链与门禁命令以[工程规则](docs/dev-rules/engineering.md#toolchain)记录的实际落地状态为准。
 
 ## 入口
 
 - 参与开发：先读 [AGENTS](AGENTS.md)，再看[文档索引](docs/README.md)。
-- 需要你处理的事：[USER-ACTIONS](USER-ACTIONS.md)。
+- 需要你处理的事：[`needs-user` issue](https://github.com/chialecode/blink/issues?q=is%3Aissue+label%3Aneeds-user)。
 - 贡献方式：[CONTRIBUTING](CONTRIBUTING.md)；审查口径：[REVIEW](REVIEW.md)；安全问题：[SECURITY](SECURITY.md)。
 
 ## 许可

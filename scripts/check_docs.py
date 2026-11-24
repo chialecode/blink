@@ -68,7 +68,7 @@ REQUIRED_ROOT_FILES = (
     "README.md",
     "AGENTS.md",
     "CLAUDE.md",
-    "USER-ACTIONS.md",
+    "LESSONS.md",
     "CONTRIBUTING.md",
     "REVIEW.md",
     "SECURITY.md",
@@ -79,13 +79,10 @@ REQUIRED_DOCS_FILES = (
     "docs/requirements.md",
     "docs/decisions.md",
     "docs/delivery/roadmap.md",
-    "docs/delivery/status.md",
-    "docs/delivery/stage-plan.md",
     "docs/design/architecture.md",
     "docs/dev-rules/workflow.md",
     "docs/dev-rules/engineering.md",
     "docs/dev-rules/sources-and-safety.md",
-    "docs/templates/agent-handoff.md",
 )
 
 ALLOWED_DOCS_SUBDIRS = {

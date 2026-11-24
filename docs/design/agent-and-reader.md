@@ -15,7 +15,7 @@ BLINK 保留“写入态轻量整理 + 周期性深度综合 + 伴读即时追�
 | `#private` 隔离机制 | 4 层默认闭锁防线：默认 `--scope normal_only` 物理视图过滤 + 3 门禁 `local_with_private` 本机提权 + 单向密级污染锁存 | 强制拆分 `normal` 与 `private_local` 双配置档位，`#private` 仅允许解析至环回/RFC1918/Tailscale IP 的本地端点，不可用即闭锁返回 `privacy_blocked` |
 | 离线与未配置降级 | 核心应用 100% 离线读写检索不受影响；桌面端关闭时 CLI/MCP 透明退回 `BEGIN IMMEDIATE` 直写 WAL 并在下次启动时同步至移动端 | 未配置端点时核心功能完全独立可用且不弹配置向导；断网或端点不可达时返回结构化错误，不阻塞本地伴读与笔记录入 |
 
-> 向量索引边界：核心 MVP 不在客户端捆绑跨平台原生向量扩展（避免 iOS 动态库加载限制与五端构建膨胀）。默认由外置 AI 按需自行维护向量库并把预计算结果写入 `ai_echo_links` 供五端零延迟展示；若未来需要纯离线端侧语义召回，作为可选 `LOOP-003` 在后台 Dart `Isolate` 中对 `index/vectors.db` 的 `Int8List` 量化 BLOB 执行余弦扫描（[选型研究](../research/2026-11-22-pure-dart-pivot.md#storage-sync)）。
+> 向量索引边界：核心 MVP 不在客户端捆绑跨平台原生向量扩展（避免 iOS 动态库加载限制与五端构建膨胀）。默认由外置 AI 按需自行维护向量库并把预计算结果写入 `ai_echo_links` 供五端零延迟展示；若未来需要纯离线端侧语义召回，作为可选 [#15](https://github.com/chialecode/blink/issues/15) 在后台 Dart `Isolate` 中对 `index/vectors.db` 的 `Int8List` 量化 BLOB 执行余弦扫描（[选型研究](../research/2026-11-22-pure-dart-pivot.md#storage-sync)）。
 
 <a id="external-ai-mcp"></a>
 ### 1.1 轨一：纯 Dart CLI 与 MCP Server（`packages/blink_cli`）
@@ -72,7 +72,7 @@ BLINK 保留“写入态轻量整理 + 周期性深度综合 + 伴读即时追�
 | `blink_publish_synthesis` | 派生写（仅 `ai_syntheses`，`destructive: false`） | `synth_kind`, `period_key`, `target_source_id?`, `title`, `summary_md`, `render_surface`, `view_html`/`artifact_html`, `citations[]`, `model_id`, `idempotency_key` | **三段原子闸门**：① 提取全部 `<blink-ref>` 与 `citations[]` 逐一核对数据库真实性与密级边界（防幻觉与越权引用）；② 运行 `packages/blink_sanitizer`（遇硬违规拒绝落库并返回结构化诊断码）；③ 原子落盘 `ai_syntheses`、分配 `seq_id` 并更新 `mirror/insights/*.{md,html}` |
 | `blink_propose_principle` | 派生写（仅 `ai_user_principles`，`destructive: false`） | `topic_slug`, `statement_md`, `view_html?`, `evidence_ids[]`, `supersedes_id?`, `model_id`, `idempotency_key` | **强制锁定 `status = 'candidate'`**（AI 绝不可自确认、驳回或覆写已确认原则）；校验 `evidence_ids[]` 并净化可选 `view_html`，分配 `seq_id` |
 | `blink_suggest_tasks` | 派生写（仅 `ai_task_candidates`，`destructive: false`） | `origin_type: entry\|annotation`, `origin_id`, `suggestions[{title, rationale_md, suggested_focus_date?}]`, `model_id` | 写入派生任务候选表供用户在回顾界面柔性确认（[DEC-012](../decisions.md#dec-012)），绝不静默篡改 `raw_tasks` |
-| `blink_capture_entry` *(MCP 默认关闭，须 `--allow-capture` 开启，见 [Q-007](../../USER-ACTIONS.md#q-007))* | 仅追加新建（`raw_entries`，`destructive: false`） | `body_md`, `entry_kind: blink\|diary`, `tags[]?`, `source_ref_id?`, `idempotency_key` | 仅允许追加全新 UUIDv7 收件箱条目（标 `capture_origin = 'mcp_capture'`），执行 `#private` 扫描并分配 `seq_id`；**不存在任何修改或删除既有原文的 MCP 工具** |
+| `blink_capture_entry` *(MCP 默认关闭，须 `--allow-capture` 开启，见 [Q-007](https://github.com/chialecode/blink/issues/8))* | 仅追加新建（`raw_entries`，`destructive: false`） | `body_md`, `entry_kind: blink\|diary`, `tags[]?`, `source_ref_id?`, `idempotency_key` | 仅允许追加全新 UUIDv7 收件箱条目（标 `capture_origin = 'mcp_capture'`），执行 `#private` 扫描并分配 `seq_id`；**不存在任何修改或删除既有原文的 MCP 工具** |
 
 - **MCP Prompts**：暴露 `blink-daily-brief`、`blink-weekly-review`、`blink-book-synthesis`、`blink-echoes-discovery` 四个服务端模板，便于不支持本地技能目录的 MCP 客户端一键触发。
 - **对称 CLI 子命令树（`blink` / `blink-dev`）**：全部子命令支持 `--json` 输出结构化结果至 `stdout`，日志与告警严格走 `stderr`（不污染管道与 Stdio MCP 帧）：
@@ -177,7 +177,7 @@ DNS 解析后固定校验目标 IP：   按用户设置直连云端 OpenAI 兼�
 
 1. **容器防穿越与防炸弹校验**：后台 `Isolate` 使用 `package:archive 4.6.0`（MIT）解压 `.epub` 前，逐条核验归档路径（硬拒 `..`、以 `/` 或盘符开头的绝对路径及符号链接，防 Zip-Slip），并在流式读取阶段强制单书总解压上限 512 MiB 与压缩比上限 100:1（防 Zip-Bomb）。
 2. **目录解析与双轨 AST 构建**：经 `package:xml 7.1.0`（MIT）解析 `META-INF/container.xml`、`.opf` 脊柱阅读序及 EPUB 2 NCX / EPUB 3 Nav 目录树；逐章由 `package:html 0.15.7` 与 `packages/blink_sanitizer` 剥离脚本、外链样式与硬编码色值，完整保留跨行列合并表格（`rowspan`/`colspan`）、提示框、上下标、`ruby` 注音与内嵌图片（重写为 `blink-blob://<sha256>`，书内跳转重写为 `blink-anchor://<chapter_id>#<block_id>`），组装为 `raw_source_chapters` 章节 AST。
-3. **Dart UTF-16 与 Unicode 码点偏移映射硬规则（`INV-10`）**：因 Dart `String.length` 按 UTF-16 代码单元计数（Emoji 与 CJK 扩展区生僻汉字占 2 单元），`packages/blink_core` 统一使用 **Unicode 标量值（`.runes`）**作为全部 `ast_range` 偏移度量衡，并由共享的 `codePointToUtf16Index()` / `utf16ToCodePointIndex()` 映射器（配合 `characters 1.4.1`）贯通解析器与原生阅读器，彻底消除跨端划词错位。对声明 `rendition:layout="pre-paginated"` 的固定版式绘本，标记 `layout_hint = "fixed_layout"` 并如实提示重排边界（见 [Q-001](../../USER-ACTIONS.md#q-001) 与[交付状态 LOOP](../delivery/status.md#loop)）。
+3. **Dart UTF-16 与 Unicode 码点偏移映射硬规则（`INV-10`）**：因 Dart `String.length` 按 UTF-16 代码单元计数（Emoji 与 CJK 扩展区生僻汉字占 2 单元），`packages/blink_core` 统一使用 **Unicode 标量值（`.runes`）**作为全部 `ast_range` 偏移度量衡，并由共享的 `codePointToUtf16Index()` / `utf16ToCodePointIndex()` 映射器（配合 `characters 1.4.1`）贯通解析器与原生阅读器，彻底消除跨端划词错位。对声明 `rendition:layout="pre-paginated"` 的固定版式绘本，标记 `layout_hint = "fixed_layout"` 并如实提示重排边界（见 [Q-001](https://github.com/chialecode/blink/issues/4) 与[交付状态 LOOP](../delivery/roadmap.md#mvp-loop)）。
 
 ### 3.3 PDF 伴读管线（五端统一 `pdfrx` + `pdfrx_engine`）
 
@@ -191,4 +191,4 @@ DNS 解析后固定校验目标 IP：   按用户设置直连云端 OpenAI 兼�
 2. **派生层转写与 OCR 开放回填槽**：核心五端应用不捆绑数百 MB 的本地语音/OCR 权重，而是为语音与书页在派生表 `ai_entry_enrichments` 中预留标准字段（`verbatim_transcript_text`、`clean_transcript_md`、`ocr_extracted_quote`）：
    - **轨一（外置回填）**：外部语音/OCR 工具或通用 AI Gateway 经 `blink_list_entries(since_seq=...)` 拉取待处理音频/图像引用，处理完成后经 `blink_upsert_enrichment` 写回忠实逐字稿、去口头禅可读稿与书页识别引文，自动经 `seq_id` 同步至全部五端；
    - **轨二（可选内置直连接口）**：用户若配置了支持转写/视觉的兼容 API（`#private` 锁定 `private_local` 本机端点），亦可按需单条触发转写或识别；
-   - 未回填前界面诚实显示“已安全保存在本机 · 等待外部或可选接口转写/识别”（`INV-11`），原声回放与原图缩放随时可用，原文层记录永不被修改（`INV-01`）；纯离线端侧轻量化 OCR/STT 列入 [LOOP-003](../delivery/status.md#loop)。
+   - 未回填前界面诚实显示“已安全保存在本机 · 等待外部或可选接口转写/识别”（`INV-11`），原声回放与原图缩放随时可用，原文层记录永不被修改（`INV-01`）；纯离线端侧轻量化 OCR/STT 列入 [#15](https://github.com/chialecode/blink/issues/15)。

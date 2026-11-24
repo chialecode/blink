@@ -50,16 +50,16 @@ BLINK 采用**“纯 Flutter/Dart 五端自包含本地优先应用 + 单文件�
 <a id="repo-layout"></a>
 ## 2. 单一仓库目录结构（Monorepo Layout）
 
-全项目采用单一纯 Dart/Flutter 仓库（Dart Workspace）管理治理正本、共享核心包、净化器、外置技能包、CLI/MCP 捆绑包与五端客户端（各目录按[阶段路线](../delivery/roadmap.md#stages)逐步落位，当前已落地状态见[交付状态](../delivery/status.md#current)与[工程规则](../dev-rules/engineering.md#toolchain)）：
+全项目采用单一纯 Dart/Flutter 仓库（Dart Workspace）管理治理正本、共享核心包、净化器、外置技能包、CLI/MCP 捆绑包与五端客户端（各目录按[阶段路线](../delivery/roadmap.md#stages)逐步落位，当前已落地状态以 `main` 上的代码与[工程规则](../dev-rules/engineering.md#toolchain)为准）：
 
 ```text
 blink/
 ├── README.md                          # 项目总览、纯 Dart 核心能力、技术栈入口与阶段状态
-├── AGENTS.md                          # 研发 Agent (A/B) 与开发者唯一工作入口
+├── AGENTS.md                          # 开发者与 AI Agent 工作入口（工具中立）
 ├── CLAUDE.md                          # 单行指针：@AGENTS.md
-├── USER-ACTIONS.md                    # 用户交互唯一账本（ACT 授权 / Q 决定 / H 人工检查）
-├── CONTRIBUTING.md                    # 贡献与单阶段单提交规范、Discussions 交流策略
-├── REVIEW.md                          # 三方独立结论（B 交付 / A 技术审查 / 产品验收）与问题分级
+├── LESSONS.md                         # 教训循环：踩过的坑与次数
+├── CONTRIBUTING.md                    # 贡献方式：issue → 小 PR → 审查 → 合并
+├── REVIEW.md                          # 审查顺序、严重度与结论写法
 ├── SECURITY.md                        # 私密漏洞报告、#private 四层边界与密钥轮换规程
 ├── CHANGELOG.md                       # 正式版发布变更记录（v0.1.1 起）
 ├── LICENSE                            # Apache-2.0 许可证正本

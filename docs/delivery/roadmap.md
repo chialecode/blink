@@ -1,14 +1,14 @@
 # BLINK 路线与验收
 
-本页回答“分哪几个阶段推进、做到什么程度算 MVP 闭环、用什么黑盒场景判定完成”。需求的唯一正本见[需求](../requirements.md#scope)，当前实际实现与验证进展只在[交付状态](status.md#current)维护；不得把本页的规划范围当成已验收结论。
+本页回答“分哪几个阶段推进、做到什么程度算 MVP 闭环、用什么黑盒场景判定完成”。需求的唯一正本见[需求](../requirements.md#scope)；当前实现以 `main` 上的代码与需求正本中的“已实现 / 本阶段 / 待实现”标注为准，进行中的工作见 [Issues](https://github.com/chialecode/blink/issues)。不得把本页的规划范围当成已验收结论。
 
 <a id="principles"></a>
 ## 1. 交付原则
 
-- **先贯通核心闭环的 MVP，再按日常使用反馈进入 `LOOP` 深化**（[治理决定](../decisions.md#governance)）。每项核心能力先打通第 3 节“MVP 必须贯通的闭环流程”，投入真实日常记录与阅读使用，再按反馈迭代非阻塞打磨项；不因局部锦上添花功能阻塞主干演进。
+- **先贯通核心闭环的 MVP，再按日常使用反馈深化**（[治理决定](../decisions.md#governance)；深化项是带 `feature` 标签的 [issue](https://github.com/chialecode/blink/issues?q=is%3Aissue+label%3Afeature)）。每项核心能力先打通第 3 节“MVP 必须贯通的闭环流程”，投入真实日常记录与阅读使用，再按反馈迭代非阻塞打磨项；不因局部锦上添花功能阻塞主干演进。
 - **MVP 绝不放宽数据与隐私底线**：原文层神圣不可篡改（Raw Layer 与 `ai_*` 派生层硬隔离）、`<BLINK_VAULT_DIR>` 单文件夹零明文凭据便携迁移、`#private` 四层零云端出境、本地 SQLite 断网零延迟落盘不丢字、双表面受控 HTML 零脚本零外链、诚实错误与恢复提示、`blink` / `blink-dev` 双通道严格隔离，在任何阶段均不得降级妥协。
-- **以完整可验证流程为阶段交接单位**：每个阶段遵循“A 制定覆盖整阶段的计划 → B 连续实施与门禁自检 → A 集中技术审查 → 用户按项授权远端动作”（[开发流程](../dev-rules/workflow.md#agent-handoff)）；严格区分 **B 实现交付**、**A 技术审查通过** 与 **产品人工验收（`H-*`）** 三项独立事实。
-- **非阻塞事项双轨推进**：不影响数据完整性与隐私边界的细节优化记入[交付状态 LOOP](status.md#loop)；存在合理可逆默认值的产品取舍记入 [USER-ACTIONS](../../USER-ACTIONS.md#decisions) 的 `Q-*` 并先行落地默认值，不阻塞流水线推进。
+- **以小 PR 为交付单位**：阶段只是能力分组；每个 issue 一个小 PR，CI 与独立审查通过后合并（[开发流程](../dev-rules/workflow.md#change-loop)）。严格区分**实现完成**、**审查通过**与**产品人工验收**三件事。
+- **非阻塞事项不阻塞主干**：不影响数据完整性与隐私边界的打磨项建为 `feature` issue；有合理可逆默认值的产品取舍先按默认值实现，值得用户回看的建 `needs-user` issue（[什么时候找用户](../dev-rules/workflow.md#user-actions)）。
 
 <a id="stages"></a>
 ## 2. 阶段路线（M1～M7）
@@ -17,8 +17,8 @@
 
 | 阶段 | 阶段主题与核心交付边界 | 覆盖需求 | 对应验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| **M1** | **治理、需求与纯 Dart 架构基线**：不可变根提交、GitHub `main-protection` 规则集与 Actions 白名单加固、精简正本文档体系、零依赖 `check_docs.py` 与 CI 门禁、`B·L·I·N·K` 需求基线、BFM v1 与双表面受控 HTML 界面规范、2026-11-22 纯 Dart 选型查证、`DEC-001`～`DEC-026`、架构/数据/AI 扩展与阅读管线设计契约 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002`（基线） | `AC-01` | 已交付（PR #1 待 Squash 合并） |
-| **M2** | **Windows 桌面骨架、打包与开发版自动安装更新**（[DEC-027](../decisions.md#dec-027)）：Dart Workspace 与 `apps/blink_client` 最小 Windows 桌面外壳（主窗口占位、“关于”版本/通道/提交、关闭隐藏到托盘）；按安装身份的单实例互斥量与本用户控制管道（`focus` / `quit-for-update` / `ping`）、系统托盘与 `--background` 常驻；`blink` / `blink-dev` 编译期通道与版本注入；Inno Setup 按用户安装包与 `SHA256SUMS.txt`；`python scripts/package.py --install` 本机开发版退出 → 静默安装 → 版本双核对 → 托盘后台拉起；测试身份安装/升级/卸载演练；`scripts/check.py` 两级门禁、`scripts/deps.py` 7 天冷却与 OSV 审计、CI 接入固定版本 Flutter——*本阶段不含便携库、编辑器与任何业务数据* | `NFR-DEV-003`、`NFR-PLAT-002`（Windows 安装身份部分）、`NFR-DEV-002`（工程门禁） | `AC-11` | B 实现已交付（门禁与演练通过，待 A 集中审查与 `ACT-004`） |
+| **M1** | **治理、需求与纯 Dart 架构基线**：不可变根提交、GitHub `main-protection` 规则集与 Actions 白名单加固、精简正本文档体系、零依赖 `check_docs.py` 与 CI 门禁、`B·L·I·N·K` 需求基线、BFM v1 与双表面受控 HTML 界面规范、2026-11-22 纯 Dart 选型查证、`DEC-001`～`DEC-026`、架构/数据/AI 扩展与阅读管线设计契约 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002`（基线） | `AC-01` | 已交付（#1） |
+| **M2** | **Windows 桌面骨架、打包与开发版自动安装更新**（[DEC-027](../decisions.md#dec-027)）：Dart Workspace 与 `apps/blink_client` 最小 Windows 桌面外壳（主窗口占位、“关于”版本/通道/提交、关闭隐藏到托盘）；按安装身份的单实例互斥量与本用户控制管道（`focus` / `quit-for-update` / `ping`）、系统托盘与 `--background` 常驻；`blink` / `blink-dev` 编译期通道与版本注入；Inno Setup 按用户安装包与 `SHA256SUMS.txt`；`python scripts/package.py --install` 本机开发版退出 → 静默安装 → 版本双核对 → 托盘后台拉起；测试身份安装/升级/卸载演练；`scripts/check.py` 两级门禁、`scripts/deps.py` 7 天冷却与 OSV 审计、CI 接入固定版本 Flutter——*本阶段不含便携库、编辑器与任何业务数据* | `NFR-DEV-003`、`NFR-PLAT-002`（Windows 安装身份部分）、`NFR-DEV-002`（工程门禁） | `AC-11` | 已交付（#2） |
 | **M3** | **单文件夹便携库、文件管理与 BFM v1 文本编辑器 MVP**：`packages/blink_core`（`drift 2.35.4` + `sqlite3 3.9.1` Native Assets、`<BLINK_VAULT_DIR>`、`VACUUM INTO`、CJK `unicode61` 预分词 `index/fts.db`、库内零明文凭据）+ `packages/blink_sanitizer` 核心 + `apps/blink_client` 五端骨架（`blink`/`blink-dev` 双通道隔离与桌面托盘静默安装）；文件/条目/`blobs/` 附件管理、30 天回收站、标签与 `FTS5` 全文检索、桌面端 5 秒防抖只读 `.md` 镜像；BFM v1 文本编辑器（9 个最小扩展原语、原生 `TextField` + CJK 输入法保护 `SPK-02`、桌面 `OverlayPortal`/移动键盘贴顶补全、双路径 AST/HTML 预览、内生 `- [ ]` 待办）——*本阶段不含多端网络同步* | `FR-CAP-001`、`FR-CAP-005`、`FR-TASK-001`（基础）、`FR-SYNC-004`（基础 `.md` 镜像）、`NFR-PLAT-001..002`、`NFR-DATA-001..002` | `AC-02`、`AC-03` | 待实现 |
 | **M4** | **全方案多端同步阶段（直连 + 加密中继统一落地）**：统一 `SyncTransport` 抽象与因果 OpLog（`INV-05`、双本冲突保留、`#private` 单向锁存）；同步交付两条传输路径：① 桌面端内嵌纯 Dart `shelf` 局域网（`bonsoir` mDNS）/ Tailscale 直连同步、设备配对与吊销、`Range` 分块媒体传输及 `dart build cli` 统一无头服务 `blink sync serve`；② 客户端端到端加密（`cryptography` `XChaCha20-Poly1305`）WebDAV / S3 只增 OpLog 异步中继、二维码/恢复密钥管理与“禁止 `#private` 经云端中继”开关 | `FR-SYNC-001`、`FR-SYNC-002`、`FR-SYNC-003`（传输层）、`NFR-PRIV-001`（中继隔离）、`NFR-PRIV-002`（同步与 E2EE 凭据） | `AC-04`、`AC-05` | 待实现 |
 | **M5** | **纯 Dart 网页剪藏、EPUB 与 PDF 多媒体伴读及锚定边注**：后台 Isolate CJK 网页正文提取（`package:html` + 防 SSRF 抓取）与 EPUB 解析（`archive` + `xml` + `html` + `.runes` 码点偏移 + Zip-Slip/压缩炸弹防护）→ 双轨 Unified Block AST；`pdfrx` / `pdfrx_engine` 五端 PDF 原生渲染、文本/目录/缩略图提取、扫描版 `missing_ocr` 显式状态与按需大文件缓存淘汰；纯 Flutter 块级阅读器（`super_sliver_list` + `flutter_widget_from_html_core` + `SelectableRegion`）与桌面分栏/移动半屏永久锚定边注 | `FR-CAP-004`、`FR-READ-001..004`（人工边注与锚定）、`FR-SYNC-003`（按需书库缓存）、`NFR-PRIV-004`（阅读块净化） | `AC-06`、`AC-07` | 待实现 |
@@ -26,20 +26,20 @@
 | **M7** | **语音/书页视觉采集、完整开放镜像与五端性能打包收口**：移动端按住说话与桌面录音（`record`）、纸质书页拍照采集与外置/API 语音转写及 OCR 派生槽位（`ai_entry_enrichments`）；完整桌面端 5 秒防抖只读开放镜像（BFM 确定性降级纯 UTF-8 `.md` 主归档 + 表面 1/2 `insights/*.html` 独立自适应主题综述，`#private` 单独入 `0700` `private/`）；`50,000` 条合成笔记与 `1,000` 页 PDF 性能基准；五端正式发行包与 `dart build cli` 统一原生工具包打包及 `blink-dev` 托盘静默安装收口 | `FR-CAP-002..003`、`FR-SYNC-004`（完整镜像）、`NFR-PERF-001` | `AC-10` | 待实现 |
 
 <a id="mvp-loop"></a>
-## 3. MVP 基线与反馈循环（LOOP）边界
+## 3. MVP 基线与反馈循环边界
 
-下表界定全产品 MVP 完成时必须真实跑通的闭环与允许延后至 `LOOP` 演进的深化项：
+下表界定全产品 MVP 完成时必须真实跑通的闭环与允许延后迭代的深化项（后续迭代项以 `feature` issue 跟踪）：
 
-| 能力域 | MVP 必须贯通的闭环流程 | 可由后续 LOOP 深化 |
+| 能力域 | MVP 必须贯通的闭环流程 | 可由后续迭代深化 |
 | --- | --- | --- |
-| **单文件夹便携库与 BFM v1 采集流** | 五端打开即写 BFM v1 文本编辑器（9 个最小扩展原语、原生 `TextField` + 5 条 CJK 输入法组合态保护规则、桌面 `OverlayPortal`/移动键盘贴顶补全）、草稿崩溃恢复、附件 `blobs/` 去重管理、`FTS5`（CJK `unicode61` 预分词）离线全文检索、30 天回收站、单文件夹 `<BLINK_VAULT_DIR>` 复制即备份迁移（库内零明文凭据）、语音录音与纸质书页拍照采集（外置或 API 填充转写/OCR 派生槽位） | 桌面跨合成器全局悬浮速记条（`LOOP-004`）、多图拼贴批注、自定义采集快捷短语模板 |
-| **全方案多端离线同步与开放镜像** | 本地 `drift` Outbox 幂等 `client_op_id` 队列与因果 OpLog、多端并发冲突双本保留与并排裁定、`#private` 单向锁存；M4 同步提供桌面内嵌 `shelf` LAN（`bonsoir`）/ Tailscale 直连同步（含 `blink sync serve` 无头二进制）与端到端加密（`XChaCha20-Poly1305`）WebDAV/S3 异步中继（支持“禁止 `#private` 经云端中继”）；桌面端后台 Dart Isolate 5 秒防抖单向原子导出 BFM 降级纯 UTF-8 `.md` 主归档与 `insights/*.html` 独立自适应综述 | 开放镜像目录外部手工编辑的双向差异检测与导入审阅（`LOOP-002`）、多无头节点冷备容灾 |
-| **长文 / EPUB 与 PDF 伴读** | 纯 Dart 后台 Isolate 网页剪藏（防 SSRF）与 EPUB 解析产出双轨 Unified Block AST（`.runes` 码点偏移）+ `pdfrx`/`pdfrx_engine` 五端原生 PDF 渲染（扫描版如实标 `missing_ocr`）；纯 Flutter 块级阅读器（`super_sliver_list` + `flutter_widget_from_html_core` + `SelectableRegion`）五端一致流畅阅读与进度同步；划选生成 `page + bbox` 或 `block_id + char_offset` 高亮、桌面分栏/移动半屏边注与点击回跳；移动端按需缓存大文件并支持释放原书副本不丢批注 | 极少数固定版式画册/复杂 CSS EPUB 的沙盒只读预览层（`LOOP-001`）、纯离线无网络端侧轻量 OCR/STT 或纯 Dart 轻量向量检索（`LOOP-003`）、双书并排对照阅读 |
-| **双轨 AI 扩展与双表面高表现力 HTML** | 原文层零篡改（`ExternalAiRepository` 只读 `raw_*`）与派生层一键清空重算；轨道一通过 `dart build cli` 统一原生二进制提供 CLI 与 MCP Server（Stdio / Streamable HTTP，双模式 IPC/冷 WAL，默认 `--scope normal_only` 四层 `#private` 硬隔离）及 5 项 `agentskills.io` `SKILL.md` 与一键 MCP 配置导出；轨道二内置可选直连 `OpenAiCompatClient`（`dio` + SSE，零后端、`normal`/`private_local` 隔离、对话转存笔记遵循 `INV-01`）；`packages/blink_sanitizer` 纯 Dart 净化 + 表面 1 原生 `<blink-*>`/`fl_chart` 卡片 + 表面 2 按需零脚本离线 CSP 沙盒整页 HTML 视图（`<blink-ref>` 原文预览浮层/半屏抽屉、日/纸/夜 `var(--blink-*)` 实时切换） | 认知原则多维专题汇编成册导出（`LOOP-005`）、表面 2 宿主内置离线微 JS 交互图表/流程图运行时（经非执行 JSON 数据岛 + 每次随机 CSP nonce）及 `flutter_inappwebview 6.2.x` Linux WPE 内联收敛（`LOOP-006`） |
+| **单文件夹便携库与 BFM v1 采集流** | 五端打开即写 BFM v1 文本编辑器（9 个最小扩展原语、原生 `TextField` + 5 条 CJK 输入法组合态保护规则、桌面 `OverlayPortal`/移动键盘贴顶补全）、草稿崩溃恢复、附件 `blobs/` 去重管理、`FTS5`（CJK `unicode61` 预分词）离线全文检索、30 天回收站、单文件夹 `<BLINK_VAULT_DIR>` 复制即备份迁移（库内零明文凭据）、语音录音与纸质书页拍照采集（外置或 API 填充转写/OCR 派生槽位） | 桌面跨合成器全局悬浮速记条（[#16](https://github.com/chialecode/blink/issues/16)）、多图拼贴批注、自定义采集快捷短语模板 |
+| **全方案多端离线同步与开放镜像** | 本地 `drift` Outbox 幂等 `client_op_id` 队列与因果 OpLog、多端并发冲突双本保留与并排裁定、`#private` 单向锁存；M4 同步提供桌面内嵌 `shelf` LAN（`bonsoir`）/ Tailscale 直连同步（含 `blink sync serve` 无头二进制）与端到端加密（`XChaCha20-Poly1305`）WebDAV/S3 异步中继（支持“禁止 `#private` 经云端中继”）；桌面端后台 Dart Isolate 5 秒防抖单向原子导出 BFM 降级纯 UTF-8 `.md` 主归档与 `insights/*.html` 独立自适应综述 | 开放镜像目录外部手工编辑的双向差异检测与导入审阅（[#14](https://github.com/chialecode/blink/issues/14)）、多无头节点冷备容灾 |
+| **长文 / EPUB 与 PDF 伴读** | 纯 Dart 后台 Isolate 网页剪藏（防 SSRF）与 EPUB 解析产出双轨 Unified Block AST（`.runes` 码点偏移）+ `pdfrx`/`pdfrx_engine` 五端原生 PDF 渲染（扫描版如实标 `missing_ocr`）；纯 Flutter 块级阅读器（`super_sliver_list` + `flutter_widget_from_html_core` + `SelectableRegion`）五端一致流畅阅读与进度同步；划选生成 `page + bbox` 或 `block_id + char_offset` 高亮、桌面分栏/移动半屏边注与点击回跳；移动端按需缓存大文件并支持释放原书副本不丢批注 | 极少数固定版式画册/复杂 CSS EPUB 的沙盒只读预览层（[#13](https://github.com/chialecode/blink/issues/13)）、纯离线无网络端侧轻量 OCR/STT 或纯 Dart 轻量向量检索（[#15](https://github.com/chialecode/blink/issues/15)）、双书并排对照阅读 |
+| **双轨 AI 扩展与双表面高表现力 HTML** | 原文层零篡改（`ExternalAiRepository` 只读 `raw_*`）与派生层一键清空重算；轨道一通过 `dart build cli` 统一原生二进制提供 CLI 与 MCP Server（Stdio / Streamable HTTP，双模式 IPC/冷 WAL，默认 `--scope normal_only` 四层 `#private` 硬隔离）及 5 项 `agentskills.io` `SKILL.md` 与一键 MCP 配置导出；轨道二内置可选直连 `OpenAiCompatClient`（`dio` + SSE，零后端、`normal`/`private_local` 隔离、对话转存笔记遵循 `INV-01`）；`packages/blink_sanitizer` 纯 Dart 净化 + 表面 1 原生 `<blink-*>`/`fl_chart` 卡片 + 表面 2 按需零脚本离线 CSP 沙盒整页 HTML 视图（`<blink-ref>` 原文预览浮层/半屏抽屉、日/纸/夜 `var(--blink-*)` 实时切换） | 认知原则多维专题汇编成册导出（[#17](https://github.com/chialecode/blink/issues/17)）、表面 2 宿主内置离线微 JS 交互图表/流程图运行时（经非执行 JSON 数据岛 + 每次随机 CSP nonce）及 `flutter_inappwebview 6.2.x` Linux WPE 内联收敛（[#18](https://github.com/chialecode/blink/issues/18)） |
 | **内生柔性待办** | 采集流与边注中的 `- [ ]` 本地即时成项、外部 AI 或对话产出进入 `ai_task_candidates` 候选待确认并保留原文反向链接、点击待办回跳源笔记/原书页、晨间聚焦与晚间柔性核销 | 周期性个人习惯回顾提示、基于阅读计划的章节进度柔性提醒（绝不演变为重型企业看板） |
 | **五端纯 Dart 工程与质量门禁** | `blink` / `blink-dev` 双通道全路径隔离（含 `vault.json` 通道锁、独立运行期 `ipc.json` 与 Windows WebView2 `userDataFolder`）、每端系统原生密钥库保存令牌与可选 API Key、纯 Dart 单仓共享契约、两级静音回环门禁、五端可安装包 + `dart build cli` 工具包与桌面开发版静默后台更新 | 商店渠道自动化上架流水线、增量二进制差分升级包优化 |
 
-严禁记入 `LOOP` 的红线问题：任何改写或覆盖用户原文的行为、`#private` 数据向外部云端/默认 MCP/云中继或 HTML 外链泄漏哪怕一个字节、受控 HTML 放行任意 `<script>` 执行或外部网络追踪请求、在 `<BLINK_VAULT_DIR>` 内写入明文密钥或运行期令牌、离线编辑或同步冲突导致静默丢字、锚定边注跳回错位、留下半截损坏正式文件或触碰非登记用户文件。
+严禁延后迭代的红线问题：任何改写或覆盖用户原文的行为、`#private` 数据向外部云端/默认 MCP/云中继或 HTML 外链泄漏哪怕一个字节、受控 HTML 放行任意 `<script>` 执行或外部网络追踪请求、在 `<BLINK_VAULT_DIR>` 内写入明文密钥或运行期令牌、离线编辑或同步冲突导致静默丢字、锚定边注跳回错位、留下半截损坏正式文件或触碰非登记用户文件。
 
 <a id="acceptance"></a>
 ## 4. 验收场景（AC-01～AC-11）
@@ -48,7 +48,7 @@
 
 | 编号 | 关联需求 | 可复现黑盒验收场景 | 当前状态 |
 | --- | --- | --- | --- |
-| AC-01 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002` | **M1 治理、主干保护与文档门禁验证**：核验 `origin/main` 根提交 `642e618` 为带 DCO 签名的 0 字节 `README.md`；回读 GitHub 远端确认 Issues/Wiki/Projects 关闭、Discussions 开启、仅允许 Squash 合并且 `main-protection` 规则集（`27720076`）激活强制 `repository-quality` 检查且零绕过名单；运行 `python scripts/check_docs.py` 全仓通过（退出码 `0`），对注入断链、缺失锚点、YAML 头、本机绝对路径及同级参考仓库名的隔离夹具均准确非零拦截 | 已通过（PR #1 远端检查通过，待 `ACT-002` 合并） |
+| AC-01 | `NFR-PRIV-003`、`NFR-DEV-001`、`NFR-DEV-002` | **M1 治理、主干保护与文档门禁验证**：核验 `origin/main` 根提交 `642e618` 为带 DCO 签名的 0 字节 `README.md`；回读 GitHub 远端确认 Issues 与 Discussions 开启（Issues 自 [DEC-028](../decisions.md#dec-028) 起开启、只允许协作者创建）、Wiki/Projects 关闭、仅允许 Squash 合并且 `main-protection` 规则集（`27720076`）激活强制 `repository-quality` 检查且零绕过名单；运行 `python scripts/check_docs.py` 全仓通过（退出码 `0`），对注入断链、缺失锚点、YAML 头、本机绝对路径及同级参考仓库名的隔离夹具均准确非零拦截 | 已通过（#1） |
 | AC-02 | `FR-CAP-001`、`FR-CAP-005`、`FR-TASK-001`、`FR-SYNC-004`、`NFR-PLAT-001`、`NFR-DATA-001` | **单文件夹便携库、BFM v1 零延迟编辑与 CJK 输入法保护**：无网络状态下录入包含 9 类 BFM v1 原语（`[[wikilink]]`、`==高亮==`、`#标签`、`> [!callout]`、`- [ ]` 待办等）与中文拼音/双拼组合态的流式笔记与附件，组合态回车绝不误触发送，中途强杀进程重启草稿与已提交条目零丢失且 `< 16 ms` 本地可见；`FTS5`（CJK 预分词）精准召回中文词段；执行 `VACUUM INTO` 热备份并整夹复制到另一目录重启，全部数据与附件完整可用且 `<BLINK_VAULT_DIR>` 目录扫描零明文密钥与运行期令牌；桌面端 5 秒防抖原子输出 BFM 降级纯 `.md` 镜像 | 待实现（M3） |
 | AC-03 | `NFR-PLAT-002`、`NFR-DATA-001` | **双通道全路径物理隔离与安全清理**：同机同时安装并运行 `blink` 与 `blink-dev`，各自读写独立小写数据/缓存目录、独立 `vault.json` 通道锁、独立系统运行期 `ipc.json` 与系统密钥库条目；尝试跨通道打开对方库目录时被硬拦截拒绝；卸载或清理开发版后正式版数据、密钥与注册项分毫未动 | 待实现（M3） |
 | AC-04 | `FR-SYNC-001`、`FR-SYNC-002`、`NFR-PRIV-002`、`NFR-DATA-001` | **直连纯 Dart `shelf`（LAN/Tailscale）与 `blink sync serve` 幂等同步及并发冲突双本保留**：两台设备经局域网 `bonsoir` 或 Tailscale 私网与桌面端（或无头 `blink sync serve`）完成配对同步，模拟重传 `client_op_id` 零重复且大文件支持 `Range` 续传；双端离线同时编辑同一条笔记并分别修改 `privacy_level` 后重连，系统完整保留双本正文并展示并排冲突裁定视图且 `#private` 单向锁存恒胜；吊销单台设备令牌后该端同步立即失效 | 待实现（M4） |
@@ -59,3 +59,15 @@
 | AC-09 | `FR-AGT-003`、`FR-AGT-004`、`FR-AGT-005`、`NFR-PLAT-001`、`NFR-PRIV-004` | **纯 Dart 净化对抗测试与双表面高表现力 HTML 渲染及 `<blink-ref>` 原文溯源**：向 `packages/blink_sanitizer` 注入大小写 `URL(...)`、CSS 十六进制转义 `\75 rl(...)`、`<script>`、`<foreignObject>`、SVG `<use href="data:...">` 与硬编码 `#000000` 攻击样本，全部拦截并向外部 AI 返回结构化诊断码；合法 AI 产物在表面 1 通过原生 `<blink-grid>`/`<blink-card>`/`<blink-chart>`（`fl_chart`）与 `<blink-ref>` 流畅渲染，在表面 2 通过零脚本离线 CSP 沙盒整页视图（Win/macOS/Android/iOS `flutter_inappwebview` + Linux `desktop_webview_window` 遵循 `DEC-026` 及缺库降级表面 1）完整呈现 CSS Grid 与复杂中文 SVG 图解，外部探针收到 **0 字节**，切换日/纸/夜主题实时跟随 `var(--blink-*)` 令牌，无 JS 拦截点击 `<blink-ref>` 即弹出原生不可篡改原文预览浮层/半屏抽屉 | 待实现（M6） |
 | AC-10 | `FR-CAP-002..003`、`FR-SYNC-004`、`NFR-DATA-001`、`NFR-PERF-001` | **语音/书页视觉采集、完整开放镜像零锁定导出与大规模语料性能打包基准**：移动端按住说话与桌面录音（`record`）及书页拍照离线即时落盘，经外置 AI 或直连 API 填充 `ai_entry_enrichments` 转写/OCR 槽位且原文音频/照片与手写感悟保持只读；桌面端 5 秒防抖以临时文件原子替换输出 BFM 降级纯 UTF-8 `.md` 主归档与表面 1/2 `insights/*.html` 独立自适应综述（`private/` 权限 `0700`，纯离线打开零外链零乱码、无 `.blink-tmp` 残留）；`50,000` 条合成笔记与 `1,000` 页 PDF 样本冷启动与滚动帧率达标；产出五端正式包与 `dart build cli` 统一工具包并验证 `blink-dev` 托盘静默更新 | 待实现（M7） |
 | AC-11 | `NFR-DEV-003`、`NFR-PLAT-002` | **Windows 双通道安装包、开发版一条命令自动安装更新与托盘常驻**：`python scripts/package.py --channel blink-dev` 与 `--channel blink` 分别产出可用 `SHA256SUMS.txt` 校验的按用户安装包（无需管理员）；以测试身份 `blink-dev-test` 在临时目录完成首装 → `--background` 启动并经控制管道 `ping` → 运行中把 `0.1.0-dev.A` 覆盖升级到 `0.1.0-dev.B`（实例经 `quit-for-update` 保存后退出，安装后版本资源与卸载项双核对，并以 `--background` 仅托盘常驻）→ 卸载；演练前后真实 `blink` / `blink-dev` 卸载项、开始菜单快捷方式与数据目录快照不变。本机已装 `blink-dev` 时 `package.py --install` 写出回执 `artifacts/package/install-dev.json`；未装、30 秒不退出、`busy`、安装失败与版本不符均如实跳过或失败，不强杀进程 | 自动化通过（单元、双通道打包、测试身份升级演练与快照比对通过；`H-002` 首次手动安装 `not-run`） |
+
+<a id="oss"></a>
+## 5. 上游组件与平台风险（OSS）
+
+跟踪五端框架、原生渲染引擎与操作系统平台限制对后续阶段实现的具体约束：
+
+| 编号 | 上游组件或平台事项 | 架构应对策略与阶段验证安排 |
+| --- | --- | --- |
+| OSS-001 | 跨五端 WebView 碎片化（`flutter_inappwebview 6.1.5` 稳定版不含 Linux、`6.2.0-beta` 依赖桌面罕见的 WPE WebKit 2.0；`desktop_webview_window 0.4.3` 在 Linux 依赖系统 `libwebkit2gtk-4.1-0` / `libsoup-3.0-0` 且未暴露 Dart 层无痕开关）及移动端重型富文本编辑器中文输入法组合态光标跳动 | **分层拆解与显式登记**：① 采集层与表面 1（时间流、阅读器、快速卡片）坚持纯 Flutter 原生组件树（BFM v1 原生 `TextField` + 5 条 CJK 输入法规则 `SPK-02`、`flutter_widget_from_html_core` + `fl_chart` + `<blink-*>`）；② 表面 2 仅按需单实例承载整页 HTML 视图，Win/macOS/Android/iOS 用 `flutter_inappwebview 6.1.5`（Windows 需通过 `WebViewEnvironmentSettings` 注册 `blink-blob` 协议与通道隔离 `userDataFolder`），Linux 用 `desktop_webview_window 0.4.3`（按 [DEC-026](../decisions.md#dec-026) 登记动态链接，走 `127.0.0.1` 随机端口 HTTP CSP + `Cache-Control: no-store`）；③ M6 `SPK-06` 实测 Linux WebKitGTK `#private` 磁盘残留审计，若有残留则将 Linux `#private` 视图锁定表面 1 渲染，缺库时自动降级表面 1（[Q-006](https://github.com/chialecode/blink/issues/7)） |
+| OSS-002 | `pdfrx 3.1.0` / `pdfrx_engine 0.9.6` 五端 PDFium 动态库分发、中文字体回退及 `sqlite3 3.9.1` Dart Build Hooks（替代已停止维护的旧封装）在五端与 `dart build cli` 打包中的产物布局与 7 天依赖冷却校验 | 全链路采用宽松许可的 `pdfrx` + `pdfrx_engine`（MIT / PDFium Apache-2.0 & BSD-3-Clause，零 AGPL）与 `drift 2.35.4` + `sqlite3 3.9.1`；M3 依赖锁定前按 `DEC-007` 核验最新补丁满 7 天冷却期，以 `SPK-01`、`SPK-04` 与 `SPK-07` 实测 `dart build cli` 随附动态库打包、PDF 高分屏瓦片释放与生僻汉字渲染 |
+| OSS-003 | 野生网页（含纯前端 SPA 渲染页面）与 EPUB 的畸形 XHTML、Zip-Slip 路径穿越及外置 AI 产出的 CSS 大小写/转义绕过（如 `URL(...)`、`\75 rl(...)`）与 SVG `<use>`/`<foreignObject>` 注入面 | 纯 Dart 后台 Isolate 解析管线内置防 SSRF 与 Zip-Slip/压缩炸弹配额，遇到纯 SPA 或付费墙/反爬页面诚实返回错误状态供手动粘贴而绝不绕过；全量 HTML/SVG/CSS 统一经纯 Dart `packages/blink_sanitizer`（`package:html 0.15.7` HTML5 树重建 + W3C CSS Syntax L3 令牌级白名单编译器）净化并叠加表面 2 离线 CSP，M3/M5/M6 以 `SPK-06` 与 `SPK-08` 对抗样本集回归验证 |
+| OSS-004 | iOS 与 Android 对后台常驻与长连接的系统回收限制，以及“主力桌面机休眠时手机无法直连同步”的个人场景约束 | 端侧全部读写 0ms 落盘本地 `drift` Outbox（`INV-04`），利用前台活跃态与切回前台窗口触发增量同步；M4 在提供桌面内嵌 `shelf` LAN/`bonsoir`/Tailscale 直连与 `blink sync serve` 无头二进制的同时，一并交付客户端端到端加密（`XChaCha20-Poly1305`）WebDAV/S3 异步中继，使手机与休眠主力机亦可安全异步收敛 |
