@@ -439,8 +439,16 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             # Updates skip the folder page; a folder holding another program's uninstaller is refused.
             "!define MUI_PAGE_CUSTOMFUNCTION_PRE BlinkDirectoryPre",
             "!define BLINK_EXIT_FOLDER_TAKEN 7",
+            "!define BLINK_EXIT_FILES_NOT_WRITTEN 8",
         ):
             self.assertIn(needle, text)
+        # A file /S could not write stops the install before the uninstaller and the entry are written.
+        self.assertRegex(
+            text,
+            r"ClearErrors\n\s*File /r \"\$\{BLINK_SOURCE_DIR\}\\\*\"\n\s*\$\{If\} \$\{Errors\}\n"
+            r"(?:.*\n){0,2}?\s*SetErrorLevel \$\{BLINK_EXIT_FILES_NOT_WRITTEN\}\n\s*Quit\n\s*\$\{EndIf\}\n"
+            r"\s*WriteUninstaller ",
+        )
         self.assertNotRegex(text, r"(?im)^\s*SetCompressor\s.*lzma")
         for value in (
             "DisplayName",
@@ -714,6 +722,17 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
         self.assertEqual(harness.direct_calls, [])
         self.assertEqual(harness.explorer_calls, [])
         harness.registry.assert_only_dev_key_touched(self)
+
+    def test_installer_files_not_written_is_explained(self) -> None:
+        harness = FakeInstallHarness(dev_entry=self._entry(), installer_rc=8)
+        rc, receipt = self._run_case(harness)
+
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(receipt["installed"])
+        self.assertEqual(receipt["reason"], "installer_failed_exit_8")
+        self.assertIn("could not be written", str(receipt["error"]))
+        self.assertEqual(harness.direct_calls, [])
+        self.assertEqual(harness.explorer_calls, [])
 
     def test_missing_uninstall_entry_after_install_fails(self) -> None:
         harness = FakeInstallHarness(dev_entry=None, installer_rc=0, post_install_reg_version=None)

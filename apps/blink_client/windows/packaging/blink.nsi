@@ -41,6 +41,7 @@
 !define BLINK_EXIT_QUIT_TIMEOUT 4  ; BLINK did not exit within 30 s
 !define BLINK_EXIT_QUIT_FAILED 5   ; BLINK runs, but asking it to quit failed
 !define BLINK_EXIT_FOLDER_TAKEN 7  ; the folder holds another program's Uninstall.exe
+!define BLINK_EXIT_FILES_NOT_WRITTEN 8 ; some files could not be written; the entry keeps the old version
 
 Unicode true
 ManifestDPIAware true
@@ -291,7 +292,17 @@ Section "Install"
   ${EndIf}
 
   SetOutPath "$INSTDIR"
+  ; Under /S, File skips a file it cannot write (held open, read-only) and
+  ; only sets the error flag. Stop before the uninstaller, the shortcuts and
+  ; the entry: the entry keeps the old version, so the next install runs the
+  ; old uninstaller (still here; /UPDATE keeps it) and writes everything again.
+  ClearErrors
   File /r "${BLINK_SOURCE_DIR}\*"
+  ${If} ${Errors}
+    MessageBox MB_OK|MB_ICONSTOP "有文件没能写入 $INSTDIR（可能被别的程序占用）。请关闭占用的程序后重新安装 ${BLINK_PRODUCT_NAME}。" /SD IDOK
+    SetErrorLevel ${BLINK_EXIT_FILES_NOT_WRITTEN}
+    Quit
+  ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateShortCut "$SMPROGRAMS\${BLINK_PRODUCT_NAME}.lnk" "$INSTDIR\${BLINK_EXE}"

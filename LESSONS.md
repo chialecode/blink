@@ -12,3 +12,8 @@
 
 - **Linux CI 跑 `flutter test` 前要装 GTK 3、X11、Xi 开发包。** 托盘/窗口插件在构建钩子里编译原生代码，缺头文件时 `flutter test` 直接失败（`pkg-config --cflags gtk+-3.0 x11 xi failed`）。证据：#2。出现 1 次。
 - **测试里不要写死会过期的日期。** 固定的 Cookie 过期时间、证书有效期或“未来”日期到期后测试会突然失败；用相对当前时间计算。证据：2026-11-24 另一个项目的 CI。出现 1 次。
+
+## 打包与安装
+
+- **NSIS 静默安装写不进文件时不会失败。** `/S` 下 `File` 遇到被占用或只读的文件只置错误标志就跳过，安装器照常写卸载项、返回 0，留下新旧混装；`File` 前 `ClearErrors`、之后检查 `${Errors}` 并以退出码 `8` 结束（写卸载项之前）。证据：[#27](https://github.com/chialecode/blink/issues/27)。出现 1 次。
+- **NSIS 的 `/D=` 必须放在命令行最后且不加引号。** 加了引号 NSIS 不认它，引号里的内容还会混进其他参数；`GetOptions` 也取不到整段加了引号的 `"/X=带空格的值"`，要先换成 `/X="带空格的值"` 再取。证据：[#26](https://github.com/chialecode/blink/pull/26)。出现 1 次。
