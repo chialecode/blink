@@ -6,6 +6,9 @@
 ; folder; /RELAUNCH starts BLINK once a silent update is done; /NODESKTOP
 ; keeps a silent first install off the desktop (the rehearsal uses it).
 ; The uninstall entry is HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<app id>.
+; An update goes into the installed folder (no folder page); a /D= naming
+; another folder moves the installation there (the old copy is uninstalled).
+; A folder holding another program's Uninstall.exe is refused (exit code 7).
 ; User data lives outside the install folder and is never removed here.
 
 !if "${NSIS_VERSION}" != "v3.13"
@@ -37,10 +40,13 @@
 !define BLINK_EXIT_BUSY 3          ; BLINK reported busy and kept running
 !define BLINK_EXIT_QUIT_TIMEOUT 4  ; BLINK did not exit within 30 s
 !define BLINK_EXIT_QUIT_FAILED 5   ; BLINK runs, but asking it to quit failed
+!define BLINK_EXIT_FOLDER_TAKEN 7  ; the folder holds another program's Uninstall.exe
 
 Unicode true
 ManifestDPIAware true
-SetCompressor /SOLID lzma
+; zlib: its module is under the zlib/libpng licence like the rest of the stub
+; (NSIS's LZMA module is CPL-1.0; see docs/research/2026-11-24-nsis-installer.md).
+SetCompressor /SOLID zlib
 RequestExecutionLevel user
 Name "${BLINK_PRODUCT_NAME}"
 OutFile "${BLINK_OUT_FILE}"
@@ -65,6 +71,8 @@ ShowUninstDetails nevershow
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "创建桌面快捷方式"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
+!define MUI_PAGE_CUSTOMFUNCTION_PRE BlinkDirectoryPre
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE BlinkDirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -150,6 +158,17 @@ Function ${UN}BlinkCloseApp
       SetErrorLevel ${BLINK_EXIT_BUSY}
       Quit
     ${EndIf}
+    ${If} $2 <> 0
+      ; The request did not get through (pipe or protocol error). Unless BLINK
+      ; happened to exit meanwhile, there is nothing to wait for.
+      Call ${UN}BlinkIsRunning
+      Pop $0
+      ${If} $0 == "1"
+        MessageBox MB_OK|MB_ICONSTOP "无法请 ${BLINK_PRODUCT_NAME} 退出。请先从托盘退出它再试。" /SD IDOK
+        SetErrorLevel ${BLINK_EXIT_QUIT_FAILED}
+        Quit
+      ${EndIf}
+    ${EndIf}
     StrCpy $2 0
     ${Do}
       Call ${UN}BlinkIsRunning
@@ -183,24 +202,87 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+; Leaves "1" on the stack when $INSTDIR holds an Uninstall.exe that is not
+; this identity's installed copy (another program, or another BLINK channel),
+; else "0". Such an uninstaller is never run or overwritten.
+Function BlinkFolderTaken
+  Push $0
+  Push $1
+  StrCpy $1 "0"
+  ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
+    ReadRegStr $0 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
+    ${If} $0 != $INSTDIR
+      StrCpy $1 "1"
+    ${EndIf}
+  ${EndIf}
+  Exch $1
+  Exch
+  Pop $0
+FunctionEnd
+
+; An update goes into the installed folder: no folder page then.
+Function BlinkDirectoryPre
+  ReadRegStr $0 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
+  ${If} $0 != ""
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function BlinkDirectoryLeave
+  Call BlinkFolderTaken
+  Pop $0
+  ${If} $0 == "1"
+    MessageBox MB_OK|MB_ICONSTOP "$INSTDIR 里已装有别的程序。请换一个文件夹。"
+    Abort
+  ${EndIf}
+FunctionEnd
+
 Function CreateDesktopShortcut
   SetOutPath "$INSTDIR"
   CreateShortCut "$DESKTOP\${BLINK_PRODUCT_NAME}.lnk" "$INSTDIR\${BLINK_EXE}"
 FunctionEnd
 
 Section "Install"
-  SetOutPath "$INSTDIR"
+  ; Silent installs (and anything past the folder page) check the folder here.
+  Call BlinkFolderTaken
+  Pop $0
+  ${If} $0 == "1"
+    MessageBox MB_OK|MB_ICONSTOP "$INSTDIR 里已装有别的程序。请换一个文件夹再安装 ${BLINK_PRODUCT_NAME}。" /SD IDOK
+    SetErrorLevel ${BLINK_EXIT_FOLDER_TAKEN}
+    Quit
+  ${EndIf}
   Call BlinkCloseApp
 
   StrCpy $FirstInstall "1"
-  ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
-    StrCpy $FirstInstall "0"
-    ; The installed version's uninstaller removes exactly its own files
-    ; (/UPDATE keeps the shortcuts and the uninstall entry), so files this
-    ; version no longer ships do not linger. _?= runs it in place and waits.
-    ExecWait '"$INSTDIR\Uninstall.exe" /S /UPDATE _?=$INSTDIR'
+  ReadRegStr $0 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
+  ${If} $0 != ""
+    ${If} $0 == $INSTDIR
+      ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
+        StrCpy $FirstInstall "0"
+        ; The installed version's uninstaller removes exactly its own files
+        ; (/UPDATE keeps the shortcuts and the uninstall entry), so files this
+        ; version no longer ships do not linger. _?= runs it in place and waits.
+        ClearErrors
+        ExecWait '"$INSTDIR\Uninstall.exe" /S /UPDATE _?=$INSTDIR'
+        ${If} ${Errors}
+          DetailPrint "旧版本的卸载程序没能运行，旧版本独有的文件可能留在 $INSTDIR。"
+        ${EndIf}
+      ${EndIf}
+    ${ElseIf} ${FileExists} "$0\Uninstall.exe"
+      ; Installed in another folder (a different /D=): uninstall that copy
+      ; completely first, so one copy and one uninstall entry remain.
+      ClearErrors
+      ExecWait '"$0\Uninstall.exe" /S _?=$0'
+      ${If} ${Errors}
+        DetailPrint "没能卸载 $0 里的旧副本。"
+      ${Else}
+        Delete "$0\Uninstall.exe"
+        RMDir "$0"
+      ${EndIf}
+    ${EndIf}
   ${EndIf}
 
+  SetOutPath "$INSTDIR"
   File /r "${BLINK_SOURCE_DIR}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 

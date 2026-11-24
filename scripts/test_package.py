@@ -396,8 +396,19 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
     def test_silent_installer_uses_nsis_switches(self) -> None:
         fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with mock.patch.object(package.subprocess, "run", return_value=fake) as run_mock:
-            package.run_silent_installer(Path("setup.exe"), extra_args=["/NODESKTOP", "/D=C:\\x y"])
-        self.assertEqual(run_mock.call_args.args[0], ["setup.exe", "/S", "/NODESKTOP", "/D=C:\\x y"])
+            rc = package.run_silent_installer(
+                Path("C:\\a b\\setup.exe"), extra_args=["/NODESKTOP"], install_dir=Path("C:\\x y\\blink")
+            )
+        self.assertEqual(rc, 0)
+        # /D= stays last and unquoted even with a space; the installer path itself is quoted.
+        self.assertEqual(run_mock.call_args.args[0], '"C:\\a b\\setup.exe" /S /NODESKTOP /D=C:\\x y\\blink')
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], package.INSTALLER_TIMEOUT_SECONDS)
+
+    def test_silent_installer_reports_a_hang(self) -> None:
+        with mock.patch.object(
+            package.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="setup.exe", timeout=1)
+        ):
+            self.assertEqual(package.run_silent_installer(Path("setup.exe")), package.INSTALLER_TIMED_OUT)
 
     def test_nsi_script_pins_nsis_and_keeps_per_user_update_contract(self) -> None:
         nsi_path = package.NSI_PATH
@@ -423,8 +434,14 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             "MUI_FINISHPAGE_SHOWREADME_NOTCHECKED",
             '!insertmacro MUI_LANGUAGE "SimpChinese"',
             "!insertmacro BLINK_REMOVE_INSTALLED_FILES",
+            # zlib only: NSIS's LZMA module is CPL-1.0 (docs/research/2026-11-24-nsis-installer.md).
+            "SetCompressor /SOLID zlib",
+            # Updates skip the folder page; a folder holding another program's uninstaller is refused.
+            "!define MUI_PAGE_CUSTOMFUNCTION_PRE BlinkDirectoryPre",
+            "!define BLINK_EXIT_FOLDER_TAKEN 7",
         ):
             self.assertIn(needle, text)
+        self.assertNotRegex(text, r"(?im)^\s*SetCompressor\s.*lzma")
         for value in (
             "DisplayName",
             "DisplayVersion",

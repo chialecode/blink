@@ -54,6 +54,10 @@ QUIT_POLL_INTERVAL_SECONDS = 0.25
 # While the BLINK Dev window is open the install waits for it to close (or hide
 # to the tray), at most this long, then skips and says so (#20).
 WINDOW_DEFER_TIMEOUT_SECONDS = 600.0
+# A silent install waits up to 30 s for BLINK to quit and then copies files; this only stops a hang.
+INSTALLER_TIMEOUT_SECONDS = 600.0
+# run_silent_installer's result when the installer did not finish within INSTALLER_TIMEOUT_SECONDS.
+INSTALLER_TIMED_OUT = -1
 WINDOW_DEFER_POLL_INTERVAL_SECONDS = 2.0
 REHEARSAL_QUIT_TIMEOUT_SECONDS = 5.0
 TRAY_VERIFY_TIMEOUT_SECONDS = 5.0
@@ -452,7 +456,7 @@ def fetch_pinned_nsis(target: Path, *, download: Callable[[str], bytes] | None =
                 rel = PurePosixPath(name[len(root):])
                 if not rel.parts:
                     continue
-                if rel.is_absolute() or ".." in rel.parts or ":" in rel.parts[0]:
+                if rel.is_absolute() or any(part == ".." or ":" in part for part in rel.parts):
                     raise PackageError(f"Unsafe path in NSIS archive: {info.filename!r}")
                 dest = staging.joinpath(*rel.parts)
                 if info.is_dir():
@@ -1033,21 +1037,44 @@ def request_quit_for_update_process(
     )
 
 
+def silent_install_command(
+    installer_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+    install_dir: Path | None = None,
+) -> str:
+    """Command line for a silent NSIS install.
+
+    /D= must come last and stay unquoted even with spaces: NSIS takes the rest of the line as the
+    folder and only recognises /D= after a space, so it cannot go through list quoting.
+    """
+    cmd = subprocess.list2cmdline([str(installer_path), "/S", *(extra_args or [])])
+    if install_dir is not None:
+        cmd += f" /D={install_dir}"
+    return cmd
+
+
 def run_silent_installer(
     installer_path: Path,
     *,
     extra_args: list[str] | None = None,
+    install_dir: Path | None = None,
+    timeout_s: float = INSTALLER_TIMEOUT_SECONDS,
 ) -> int:
-    # NSIS: /S is silent; a /D=<folder> extra argument must come last and stay unquoted.
-    cmd = [str(installer_path), "/S", *(extra_args or [])]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=_subprocess_flags(),
-    )
+    """Run the installer silently; its exit code, or INSTALLER_TIMED_OUT when it hung."""
+    cmd = silent_install_command(installer_path, extra_args=extra_args, install_dir=install_dir)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_subprocess_flags(),
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return INSTALLER_TIMED_OUT
     return proc.returncode
 
 
@@ -1384,6 +1411,45 @@ def _display_installer_path(installer_path: Path | None, repo_root: Path) -> str
         return installer_path.as_posix()
 
 
+def new_install_receipt(
+    *,
+    identity: str,
+    new_version: str | None,
+    dirty: bool | None,
+    installer: str | None,
+    at: str,
+) -> dict[str, Any]:
+    """install-dev.json with every field present (the unified camelCase ones plus BLINK's own)."""
+    return {
+        "identity": identity,
+        "installed": False,
+        "skipped": False,
+        "reason": None,
+        "error": None,
+        "firstInstall": False,
+        "oldVersion": None,
+        "newVersion": new_version,
+        "dirty": dirty,
+        "installLocation": None,
+        "installer": installer,
+        "wasRunning": False,
+        "windowOpen": False,
+        "deferred": False,
+        "deferMs": None,
+        "quitMs": None,
+        "verifiedRegistryVersion": None,
+        "verifiedExeVersion": None,
+        "relaunched": False,
+        "background": False,
+        "launchMethod": None,
+        "runningInTray": False,
+        "inJob": False,
+        "guidance": None,
+        "elapsedMs": 0,
+        "at": at,
+    }
+
+
 def run_dev_auto_install(
     *,
     channel: str,
@@ -1412,34 +1478,13 @@ def run_dev_auto_install(
     eff_identity = identity if identity is not None else channel
     rel_installer = _display_installer_path(installer_path, repo_root)
     started = deps.clock.monotonic()
-    receipt: dict[str, Any] = {
-        "identity": eff_identity,
-        "installed": False,
-        "skipped": False,
-        "reason": None,
-        "error": None,
-        "firstInstall": False,
-        "oldVersion": None,
-        "newVersion": new_version,
-        "dirty": dirty,
-        "installLocation": None,
-        "installer": rel_installer,
-        "wasRunning": False,
-        "windowOpen": False,
-        "deferred": False,
-        "deferMs": None,
-        "quitMs": None,
-        "verifiedRegistryVersion": None,
-        "verifiedExeVersion": None,
-        "relaunched": False,
-        "background": False,
-        "launchMethod": None,
-        "runningInTray": False,
-        "inJob": False,
-        "guidance": None,
-        "elapsedMs": 0,
-        "at": utc_iso(deps.clock.utc_now()),
-    }
+    receipt = new_install_receipt(
+        identity=eff_identity,
+        new_version=new_version,
+        dirty=dirty,
+        installer=rel_installer,
+        at=utc_iso(deps.clock.utc_now()),
+    )
 
     def elapsed_ms(since: float) -> int:
         return int(round(max(0.0, deps.clock.monotonic() - since) * 1000))
@@ -1868,10 +1913,7 @@ def run_rehearsal(
         steps["build_a_b"] = {"status": "passed", "versionA": version_a, "versionB": version_b}
 
         # Step R1: Silent install A into isolated temp dir without desktop shortcut.
-        rc_a = run_silent_installer(
-            pkg_a.installer_path,
-            extra_args=["/NODESKTOP", f"/D={install_dir}"],
-        )
+        rc_a = run_silent_installer(pkg_a.installer_path, extra_args=["/NODESKTOP"], install_dir=install_dir)
         if rc_a != 0:
             raise PackageError(f"Rehearsal installer A failed with exit code {rc_a}")
         installed_for_cleanup = True
@@ -1963,10 +2005,7 @@ def run_rehearsal(
         )
         time.sleep(0.25)
 
-        rc_b = run_silent_installer(
-            pkg_b.installer_path,
-            extra_args=["/NODESKTOP", f"/D={install_dir}"],
-        )
+        rc_b = run_silent_installer(pkg_b.installer_path, extra_args=["/NODESKTOP"], install_dir=install_dir)
         if rc_b != 0:
             raise PackageError(f"Rehearsal installer B failed with exit code {rc_b}")
 
@@ -2250,18 +2289,9 @@ def main(argv: list[str] | None = None) -> int:
                 dest_dir=DIST_ROOT / "blink-dev",
             )
         except PackageError as exc:
-            atomic_write_json(
-                receipt_path,
-                {
-                    "identity": "blink-dev",
-                    "installed": False,
-                    "skipped": False,
-                    "reason": "build_failed",
-                    "error": str(exc),
-                    "newVersion": None,
-                    "at": utc_iso(),
-                },
-            )
+            failed = new_install_receipt(identity="blink-dev", new_version=None, dirty=None, installer=None, at=utc_iso())
+            failed.update(reason="build_failed", error=str(exc))
+            atomic_write_json(receipt_path, failed)
             print(f"FAIL: {exc}", file=sys.stderr)
             return 1
 
