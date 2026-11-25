@@ -141,6 +141,17 @@ abstract final class BlinkTypography {
         color: color ?? tokens.textSecondary,
       );
 
+  /// BFM v1 editor prose style (`15px`, line-height `1.65`, `docs/ui.md` §2.2).
+  static TextStyle editorBody(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 15,
+        fontWeight: FontWeight.w400,
+        height: 1.65,
+        color: color ?? tokens.textPrimary,
+      );
+
   /// Compact status/channel pill label (`12px`, `w600`).
   static TextStyle badge({required Color color}) => TextStyle(
     fontFamily: uiFontFamily,
@@ -223,6 +234,21 @@ class BlinkColorTokens extends ThemeExtension<BlinkColorTokens> {
 
   /// Sync conflict / error status (`--blink-status-err`).
   final Color statusErr;
+
+  /// Soft translucent highlight fill for BFM `==mark==` (`docs/ui.md` §2.1).
+  Color get highlightMark => statusWarn.withValues(alpha: 0.24);
+
+  /// Soft translucent fill for `#private` badges and filter pills.
+  Color get privacySubtle => privacyPrivate.withValues(alpha: 0.14);
+
+  /// Soft translucent fill for warning banners.
+  Color get statusWarnSubtle => statusWarn.withValues(alpha: 0.12);
+
+  /// Soft translucent fill for error banners.
+  Color get statusErrSubtle => statusErr.withValues(alpha: 0.12);
+
+  /// Soft translucent fill for success pills.
+  Color get statusOkSubtle => statusOk.withValues(alpha: 0.12);
 
   /// Crisp daylight surface (`Day`).
   static const BlinkColorTokens day = BlinkColorTokens(

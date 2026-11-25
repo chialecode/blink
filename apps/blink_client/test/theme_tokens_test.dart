@@ -222,15 +222,25 @@ void main() {
     );
 
     test('widget classes contain zero hardcoded hex Color literals', () {
-      for (final relativePath in <String>[
-        'lib/app/blink_app.dart',
-        'lib/app/blink_brand_mark.dart',
-      ]) {
-        final source = File(relativePath).readAsStringSync();
+      final scannedFiles = <File>[
+        for (final dirPath in const <String>['lib/app', 'lib/ui'])
+          if (Directory(dirPath).existsSync())
+            ...Directory(dirPath)
+                .listSync(recursive: true)
+                .whereType<File>()
+                .where(
+                  (file) =>
+                      file.path.endsWith('.dart') &&
+                      !file.path.endsWith('blink_theme.dart'),
+                ),
+      ];
+      expect(scannedFiles, isNotEmpty);
+      for (final file in scannedFiles) {
+        final source = file.readAsStringSync();
         expect(
           RegExp(r'Color\s*\(\s*0x', caseSensitive: false).hasMatch(source),
           isFalse,
-          reason: '$relativePath must obtain all colors from blink_theme.dart',
+          reason: '${file.path} must obtain all colors from blink_theme.dart',
         );
       }
     });

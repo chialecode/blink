@@ -9,6 +9,10 @@ environment:
 resolution: workspace
 
 dependencies:
+  blink_core:
+    path: ../../packages/blink_core
+  blink_sanitizer:
+    path: ../../packages/blink_sanitizer
   ffi: 2.2.0
   flutter:
     sdk: flutter
