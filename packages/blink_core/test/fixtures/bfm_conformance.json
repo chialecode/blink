@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "cjk_emphasis_quotes_and_punctuation",
+      "input": "这是**“中文”**测试，也是**结论。**下句与*《书名》*强调。",
+      "expectHtmlContains": [
+        "<strong>“中文”</strong>",
+        "<strong>结论。</strong>",
+        "<em>《书名》</em>"
+      ],
+      "expectPlainText": "这是“中文”测试，也是结论。下句与《书名》强调。",
+      "expectIsSimpleFastPath": true
+    },
+    {
+      "name": "wiki_links_and_book_anchors",
+      "input": "参见 [[entry:019349c8-7c10-7b22-9a11-4058c2e90101|思考笔记]]、[[book:019349c8-7c10-7b22-9a11-4058c2e90102#p42|P.42]]、[[book:019349c8-7c10-7b22-9a11-4058c2e90102#ch-003/b-0001-9f2a1c04|§3]] 和 [[模糊标题]]。",
+      "expectHtmlContains": [
+        "<blink-ref id=\"019349c8-7c10-7b22-9a11-4058c2e90101\" kind=\"entry\">思考笔记</blink-ref>",
+        "<blink-ref anchor=\"p42\" id=\"019349c8-7c10-7b22-9a11-4058c2e90102\" kind=\"source\">P.42</blink-ref>",
+        "<blink-ref anchor=\"ch-003/b-0001-9f2a1c04\" id=\"019349c8-7c10-7b22-9a11-4058c2e90102\" kind=\"source\">§3</blink-ref>",
+        "<blink-ref kind=\"title_query\">模糊标题</blink-ref>"
+      ],
+      "expectPlainText": "参见 思考笔记、P.42、§3 和 模糊标题。",
+      "expectPlainTextNotContains": [
+        "019349c8-7c10-7b22-9a11-4058c2e90101",
+        "019349c8-7c10-7b22-9a11-4058c2e90102",
+        "ch-003"
+      ],
+      "expectLinkCount": 4
+    },
+    {
+      "name": "hierarchical_tags_and_hex_url_immunity",
+      "input": "阅读笔记 #思考/系统论 #Reading_2026 颜色 #ff00aa 链接 https://example.com/a#frag 代码 `#not-a-tag`",
+      "expectTags": [
+        "思考/系统论",
+        "reading_2026"
+      ],
+      "expectHasPrivate": false,
+      "expectHtmlContains": [
+        "<blink-tag name=\"思考/系统论\">#思考/系统论</blink-tag>",
+        "<blink-tag name=\"Reading_2026\">#Reading_2026</blink-tag>",
+        "<code>#not-a-tag</code>"
+      ],
+      "expectHtmlNotContains": [
+        "<blink-tag name=\"ff00aa\">",
+        "<blink-tag name=\"frag\">",
+        "<blink-tag name=\"not-a-tag\">"
+      ],
+      "expectPlainTextContains": [
+        "思考 系统论",
+        "Reading_2026"
+      ]
+    },
+    {
+      "name": "private_token_stripped_from_plain_text",
+      "input": "私密复盘 #Private 今日反思 #日记",
+      "expectTags": [
+        "日记"
+      ],
+      "expectHasPrivate": true,
+      "expectHtmlContains": [
+        "<blink-tag data-privacy=\"private\" name=\"private\">🔒 #private</blink-tag>",
+        "<blink-tag name=\"日记\">#日记</blink-tag>"
+      ],
+      "expectPlainText": "私密复盘 今日反思 日记",
+      "expectPlainTextNotContains": [
+        "private",
+        "Private"
+      ]
+    },
+    {
+      "name": "private_token_inside_code_does_not_latch",
+      "input": "示例 `#private` 不会触发私密锁存",
+      "expectTags": [],
+      "expectHasPrivate": false
+    },
+    {
+      "name": "endogenous_tasks_four_states_and_mirror",
+      "input": "- [ ] 整理书摘\n- [x] 完成复盘\n- [>] 延后阅读\n- [-] 放弃方案",
+      "expectTasks": [
+        { "lineIndex": 0, "status": "open", "title": "整理书摘" },
+        { "lineIndex": 1, "status": "done", "title": "完成复盘" },
+        { "lineIndex": 2, "status": "deferred", "title": "延后阅读" },
+        { "lineIndex": 3, "status": "dropped", "title": "放弃方案" }
+      ],
+      "expectHtmlContains": [
+        "<li class=\"task-item\" data-task-status=\"open\">整理书摘</li>",
+        "<li class=\"task-item\" data-task-status=\"done\">完成复盘</li>",
+        "<li class=\"task-item\" data-task-status=\"deferred\">延后阅读</li>",
+        "<li class=\"task-item\" data-task-status=\"dropped\">放弃方案</li>"
+      ],
+      "expectMirrorContains": [
+        "- [ ] 整理书摘",
+        "- [x] 完成复盘",
+        "- [ ] [顺延] 延后阅读",
+        "- [x] ~~[放弃]~~ 放弃方案"
+      ]
+    },
+    {
+      "name": "book_context_bind_and_audio_timestamps",
+      "input": "@book:019349c8-7c10-7b22-9a11-4058c2e90105#p84|《系统之美》 关键片段 @t[14:25] 与 @t[01:12:08]",
+      "expectSourceRefId": "019349c8-7c10-7b22-9a11-4058c2e90105",
+      "expectTimestamps": [
+        { "seconds": 865, "displayText": "14:25" },
+        { "seconds": 4328, "displayText": "01:12:08" }
+      ],
+      "expectHtmlContains": [
+        "<blink-ref anchor=\"p84\" data-bind=\"context\" id=\"019349c8-7c10-7b22-9a11-4058c2e90105\" kind=\"source\">《系统之美》</blink-ref>",
+        "<blink-time sec=\"865\">14:25</blink-time>",
+        "<blink-time sec=\"4328\">01:12:08</blink-time>"
+      ],
+      "expectPlainText": "《系统之美》 关键片段 与",
+      "expectPlainTextNotContains": [
+        "14:25",
+        "01:12:08",
+        "019349c8-7c10-7b22-9a11-4058c2e90105"
+      ],
+      "expectMirrorContains": [
+        "`14:25`",
+        "`01:12:08`"
+      ]
+    },
+    {
+      "name": "callouts_collapsible_and_fold_blocks",
+      "input": "> [!insight]- 核心洞见\n> 反馈回路决定长期行为。\n\n:::fold 展开推理\n这是折叠的==重点==内容。\n:::",
+      "expectIsSimpleFastPath": false,
+      "expectHtmlContains": [
+        "<details class=\"callout callout-insight\"><summary>核心洞见</summary>",
+        "<details><summary>展开推理</summary>",
+        "<mark>重点</mark>"
+      ],
+      "expectPlainTextContains": [
+        "核心洞见",
+        "反馈回路决定长期行为。",
+        "展开推理",
+        "这是折叠的重点内容。"
+      ],
+      "expectPlainTextNotContains": [
+        "[!insight]",
+        ":::fold"
+      ],
+      "expectMirrorContains": [
+        "> **💡 洞察 · 核心洞见**",
+        "<details><summary>展开推理</summary>",
+        "<mark>重点</mark>"
+      ]
+    },
+    {
+      "name": "highlight_and_footnotes",
+      "input": "这是==重点高亮==与注释[^1]。\n\n[^1]: 这是脚注补充说明。",
+      "expectIsSimpleFastPath": false,
+      "expectHtmlContains": [
+        "<mark>重点高亮</mark>",
+        "<sup><a href=\"#fn-1\">[1]</a></sup>",
+        "<section class=\"footnotes\"><ol><li id=\"fn-1\">这是脚注补充说明。</li></ol></section>"
+      ],
+      "expectPlainTextContains": [
+        "这是重点高亮与注释。",
+        "这是脚注补充说明。"
+      ],
+      "expectPlainTextNotContains": [
+        "=="
+      ]
+    },
+    {
+      "name": "math_currency_safety_and_ai_readonly_embed",
+      "input": "价格 $5 到 $10，公式 $E=mc^2$ 与嵌入 ![[ai:019349c8-7c10-7b22-9a11-4058c2e90109|周度复盘卡片]]\n\n$$\na^2 + b^2 = c^2\n$$",
+      "expectIsSimpleFastPath": false,
+      "expectAiEmbedIds": [
+        "019349c8-7c10-7b22-9a11-4058c2e90109"
+      ],
+      "expectHtmlContains": [
+        "$5 到 $10",
+        "<blink-math display=\"inline\">E=mc^2</blink-math>",
+        "<blink-embed id=\"019349c8-7c10-7b22-9a11-4058c2e90109\" kind=\"ai\">周度复盘卡片</blink-embed>",
+        "<blink-math display=\"block\">a^2 + b^2 = c^2</blink-math>"
+      ],
+      "expectPlainTextContains": [
+        "E=mc^2",
+        "a^2 + b^2 = c^2"
+      ],
+      "expectPlainTextNotContains": [
+        "019349c8-7c10-7b22-9a11-4058c2e90109",
+        "周度复盘卡片"
+      ]
+    },
+    {
+      "name": "raw_html_escaped_except_details_summary",
+      "input": "安全测试 <script>alert(1)</script> <img src=x onerror=alert(1)> <details><summary>允许折叠</summary>正文</details>",
+      "expectHtmlContains": [
+        "&lt;script&gt;alert(1)&lt;/script&gt;",
+        "&lt;img src=x onerror=alert(1)&gt;",
+        "<details><summary>允许折叠</summary>正文</details>"
+      ],
+      "expectHtmlNotContains": [
+        "<script>",
+        "<img"
+      ]
+    }
+  ]
+}
