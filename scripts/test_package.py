@@ -97,6 +97,8 @@ class FakeInstallHarness:
         tray_verified: bool = True,
         window_open_polls: int = 0,
         window_open_forever: bool = False,
+        exe_running_polls: int = 0,
+        exe_running_forever: bool = False,
     ) -> None:
         initial: dict[str, package.UninstallEntry] = {
             "blink": package.UninstallEntry(
@@ -131,6 +133,11 @@ class FakeInstallHarness:
         self._window_open_remaining = window_open_polls
         self._window_open_forever = window_open_forever
         self.window_checks: list[Path] = []
+        self._exe_running_remaining = exe_running_polls
+        self._exe_running_forever = exe_running_forever
+        self.exe_checks: list[Path] = []
+        # Whether a blink-dev.exe process was still there each time the installer ran.
+        self.exe_running_at_install: list[bool] = []
 
         self.quit_calls: list[tuple[Path, str, float]] = []
         self.installer_calls: list[Path] = []
@@ -158,6 +165,15 @@ class FakeInstallHarness:
             return True
         return False
 
+    def _is_exe_running(self, exe_path: Path) -> bool:
+        self.exe_checks.append(exe_path)
+        if self._exe_running_forever:
+            return True
+        if self._exe_running_remaining > 0:
+            self._exe_running_remaining -= 1
+            return True
+        return False
+
     def _request_quit(self, exe_path: Path, identity: str, timeout_s: float) -> package.QuitRequestResult:
         self.quit_calls.append((exe_path, identity, timeout_s))
         self.clock.sleep(0.1)
@@ -165,6 +181,7 @@ class FakeInstallHarness:
 
     def _run_installer(self, installer_path: Path) -> int:
         self.installer_calls.append(installer_path)
+        self.exe_running_at_install.append(self._exe_running_forever or self._exe_running_remaining > 0)
         if self._installer_rc == 0 and self._post_reg_ver is not None:
             existing = self.registry.read_dev_only()
             loc = existing.install_location if existing is not None else (Path("mock_programs") / "blink-dev")
@@ -210,6 +227,7 @@ class FakeInstallHarness:
             verify_running_in_tray=self._verify_tray,
             clock=self.clock,
             is_window_open=self._is_window_open,
+            is_exe_running=self._is_exe_running,
         )
 
 
@@ -443,6 +461,34 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             "!define BLINK_EXIT_FILES_NOT_WRITTEN 8",
         ):
             self.assertIn(needle, text)
+        # After the mutex is gone, wait (same 30 s) until the installed exe can be opened for writing (#31).
+        close_app = text[text.index("Function ${UN}BlinkCloseApp") : text.index("FunctionEnd", text.index("Function ${UN}BlinkCloseApp"))]
+        exe_wait = re.search(
+            r"\$\{If\} \$\{FileExists\} \"\$1\"\n\s*\$\{Do\}\n"
+            r"\s*System::Call 'kernel32::CreateFileW\(w r1, i 0x40000000, i 7, p 0, i 3, i 0x80, p 0\) p\.r0 \?e'\n"
+            r"\s*Pop \$3\n\s*\$\{If\} \$0 P<> -1\n\s*System::Call 'kernel32::CloseHandle\(p r0\)'\n\s*\$\{Break\}\n\s*\$\{EndIf\}\n"
+            r"\s*\$\{If\} \$3 <> 32\n\s*\$\{Break\}\n\s*\$\{EndIf\}\n"
+            r"\s*\$\{If\} \$2 >= \$\{BLINK_QUIT_WAIT_TICKS\}\n[^\n]*\n\s*SetErrorLevel \$\{BLINK_EXIT_QUIT_TIMEOUT\}\n",
+            close_app,
+        )
+        self.assertIsNotNone(exe_wait, "BlinkCloseApp must wait while the installed exe is in use (sharing violation only)")
+        # The exe path and the shared tick count are set before the mutex check, so the wait also runs
+        # when no mutex was found; the wait itself follows the mutex wait's loop.
+        first_check = close_app.index("Call ${UN}BlinkIsRunning")
+        self.assertLess(close_app.index('ReadRegStr $1 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"'), first_check)
+        self.assertLess(close_app.index("StrCpy $2 0"), first_check)
+        mutex_wait_end = re.search(r"\$\{Loop\}\n\s*\$\{EndIf\}\n", close_app)
+        self.assertIsNotNone(mutex_wait_end)
+        self.assertLess(mutex_wait_end.end(), exe_wait.start() + 1, "the exe wait runs after the mutex wait, outside it")
+        self.assertNotIn("FileOpen", close_app, "FileOpen's append mode would create a missing exe")
+        # package.INSTALLER_EXITS_BEFORE_FILES: those exits happen before the old uninstaller runs and before any file is written.
+        install = text[text.index('Section "Install"') : text.index("SectionEnd", text.index('Section "Install"'))]
+        first_change = min(install.index("ExecWait"), install.index("File /r"))
+        for early in ("Call BlinkFolderTaken", "SetErrorLevel ${BLINK_EXIT_FOLDER_TAKEN}", "Call BlinkCloseApp"):
+            self.assertLess(install.index(early), first_change, f"{early} must come before the install changes anything")
+        early_codes = {int(code) for name, code in re.findall(r"(?m)^!define (BLINK_EXIT_\w+) (\d+)", text)
+                       if name in {"BLINK_EXIT_BUSY", "BLINK_EXIT_QUIT_TIMEOUT", "BLINK_EXIT_QUIT_FAILED", "BLINK_EXIT_FOLDER_TAKEN"}}
+        self.assertEqual(early_codes, set(package.INSTALLER_EXITS_BEFORE_FILES))
         # A file /S could not write stops the install before the uninstaller, the shortcuts and the entry.
         check = re.search(
             r"ClearErrors\n\s*File /r \"\$\{BLINK_SOURCE_DIR\}\\\*\"\n\s*\$\{If\} \$\{Errors\}\n"
@@ -719,6 +765,105 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
         self.assertEqual(harness.direct_calls, [])
         harness.registry.assert_only_dev_key_touched(self)
 
+    def test_process_still_ending_after_the_lock_is_waited_for(self) -> None:
+        harness = FakeInstallHarness(
+            dev_entry=self._entry(),
+            running_polls_before_exit=2,
+            exe_running_polls=4,
+            post_install_reg_version=self.NEW,
+            post_install_exe_version=self.NEW,
+        )
+        rc, receipt = self._run_case(harness)
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertTrue(receipt["wasRunning"])
+        self.assertEqual(len(harness.exe_checks), 5)
+        self.assertTrue(all(exe.name == "blink-dev.exe" for exe in harness.exe_checks))
+        self.assertEqual(harness.exe_running_at_install, [False])
+
+    def test_process_that_outlives_the_lock_aborts_without_force_kill(self) -> None:
+        # The lock goes after 20 s; the process then gets only what is left of the same 30 s.
+        harness = FakeInstallHarness(dev_entry=self._entry(), running_polls_before_exit=80, exe_running_forever=True)
+        rc, receipt = self._run_case(harness)
+
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(receipt["installed"])
+        self.assertTrue(receipt["wasRunning"])
+        self.assertEqual(receipt["reason"], "quit_timeout")
+        self.assertGreaterEqual(int(receipt["quitMs"]), 30_000)
+        self.assertLess(int(receipt["quitMs"]), 30_500)
+        self.assertEqual(harness.force_kill_calls, 0)
+        self.assertEqual(harness.installer_calls, [])
+        # It is still there: nothing to start again.
+        self.assertEqual(harness.direct_calls, [])
+
+    def test_lockless_running_exe_is_waited_for_then_reported(self) -> None:
+        harness = FakeInstallHarness(dev_entry=self._entry(), exe_running_forever=True)
+        rc, receipt = self._run_case(harness)
+
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(receipt["installed"])
+        self.assertFalse(receipt["wasRunning"])
+        self.assertEqual(receipt["reason"], "process_running")
+        self.assertIn("blink-dev.exe", str(receipt["error"]))
+        self.assertGreaterEqual(int(receipt["elapsedMs"]), 30_000)
+        self.assertGreater(len(harness.exe_checks), 1)
+        self.assertEqual(harness.quit_calls, [])
+        self.assertEqual(harness.installer_calls, [])
+        self.assertEqual(harness.direct_calls, [])
+        self.assertEqual(harness.force_kill_calls, 0)
+
+    def test_lockless_exe_that_ends_is_waited_for_then_installed(self) -> None:
+        harness = FakeInstallHarness(
+            dev_entry=self._entry(),
+            exe_running_polls=6,
+            post_install_reg_version=self.NEW,
+            post_install_exe_version=self.NEW,
+        )
+        rc, receipt = self._run_case(harness)
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertFalse(receipt["wasRunning"])
+        self.assertEqual(harness.quit_calls, [])
+        self.assertEqual(len(harness.exe_checks), 7)
+        self.assertEqual(harness.exe_running_at_install, [False])
+
+    def test_failed_install_starts_the_app_it_closed_again_from_a_whole_folder(self) -> None:
+        for label, kwargs, reason in (
+            ("stopped before files", {"installer_rc": 5}, "installer_failed_exit_5"),
+            ("version", {"post_install_reg_version": self.OLD, "post_install_exe_version": self.OLD}, "version_mismatch"),
+        ):
+            with self.subTest(label):
+                harness = FakeInstallHarness(dev_entry=self._entry(), running_polls_before_exit=2, **kwargs)
+                rc, receipt = self._run_case(harness)
+
+                self.assertNotEqual(rc, 0)
+                self.assertFalse(receipt["installed"])
+                self.assertTrue(receipt["wasRunning"])
+                self.assertEqual(receipt["reason"], reason)
+                self.assertTrue(receipt["relaunched"])
+                self.assertTrue(receipt["background"])
+                self.assertEqual(receipt["launchMethod"], "direct")
+                self.assertEqual(
+                    harness.direct_calls,
+                    [(Path("mock_programs") / "blink-dev" / "blink-dev.exe", ["--background"])],
+                )
+                harness.registry.assert_only_dev_key_touched(self)
+
+    def test_failed_install_leaves_a_partly_written_folder_alone(self) -> None:
+        for rc in (8, package.INSTALLER_TIMED_OUT, 2):
+            with self.subTest(rc=rc):
+                harness = FakeInstallHarness(dev_entry=self._entry(), running_polls_before_exit=2, installer_rc=rc)
+                code, receipt = self._run_case(harness)
+
+                self.assertNotEqual(code, 0)
+                self.assertTrue(receipt["wasRunning"])
+                self.assertEqual(receipt["reason"], f"installer_failed_exit_{rc}")
+                self.assertFalse(receipt["relaunched"])
+                self.assertIn("--install", str(receipt["guidance"]))
+                self.assertEqual(harness.direct_calls, [])
+                self.assertEqual(harness.explorer_calls, [])
+
     def test_installer_failure_returns_nonzero_without_launching(self) -> None:
         harness = FakeInstallHarness(dev_entry=self._entry(), installer_rc=5)
         rc, receipt = self._run_case(harness)
@@ -860,6 +1005,28 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
             result = package.read_dev_uninstall_entry()
         self.assertIsNone(result)
         patched.assert_called_once_with("blink-dev")
+
+    def test_exe_process_probe_matches_the_full_image_path(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("Windows only")
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        size = wintypes.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        self.assertTrue(kernel32.QueryFullProcessImageNameW(kernel32.GetCurrentProcess(), 0, buf, ctypes.byref(size)))
+        this_image = Path(buf.value)
+        self.assertTrue(package.is_exe_process_running(this_image))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(package.is_exe_process_running(Path(tmp) / this_image.name))
 
     def test_window_probe_ignores_hidden_windows_of_other_programs(self) -> None:
         if sys.platform != "win32":
