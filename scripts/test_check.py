@@ -68,6 +68,22 @@ class ToolAndParserUnitTests(unittest.TestCase):
             self.assertEqual(check.find_tool("dart", platform="win32", env=env), str(dt_bat))
             self.assertIsNone(check.find_tool("flutter", platform="linux", env=env))
 
+    def test_build_tool_env_strips_git_hook_variables(self) -> None:
+        env = check.build_tool_env(
+            base_env={
+                "PATH": "/usr/bin",
+                "GIT_DIR": "/some/repo/.git",
+                "GIT_WORK_TREE": "/some/repo",
+                "GIT_INDEX_FILE": "/some/repo/.git/index",
+                "KEEP_ME": "yes",
+            }
+        )
+        self.assertNotIn("GIT_DIR", env)
+        self.assertNotIn("GIT_WORK_TREE", env)
+        self.assertNotIn("GIT_INDEX_FILE", env)
+        self.assertEqual(env["KEEP_ME"], "yes")
+        self.assertEqual(env["BLINK_QUIET"], "1")
+
 
 class LinuxFlutterArchiveTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -178,7 +194,20 @@ class GateOrchestrationTests(unittest.TestCase):
 
         return calls, runner
 
-    def test_quick_and_ci_modes_run_seven_steps(self) -> None:
+    def test_quick_and_ci_modes_run_ten_steps(self) -> None:
+        pkg_dir = self.root / "packages" / "blink_sanitizer"
+        (pkg_dir / "lib").mkdir(parents=True)
+        (pkg_dir / "pubspec.yaml").write_text(
+            "name: blink_sanitizer\nenvironment:\n  sdk: ^3.14.0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (pkg_dir / "lib" / "blink_sanitizer.dart").write_text(
+            "int ok() => 1;\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
         for mode in ("quick", "ci"):
             with self.subTest(mode=mode):
                 calls, runner = self._make_fake_runner()
@@ -197,14 +226,85 @@ class GateOrchestrationTests(unittest.TestCase):
                         "git-diff",
                         "flutter-version",
                         "python-tests",
+                        "inv02-deps",
                         "dart-format",
+                        "dart-analyze",
+                        "dart-test",
                         "flutter-analyze",
                         "flutter-test",
                     ],
                 )
                 self.assertTrue(all(r.status == "passed" for r in results))
                 self.assertTrue(any("format" in c and "--set-exit-if-changed" in c for c in calls))
-                self.assertTrue(any("analyze" in c and "--fatal-infos" in c for c in calls))
+                self.assertTrue(any(c[0].endswith("dart") and "analyze" in c and "--fatal-infos" in c for c in calls))
+                self.assertTrue(any(c[0].endswith("dart") and "test" in c for c in calls))
+                self.assertTrue(any(c[0].endswith("flutter") and "analyze" in c and "--fatal-infos" in c for c in calls))
+
+    def test_inv02_rejects_flutter_import_in_packages(self) -> None:
+        pkg_dir = self.root / "packages" / "blink_sanitizer"
+        (pkg_dir / "lib").mkdir(parents=True)
+        (pkg_dir / "pubspec.yaml").write_text(
+            "name: blink_sanitizer\nenvironment:\n  sdk: ^3.14.0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (pkg_dir / "lib" / "bad.dart").write_text(
+            "import 'package:flutter/widgets.dart';\n"
+            "import 'package:material_ui/material_ui.dart';\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        res = check.check_inv02_dependencies_step(self.root)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("package:flutter/", res.output)
+        self.assertIn("package:material_ui/", res.output)
+
+    def test_inv02_rejects_blink_sanitizer_importing_or_depending_on_blink_core(self) -> None:
+        pkg_dir = self.root / "packages" / "blink_sanitizer"
+        (pkg_dir / "lib").mkdir(parents=True)
+        (pkg_dir / "pubspec.yaml").write_text(
+            "name: blink_sanitizer\ndependencies:\n  blink_core: any\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (pkg_dir / "lib" / "bad.dart").write_text(
+            "import 'package:blink_core/blink_core.dart';\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        res = check.check_inv02_dependencies_step(self.root)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("blink_core", res.output)
+
+    def test_inv02_allows_downward_dependency_and_ignores_comments(self) -> None:
+        san_dir = self.root / "packages" / "blink_sanitizer"
+        core_dir = self.root / "packages" / "blink_core"
+        (san_dir / "lib").mkdir(parents=True)
+        (core_dir / "lib").mkdir(parents=True)
+        (san_dir / "pubspec.yaml").write_text(
+            "name: blink_sanitizer\ndependencies:\n  html: 0.15.7\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (san_dir / "lib" / "ok.dart").write_text(
+            "// Never import 'package:flutter/material.dart';\n"
+            "/* export 'package:blink_core/blink_core.dart'; */\n"
+            "const int x = 1;\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (core_dir / "pubspec.yaml").write_text(
+            "name: blink_core\ndependencies:\n  blink_sanitizer: any\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (core_dir / "lib" / "ok.dart").write_text(
+            "import 'package:blink_sanitizer/blink_sanitizer.dart';\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        res = check.check_inv02_dependencies_step(self.root)
+        self.assertEqual(res.status, "passed")
 
     def test_full_gate_windows_runs_packaging_without_install(self) -> None:
         calls, runner = self._make_fake_runner()

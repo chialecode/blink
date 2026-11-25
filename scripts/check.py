@@ -35,6 +35,27 @@ SHA64_RE = re.compile(r"^[0-9a-f]{64}$")
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 USER_AGENT = "blink-quality-gate/1"
 
+DART_DIRECTIVE_PKG_RE = re.compile(r"""^\s*(?:import|export)\s+['"]package:([A-Za-z0-9_]+)/""")
+PUBSPEC_SDK_FLUTTER_RE = re.compile(r"^\s*sdk\s*:\s*flutter\b")
+PUBSPEC_DEP_KEY_RE = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:")
+
+INV02_ALWAYS_FORBIDDEN_IN_PACKAGES = frozenset(
+    {
+        "flutter",
+        "flutter_test",
+        "flutter_localizations",
+        "flutter_web_plugins",
+        "material_ui",
+        "cupertino_ui",
+        "blink_client",
+    }
+)
+INV02_UPWARD_FORBIDDEN: dict[str, frozenset[str]] = {
+    "blink_sanitizer": frozenset({"blink_core", "blink_cli", "blink_skills"}),
+    "blink_core": frozenset({"blink_cli", "blink_skills"}),
+}
+DART_SKIP_DIRS = frozenset({".dart_tool", "build", ".git"})
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -81,12 +102,29 @@ def find_tool(
     return None
 
 
+GIT_HOOK_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+)
+
+
 def build_tool_env(
     tool_path: str | None = None,
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Build quiet subprocess environment, ensuring Flutter bin dir is on PATH."""
+    """Build quiet subprocess environment, ensuring Flutter bin dir is on PATH.
+
+    Strips inherited git hook variables (e.g. GIT_DIR from pre-push) so child
+    tools like `flutter --version` inspect their own SDK repo instead of ours.
+    """
     env = dict(base_env if base_env is not None else os.environ)
+    for var in GIT_HOOK_ENV_VARS:
+        env.pop(var, None)
     env["BLINK_QUIET"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["FLUTTER_SUPPRESS_ANALYTICS"] = "true"
@@ -240,6 +278,159 @@ def check_python_tests_step(root: Path, runner: RunnerFn) -> StepResult:
     return StepResult("python-tests", "passed", time.monotonic() - t0, f"{len(test_files)} suite(s): {names}")
 
 
+def discover_dart_packages(root: Path) -> list[Path]:
+    """Return sorted pure-Dart package directories under packages/* containing pubspec.yaml."""
+    packages_dir = root / "packages"
+    if not packages_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for child in sorted(packages_dir.iterdir()):
+        if child.is_dir() and not child.name.startswith(".") and (child / "pubspec.yaml").is_file():
+            found.append(child)
+    return found
+
+
+def _strip_dart_comments_preserving_lines(text: str) -> str:
+    """Strip // and /* */ comments outside string literals while keeping line numbers intact."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_single = False
+    in_double = False
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_single:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == "'" or ch == "\n":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == '"' or ch == "\n":
+                in_double = False
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i < n:
+                if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    i += 2
+                    break
+                if text[i] == "\n":
+                    out.append("\n")
+                i += 1
+            continue
+        if ch == "'":
+            in_single = True
+        elif ch == '"':
+            in_double = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _check_pubspec_inv02(pkg_dir: Path, root: Path, forbidden: frozenset[str]) -> list[str]:
+    violations: list[str] = []
+    pubspec = pkg_dir / "pubspec.yaml"
+    rel = pubspec.relative_to(root).as_posix()
+    section: str | None = None
+    dep_indent: int | None = None
+    for line_no, raw_line in enumerate(pubspec.read_text(encoding="utf-8").splitlines(), start=1):
+        code = raw_line.split("#", 1)[0].rstrip()
+        if not code.strip():
+            continue
+        indent = len(code) - len(code.lstrip(" "))
+        stripped = code.strip()
+        if indent == 0:
+            section = stripped[:-1].strip() if stripped.endswith(":") else None
+            dep_indent = None
+            continue
+        if section not in ("dependencies", "dev_dependencies", "dependency_overrides"):
+            continue
+        if PUBSPEC_SDK_FLUTTER_RE.match(code):
+            violations.append(f"{rel}:{line_no}: INV-02 forbids Flutter SDK dependency in packages/*")
+            continue
+        if dep_indent is None:
+            dep_indent = indent
+        if indent == dep_indent:
+            m = PUBSPEC_DEP_KEY_RE.match(code)
+            if m and m.group(2) in forbidden:
+                violations.append(
+                    f"{rel}:{line_no}: INV-02 forbids {pkg_dir.name} depending on '{m.group(2)}'"
+                )
+    return violations
+
+
+def check_inv02_dependencies_step(root: Path) -> StepResult:
+    """Enforce INV-02 downward-only dependency boundaries across packages/*."""
+    t0 = time.monotonic()
+    packages = discover_dart_packages(root)
+    if not packages:
+        return StepResult("inv02-deps", "passed", time.monotonic() - t0, "no packages/* found")
+
+    violations: list[str] = []
+    for pkg_dir in packages:
+        pkg_name = pkg_dir.name
+        forbidden = INV02_ALWAYS_FORBIDDEN_IN_PACKAGES | INV02_UPWARD_FORBIDDEN.get(
+            pkg_name, frozenset()
+        )
+        violations.extend(_check_pubspec_inv02(pkg_dir, root, forbidden))
+
+        for dirpath, dirnames, filenames in os.walk(pkg_dir):
+            dirnames[:] = sorted(d for d in dirnames if d not in DART_SKIP_DIRS)
+            for filename in sorted(filenames):
+                if not filename.endswith(".dart"):
+                    continue
+                dart_file = Path(dirpath) / filename
+                rel = dart_file.relative_to(root).as_posix()
+                try:
+                    raw_text = dart_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    violations.append(f"{rel}: unreadable Dart source: {exc}")
+                    continue
+                stripped = _strip_dart_comments_preserving_lines(raw_text)
+                for line_no, line in enumerate(stripped.splitlines(), start=1):
+                    m = DART_DIRECTIVE_PKG_RE.match(line)
+                    if not m:
+                        continue
+                    imported_pkg = m.group(1)
+                    if imported_pkg in forbidden:
+                        violations.append(
+                            f"{rel}:{line_no}: INV-02 forbids {pkg_name} importing package:{imported_pkg}/"
+                        )
+
+    if violations:
+        return StepResult(
+            "inv02-deps",
+            "failed",
+            time.monotonic() - t0,
+            f"{len(violations)} INV-02 dependency violation(s)",
+            "\n".join(violations),
+        )
+    names = ", ".join(p.name for p in packages)
+    return StepResult(
+        "inv02-deps",
+        "passed",
+        time.monotonic() - t0,
+        f"{len(packages)} package(s): {names}",
+    )
+
+
 def check_dart_format_step(root: Path, runner: RunnerFn, tool_finder: ToolFinderFn) -> StepResult:
     t0 = time.monotonic()
     dart = tool_finder("dart")
@@ -253,6 +444,68 @@ def check_dart_format_step(root: Path, runner: RunnerFn, tool_finder: ToolFinder
     if res.returncode != 0:
         return StepResult("dart-format", "failed", time.monotonic() - t0, _summarize_failure(res), _format_failure_output(res))
     return StepResult("dart-format", "passed", time.monotonic() - t0)
+
+
+def check_dart_packages_analyze_step(
+    root: Path, runner: RunnerFn, tool_finder: ToolFinderFn
+) -> StepResult:
+    t0 = time.monotonic()
+    packages = discover_dart_packages(root)
+    if not packages:
+        return StepResult("dart-analyze", "passed", time.monotonic() - t0, "no packages/* found")
+    dart = tool_finder("dart")
+    if not dart:
+        return StepResult("dart-analyze", "failed", time.monotonic() - t0, "dart executable not found")
+
+    env = build_tool_env(dart)
+    for pkg_dir in packages:
+        res = runner([dart, "analyze", "--fatal-infos"], pkg_dir, env)
+        if res.returncode != 0:
+            return StepResult(
+                "dart-analyze",
+                "failed",
+                time.monotonic() - t0,
+                f"{pkg_dir.name}: {_summarize_failure(res)}",
+                _format_failure_output(res),
+            )
+    names = ", ".join(p.name for p in packages)
+    return StepResult(
+        "dart-analyze",
+        "passed",
+        time.monotonic() - t0,
+        f"{len(packages)} package(s): {names}",
+    )
+
+
+def check_dart_packages_test_step(
+    root: Path, runner: RunnerFn, tool_finder: ToolFinderFn
+) -> StepResult:
+    t0 = time.monotonic()
+    packages = discover_dart_packages(root)
+    if not packages:
+        return StepResult("dart-test", "passed", time.monotonic() - t0, "no packages/* found")
+    dart = tool_finder("dart")
+    if not dart:
+        return StepResult("dart-test", "failed", time.monotonic() - t0, "dart executable not found")
+
+    env = build_tool_env(dart)
+    for pkg_dir in packages:
+        res = runner([dart, "test"], pkg_dir, env)
+        if res.returncode != 0:
+            return StepResult(
+                "dart-test",
+                "failed",
+                time.monotonic() - t0,
+                f"{pkg_dir.name}: {_summarize_failure(res)}",
+                _format_failure_output(res),
+            )
+    names = ", ".join(p.name for p in packages)
+    return StepResult(
+        "dart-test",
+        "passed",
+        time.monotonic() - t0,
+        f"{len(packages)} package(s): {names}",
+    )
 
 
 def check_flutter_analyze_step(root: Path, runner: RunnerFn, tool_finder: ToolFinderFn) -> StepResult:
@@ -334,7 +587,10 @@ def run_gate(
         check_git_diff_step(root, exec_cmd, locate),
         check_flutter_version_step(root, exec_cmd, locate),
         check_python_tests_step(root, exec_cmd),
+        check_inv02_dependencies_step(root),
         check_dart_format_step(root, exec_cmd, locate),
+        check_dart_packages_analyze_step(root, exec_cmd, locate),
+        check_dart_packages_test_step(root, exec_cmd, locate),
         check_flutter_analyze_step(root, exec_cmd, locate),
         check_flutter_test_step(root, exec_cmd, locate),
     ]
@@ -559,7 +815,10 @@ def main(argv: list[str] | None = None) -> int:
     mode_group.add_argument(
         "--quick",
         action="store_true",
-        help="Run quick gate (docs, git diff, flutter version, Python tests, format, analyze, flutter test).",
+        help=(
+            "Run quick gate (docs, git diff, flutter version, Python tests, "
+            "INV-02 deps, format, packages/* dart analyze & test, flutter analyze & test)."
+        ),
     )
     mode_group.add_argument(
         "--ci",
