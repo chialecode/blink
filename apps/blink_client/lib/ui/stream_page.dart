@@ -14,12 +14,16 @@ class BlinkStreamPage extends StatefulWidget {
     required this.workspace,
     required this.editor,
     required this.editorFocusNode,
+    this.onOpenFilterDrawer,
+    this.onOpenSearch,
     super.key,
   });
 
   final BlinkWorkspaceController workspace;
   final BlinkEditorController editor;
   final FocusNode editorFocusNode;
+  final VoidCallback? onOpenFilterDrawer;
+  final VoidCallback? onOpenSearch;
 
   @override
   State<BlinkStreamPage> createState() => _BlinkStreamPageState();
@@ -164,14 +168,20 @@ class _BlinkStreamPageState extends State<BlinkStreamPage> {
                 widget.workspace.splitPreviewEnabled &&
                 constraints.maxWidth >= 720;
 
+            final showMobileActions =
+                widget.onOpenFilterDrawer != null ||
+                widget.onOpenSearch != null;
+
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
+                if (showMobileActions) _buildMobileInlineActionRow(tokens),
                 if (!isTrash)
                   _buildComposerSection(
                     context,
                     tokens,
                     sideBySidePreview: sideBySidePreview,
+                    compactTopPadding: showMobileActions,
                   )
                 else
                   _buildTrashHeader(tokens, entries.length),
@@ -235,10 +245,60 @@ class _BlinkStreamPageState extends State<BlinkStreamPage> {
     );
   }
 
+  Widget _buildMobileInlineActionRow(BlinkColorTokens tokens) {
+    final filterLabel = switch (widget.workspace.streamFilter) {
+      StreamFilterKind.all => '全部记录',
+      StreamFilterKind.privateOnly => '#private 私密',
+      StreamFilterKind.trash => '30 天回收站',
+      StreamFilterKind.tag => '#${widget.workspace.selectedTag ?? ''}',
+    };
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+      child: Row(
+        children: <Widget>[
+          if (widget.onOpenFilterDrawer != null)
+            IconButton(
+              key: const Key('open_sidebar_drawer_button'),
+              tooltip: '筛选与标签',
+              visualDensity: VisualDensity.compact,
+              onPressed: widget.onOpenFilterDrawer,
+              icon: Icon(
+                Icons.menu_rounded,
+                size: 20,
+                color: tokens.textPrimary,
+              ),
+            ),
+          Expanded(
+            child: Text(
+              filterLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: BlinkTypography.controlLabel(tokens),
+            ),
+          ),
+          if (widget.onOpenSearch != null)
+            IconButton(
+              key: const Key('open_search_button'),
+              tooltip: '全局搜索 (Ctrl+K)',
+              visualDensity: VisualDensity.compact,
+              onPressed: widget.onOpenSearch,
+              icon: Icon(
+                Icons.search_rounded,
+                size: 20,
+                color: tokens.textSecondary,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildComposerSection(
     BuildContext context,
     BlinkColorTokens tokens, {
     required bool sideBySidePreview,
+    required bool compactTopPadding,
   }) {
     final editor = widget.editor;
     final showPreview = widget.workspace.splitPreviewEnabled;
@@ -306,7 +366,7 @@ class _BlinkStreamPageState extends State<BlinkStreamPage> {
     );
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+      padding: EdgeInsets.fromLTRB(20, compactTopPadding ? 8 : 16, 20, 14),
       decoration: BoxDecoration(
         color: tokens.canvas,
         border: Border(

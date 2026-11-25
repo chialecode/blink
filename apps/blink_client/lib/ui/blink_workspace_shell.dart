@@ -4,13 +4,11 @@ import 'package:blink_core/blink_core.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'package:blink_client/app/blink_brand_mark.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/editor_controller.dart';
 import 'package:blink_client/application/search_controller.dart';
 import 'package:blink_client/application/tasks_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
-import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/ui/files_page.dart';
 import 'package:blink_client/ui/search_modal.dart';
 import 'package:blink_client/ui/settings_page.dart';
@@ -165,7 +163,6 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
   @override
   Widget build(BuildContext context) {
     final tokens = BlinkColorTokens.of(context);
-    final buildInfo = widget.workspace.lifecycle.buildInfo;
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
@@ -203,24 +200,41 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
                 final isCompactTablet = width >= 600 && width < 960;
                 final isMobile = width < 600;
 
-                final showPersistentSidebar =
-                    (isWideDesktop || isStandardDesktop) &&
+                final isStream =
                     widget.workspace.destination == BlinkNavDestination.stream;
+                final showPersistentSidebar =
+                    (isWideDesktop || isStandardDesktop) && isStream;
                 final railWidth = isCompactTablet ? 52.0 : 56.0;
                 final sidebarWidth = isWideDesktop ? 264.0 : 232.0;
+
+                final workspaceContent = Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    if (widget.workspace.bannerMessage != null)
+                      _StatusBanner(
+                        message: widget.workspace.bannerMessage!,
+                        isError: widget.workspace.bannerIsError,
+                        onDismiss: widget.workspace.clearBanner,
+                      ),
+                    if (widget.workspace.vaultErrorMessage != null &&
+                        widget.workspace.destination !=
+                            BlinkNavDestination.settings)
+                      _StatusBanner(
+                        message: widget.workspace.vaultErrorMessage!,
+                        isError: true,
+                        actionLabel: '前往设置',
+                        onAction: () => widget.workspace.setDestination(
+                          BlinkNavDestination.settings,
+                        ),
+                        onDismiss: widget.workspace.clearVaultError,
+                      ),
+                    Expanded(child: _buildActivePage(isMobile: isMobile)),
+                  ],
+                );
 
                 return Scaffold(
                   key: _scaffoldKey,
                   backgroundColor: tokens.canvas,
-                  appBar: _buildAppBar(
-                    tokens,
-                    buildInfo,
-                    showDrawerToggle:
-                        (isCompactTablet || isMobile) &&
-                        widget.workspace.destination ==
-                            BlinkNavDestination.stream,
-                    isCompactWidth: isMobile,
-                  ),
                   drawer: (isCompactTablet || isMobile)
                       ? Drawer(
                           backgroundColor: tokens.sidebar,
@@ -237,56 +251,45 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
                   bottomNavigationBar: isMobile
                       ? _buildMobileBottomBar(tokens)
                       : null,
-                  body: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      if (widget.workspace.bannerMessage != null)
-                        _StatusBanner(
-                          message: widget.workspace.bannerMessage!,
-                          isError: widget.workspace.bannerIsError,
-                          onDismiss: widget.workspace.clearBanner,
-                        ),
-                      if (widget.workspace.vaultErrorMessage != null &&
-                          widget.workspace.destination !=
-                              BlinkNavDestination.settings)
-                        _StatusBanner(
-                          message: widget.workspace.vaultErrorMessage!,
-                          isError: true,
-                          actionLabel: '前往设置',
-                          onAction: () => widget.workspace.setDestination(
-                            BlinkNavDestination.settings,
+                  body: SafeArea(
+                    top: isMobile,
+                    bottom: false,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        if (!isMobile) ...<Widget>[
+                          _buildNavigationRail(
+                            tokens,
+                            railWidth,
+                            showDrawerToggle: isCompactTablet && isStream,
                           ),
-                          onDismiss: widget.workspace.clearVaultError,
-                        ),
-                      Expanded(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: <Widget>[
-                            if (!isMobile)
-                              _buildNavigationRail(tokens, railWidth),
-                            if (showPersistentSidebar)
-                              SizedBox(
-                                width: sidebarWidth,
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: tokens.sidebar,
-                                    border: Border(
-                                      right: BorderSide(
-                                        color: tokens.borderHairline,
-                                        width: 1,
-                                      ),
-                                    ),
-                                  ),
-                                  child: _StreamFilterSidebar(
-                                    workspace: widget.workspace,
-                                  ),
-                                ),
+                          VerticalDivider(
+                            key: const Key('pane_divider_rail'),
+                            width: 1,
+                            thickness: 1,
+                            color: tokens.borderHairline,
+                          ),
+                        ],
+                        if (showPersistentSidebar) ...<Widget>[
+                          SizedBox(
+                            width: sidebarWidth,
+                            child: ColoredBox(
+                              color: tokens.sidebar,
+                              child: _StreamFilterSidebar(
+                                workspace: widget.workspace,
                               ),
-                            Expanded(child: _buildActivePage()),
-                          ],
-                        ),
-                      ),
-                    ],
+                            ),
+                          ),
+                          VerticalDivider(
+                            key: const Key('pane_divider_sidebar'),
+                            width: 1,
+                            thickness: 1,
+                            color: tokens.borderHairline,
+                          ),
+                        ],
+                        Expanded(child: workspaceContent),
+                      ],
+                    ),
                   ),
                 );
               },
@@ -297,84 +300,26 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar(
+  Widget _buildNavigationRail(
     BlinkColorTokens tokens,
-    BlinkBuildInfo buildInfo, {
+    double width, {
     required bool showDrawerToggle,
-    required bool isCompactWidth,
   }) {
-    return AppBar(
-      automaticallyImplyLeading: false,
-      titleSpacing: isCompactWidth ? 12 : 16,
-      leading: showDrawerToggle
-          ? IconButton(
-              key: const Key('open_sidebar_drawer_button'),
-              tooltip: '筛选与标签',
-              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-              icon: Icon(Icons.menu_rounded, color: tokens.textPrimary),
-            )
-          : null,
-      title: Row(
-        children: <Widget>[
-          const BlinkBrandMark(key: Key('brand_mark')),
-          const SizedBox(width: 10),
-          Flexible(
-            child: Text(
-              buildInfo.productName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: BlinkTypography.brandWordmark(tokens),
-            ),
-          ),
-          const SizedBox(width: 10),
-          _ChannelBadge(buildInfo: buildInfo),
-        ],
-      ),
-      actions: <Widget>[
-        IconButton(
-          key: const Key('open_search_button'),
-          tooltip: '全局 CJK 搜索 (Ctrl+K)',
-          onPressed: () => unawaited(_openSearchModal()),
-          icon: Icon(
-            Icons.search_rounded,
-            size: 20,
-            color: tokens.textSecondary,
-          ),
-        ),
-        if (widget.workspace.destination == BlinkNavDestination.stream)
-          IconButton(
-            key: const Key('toggle_preview_button'),
-            tooltip: '分栏实时预览 (Ctrl+Shift+P)',
-            onPressed: widget.workspace.toggleSplitPreview,
-            icon: Icon(
-              Icons.vertical_split_outlined,
-              size: 20,
-              color: widget.workspace.splitPreviewEnabled
-                  ? tokens.accentPrimary
-                  : tokens.textSecondary,
-            ),
-          ),
-        const SizedBox(width: 6),
-      ],
-    );
-  }
-
-  Widget _buildNavigationRail(BlinkColorTokens tokens, double width) {
     final active = widget.workspace.destination;
 
-    Widget railItem({
+    Widget railAction({
       required Key itemKey,
-      required BlinkNavDestination destination,
       required IconData icon,
       required String tooltip,
+      required VoidCallback onTap,
+      bool selected = false,
     }) {
-      final selected = active == destination;
       return Tooltip(
         message: tooltip,
         child: InkWell(
           key: itemKey,
           borderRadius: BorderRadius.circular(8),
-          onTap: () => widget.workspace.setDestination(destination),
+          onTap: onTap,
           child: Container(
             width: width - 12,
             height: 40,
@@ -393,38 +338,69 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
       );
     }
 
+    Widget railDestination({
+      required Key itemKey,
+      required BlinkNavDestination destination,
+      required IconData icon,
+      required String tooltip,
+    }) {
+      return railAction(
+        itemKey: itemKey,
+        icon: icon,
+        tooltip: tooltip,
+        selected: active == destination,
+        onTap: () => widget.workspace.setDestination(destination),
+      );
+    }
+
     return Container(
       key: const Key('desktop_nav_rail'),
       width: width,
-      decoration: BoxDecoration(
-        color: tokens.sidebar,
-        border: Border(
-          right: BorderSide(color: tokens.borderHairline, width: 1),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      color: tokens.sidebar,
+      padding: const EdgeInsets.symmetric(vertical: 14),
       child: Column(
         children: <Widget>[
-          railItem(
+          if (showDrawerToggle) ...<Widget>[
+            railAction(
+              itemKey: const Key('open_sidebar_drawer_button'),
+              icon: Icons.menu_rounded,
+              tooltip: '筛选与标签',
+              onTap: () => _scaffoldKey.currentState?.openDrawer(),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: SizedBox(
+                width: 24,
+                child: Divider(height: 1, color: tokens.borderHairline),
+              ),
+            ),
+          ],
+          railDestination(
             itemKey: const Key('nav_stream'),
             destination: BlinkNavDestination.stream,
             icon: Icons.bolt_rounded,
             tooltip: '采集流与 BFM 编辑器',
           ),
-          railItem(
+          railDestination(
             itemKey: const Key('nav_files'),
             destination: BlinkNavDestination.files,
             icon: Icons.folder_outlined,
             tooltip: '文件与附件管理',
           ),
-          railItem(
+          railDestination(
             itemKey: const Key('nav_tasks'),
             destination: BlinkNavDestination.tasks,
             icon: Icons.check_circle_outline_rounded,
             tooltip: '内生待办',
           ),
           const Spacer(),
-          railItem(
+          railAction(
+            itemKey: const Key('open_search_button'),
+            icon: Icons.search_rounded,
+            tooltip: '全局搜索 (Ctrl+K)',
+            onTap: () => unawaited(_openSearchModal()),
+          ),
+          railDestination(
             itemKey: const Key('nav_settings'),
             destination: BlinkNavDestination.settings,
             icon: Icons.settings_outlined,
@@ -512,13 +488,17 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
     );
   }
 
-  Widget _buildActivePage() {
+  Widget _buildActivePage({required bool isMobile}) {
     switch (widget.workspace.destination) {
       case BlinkNavDestination.stream:
         return BlinkStreamPage(
           workspace: widget.workspace,
           editor: _editorController,
           editorFocusNode: _editorFocusNode,
+          onOpenFilterDrawer: isMobile
+              ? () => _scaffoldKey.currentState?.openDrawer()
+              : null,
+          onOpenSearch: isMobile ? () => unawaited(_openSearchModal()) : null,
         );
       case BlinkNavDestination.files:
         return BlinkFilesPage(
@@ -617,7 +597,7 @@ class _StreamFilterSidebar extends StatelessWidget {
     }
 
     return ListView(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(12, 16, 12, 16),
       children: <Widget>[
         Text('视图筛选', style: BlinkTypography.metaLabel(tokens)),
         const SizedBox(height: 6),
@@ -730,32 +710,6 @@ class _StatusBanner extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _ChannelBadge extends StatelessWidget {
-  const _ChannelBadge({required this.buildInfo});
-
-  final BlinkBuildInfo buildInfo;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = BlinkColorTokens.of(context);
-    final isProd = buildInfo.isProductionChannel;
-    final bgColor = isProd ? tokens.accentSubtle : BlinkBrandColors.devPill;
-    final fgColor = isProd
-        ? tokens.accentPrimary
-        : BlinkBrandColors.devPillText;
-    final label = isProd ? '正式通道' : 'DEV 开发通道';
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(label, style: BlinkTypography.badge(color: fgColor)),
     );
   }
 }

@@ -355,7 +355,7 @@ void main() {
     }
 
     testWidgets(
-      'adaptive 4 breakpoints render cleanly without horizontal overflow',
+      'adaptive 4 breakpoints render cleanly without AppBar, DEV topbar banner, or horizontal overflow',
       (tester) async {
         tester.view.devicePixelRatio = 1.0;
         addTearDown(tester.view.reset);
@@ -377,19 +377,92 @@ void main() {
           await tester.pumpAndSettle();
 
           expect(tester.takeException(), isNull);
+          expect(find.byType(AppBar), findsNothing);
+          expect(find.text('DEV 开发通道'), findsNothing);
           expect(find.byKey(const Key('nav_stream')), findsOneWidget);
           expect(find.byKey(const Key('nav_files')), findsOneWidget);
           expect(find.byKey(const Key('nav_tasks')), findsOneWidget);
           expect(find.byKey(const Key('nav_settings')), findsOneWidget);
+          expect(find.byKey(const Key('open_search_button')), findsOneWidget);
 
           if (size.width < 600) {
             expect(find.byKey(const Key('mobile_bottom_nav')), findsOneWidget);
             expect(find.byKey(const Key('desktop_nav_rail')), findsNothing);
+            expect(find.byKey(const Key('pane_divider_rail')), findsNothing);
+            expect(
+              find.byKey(const Key('open_sidebar_drawer_button')),
+              findsOneWidget,
+            );
           } else {
             expect(find.byKey(const Key('desktop_nav_rail')), findsOneWidget);
             expect(find.byKey(const Key('mobile_bottom_nav')), findsNothing);
+
+            final railDivider = find.byKey(const Key('pane_divider_rail'));
+            expect(railDivider, findsOneWidget);
+            final railDividerRect = tester.getRect(railDivider);
+            expect(railDividerRect.top, 0.0);
+            expect(railDividerRect.height, size.height);
+            expect(railDividerRect.width, 1.0);
+
+            if (size.width >= 960) {
+              final sidebarDivider = find.byKey(
+                const Key('pane_divider_sidebar'),
+              );
+              expect(sidebarDivider, findsOneWidget);
+              final sidebarDividerRect = tester.getRect(sidebarDivider);
+              expect(sidebarDividerRect.top, 0.0);
+              expect(sidebarDividerRect.height, size.height);
+              expect(sidebarDividerRect.width, 1.0);
+              expect(
+                find.byKey(const Key('open_sidebar_drawer_button')),
+                findsNothing,
+              );
+            } else {
+              expect(
+                find.byKey(const Key('pane_divider_sidebar')),
+                findsNothing,
+              );
+              expect(
+                find.byKey(const Key('open_sidebar_drawer_button')),
+                findsOneWidget,
+              );
+            }
           }
         }
+
+        // Compact tablet drawer toggle in the left rail opens the filter drawer cleanly.
+        tester.view.physicalSize = const Size(760, 560);
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('open_sidebar_drawer_button')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('filter_all')), findsOneWidget);
+
+        // Close drawer, switch to Settings, and verify brand mark + DEV badge live in About.
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('nav_settings')));
+        await tester.pumpAndSettle();
+        expect(find.byType(AppBar), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('about_section')),
+            matching: find.byKey(const Key('brand_mark')),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('about_section')),
+            matching: find.text('DEV 开发通道'),
+          ),
+          findsOneWidget,
+        );
       },
     );
 

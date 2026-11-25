@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:blink_client/app/blink_brand_mark.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
@@ -415,6 +416,25 @@ class _AboutCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text('关于', style: BlinkTypography.sectionHeading(tokens)),
+            const SizedBox(height: 14),
+            Row(
+              children: <Widget>[
+                const BlinkBrandMark(key: Key('brand_mark'), size: 24),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    buildInfo.productName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: BlinkTypography.brandWordmark(tokens),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                _ChannelBadge(buildInfo: buildInfo),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Divider(height: 1, color: tokens.borderHairline),
             const SizedBox(height: 12),
             _InfoRow(
               label: '版本',
@@ -449,6 +469,32 @@ class _AboutCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ChannelBadge extends StatelessWidget {
+  const _ChannelBadge({required this.buildInfo});
+
+  final BlinkBuildInfo buildInfo;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = BlinkColorTokens.of(context);
+    final isProd = buildInfo.isProductionChannel;
+    final bgColor = isProd ? tokens.accentSubtle : BlinkBrandColors.devPill;
+    final fgColor = isProd
+        ? tokens.accentPrimary
+        : BlinkBrandColors.devPillText;
+    final label = isProd ? '正式通道' : 'DEV 开发通道';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(label, style: BlinkTypography.badge(color: fgColor)),
     );
   }
 }
