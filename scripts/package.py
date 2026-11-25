@@ -67,6 +67,8 @@ INSTALLER_EXIT_MEANINGS = {
     7: "the install folder holds another program's Uninstall.exe",
     8: "some files could not be written (held open or no write permission); the uninstall entry was left as it was, run it again",
 }
+# Installer exits that stop before any file is touched (blink.nsi): BLINK Dev can be started again from its folder.
+INSTALLER_EXITS_BEFORE_FILES = frozenset({3, 4, 5, 7})
 WINDOW_DEFER_POLL_INTERVAL_SECONDS = 2.0
 REHEARSAL_QUIT_TIMEOUT_SECONDS = 5.0
 TRAY_VERIFY_TIMEOUT_SECONDS = 5.0
@@ -712,6 +714,8 @@ def is_exe_process_running(exe_path: Path) -> bool:
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
+    size = wintypes.DWORD(0)
+    buf = ctypes.create_unicode_buffer(32768)
     count = 1024
     while True:
         pids = (wintypes.DWORD * count)()
@@ -731,8 +735,7 @@ def is_exe_process_running(exe_path: Path) -> bool:
         if not handle:
             continue
         try:
-            size = wintypes.DWORD(32768)
-            buf = ctypes.create_unicode_buffer(size.value)
+            size.value = len(buf)
             if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
                 continue
             # A process that has ended but is still held open by someone is signalled and no longer maps its files.
@@ -1194,7 +1197,8 @@ def is_app_window_open(exe_path: Path) -> bool:
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    wanted = os.path.normcase(os.path.abspath(str(exe_path)))
+    # The kernel reports the image path with links and junctions resolved.
+    wanted = os.path.normcase(os.path.realpath(str(exe_path)))
     image_by_pid: dict[int, str] = {}
     found = False
 
@@ -1606,12 +1610,18 @@ def run_dev_auto_install(
             )
         return launched, fields
 
-    def fail(reason: str, error: str) -> tuple[int, dict[str, Any]]:
+    def fail(reason: str, error: str, *, folder_intact: bool = True) -> tuple[int, dict[str, Any]]:
+        """A failed install. When this install had closed BLINK Dev, start it again in the tray, but only
+        from a folder the installer left whole (it stopped before touching files, or finished writing)."""
         fields: dict[str, Any] = {"reason": reason, "error": error}
-        if quit_for_install:
-            # It was running before this install: start what is installed now in the tray again.
+        if quit_for_install and folder_intact:
             _, launch_fields = start_in_tray(installed_exe)
             fields.update(launch_fields)
+        elif quit_for_install:
+            fields["guidance"] = (
+                "BLINK Dev was not started again: its folder may be partly written. Run "
+                "`python -B scripts/package.py --install` again."
+            )
         return finish(1, **fields)
 
     # Guard 0: --install strictly accepts the blink-dev channel and identity (never blink or test identities).
@@ -1732,7 +1742,11 @@ def run_dev_auto_install(
     if rc != 0:
         meaning = INSTALLER_EXIT_MEANINGS.get(rc)
         detail = f": {meaning}" if meaning else ""
-        return fail(f"installer_failed_exit_{rc}", f"Silent installer exited with non-zero code {rc}{detail}.")
+        return fail(
+            f"installer_failed_exit_{rc}",
+            f"Silent installer exited with non-zero code {rc}{detail}.",
+            folder_intact=rc in INSTALLER_EXITS_BEFORE_FILES,
+        )
 
     post_entry = deps.read_dev_uninstall_entry()
     if post_entry is None:

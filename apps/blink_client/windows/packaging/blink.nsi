@@ -129,6 +129,7 @@ Function ${UN}BlinkCloseApp
   Push $0
   Push $1
   Push $2
+  Push $3
   ; The running copy is the installed one, wherever it was installed.
   ReadRegStr $1 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
   ${If} $1 == ""
@@ -190,13 +191,18 @@ Function ${UN}BlinkCloseApp
   ; The mutex goes before the process has ended and let go of its files, and
   ; a copy without the mutex (still exiting, or hung) holds them too: within
   ; the same 30 s, wait until the installed exe can be opened for writing,
-  ; which a running image cannot.
+  ; which a running image refuses with a sharing violation (32). Any other
+  ; refusal (read-only, no access) is left to File and Delete. OPEN_EXISTING
+  ; never creates the file.
   ${If} ${FileExists} "$1"
     ${Do}
-      ClearErrors
-      FileOpen $0 "$1" a
-      ${IfNot} ${Errors}
-        FileClose $0
+      System::Call 'kernel32::CreateFileW(w r1, i 0x40000000, i 7, p 0, i 3, i 0x80, p 0) p.r0 ?e'
+      Pop $3
+      ${If} $0 != -1
+        System::Call 'kernel32::CloseHandle(p r0)'
+        ${Break}
+      ${EndIf}
+      ${If} $3 <> 32
         ${Break}
       ${EndIf}
       ${If} $2 >= ${BLINK_QUIT_WAIT_TICKS}
@@ -208,6 +214,7 @@ Function ${UN}BlinkCloseApp
       IntOp $2 $2 + 1
     ${Loop}
   ${EndIf}
+  Pop $3
   Pop $2
   Pop $1
   Pop $0
