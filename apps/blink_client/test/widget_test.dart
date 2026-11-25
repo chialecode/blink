@@ -125,6 +125,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
+        expect(find.byType(AppBar), findsNothing);
         expect(find.text('BLINK Dev'), findsOneWidget);
         expect(find.text('DEV 开发通道'), findsOneWidget);
         expect(find.text('0.1.0-dev.202611221600'), findsOneWidget);

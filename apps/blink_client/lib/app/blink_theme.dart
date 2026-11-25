@@ -56,7 +56,7 @@ abstract final class BlinkTypography {
     FontFeature.tabularFigures(),
   ];
 
-  /// AppBar product wordmark (`w700` reserved exclusively for brand identity).
+  /// Product wordmark (`w700` reserved exclusively for brand identity).
   static TextStyle brandWordmark(BlinkColorTokens tokens) => TextStyle(
     fontFamily: uiFontFamily,
     fontFamilyFallback: uiFontFallback,
