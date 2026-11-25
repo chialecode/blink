@@ -1,0 +1,24 @@
+name: blink_core
+description: Pure Dart portable vault, SQLite WAL storage, BFM v1 engine, CJK FTS5, and open mirror exporter for BLINK.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.14.0
+
+resolution: workspace
+
+dependencies:
+  blink_sanitizer:
+    path: ../blink_sanitizer
+  characters: 1.4.1
+  collection: 1.19.1
+  crypto: 3.0.8
+  markdown: 7.3.1
+  meta: 1.19.0
+  path: 1.9.1
+  sqlite3: 3.9.1
+
+dev_dependencies:
+  lints: 6.1.0
+  test: 1.32.0
