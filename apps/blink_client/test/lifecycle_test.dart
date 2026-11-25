@@ -363,5 +363,77 @@ void main() {
         expect(tray.recreateCalls, 1);
       },
     );
+
+    test('onFlushBeforeShutdown executes before lifecycle.json across all exit reasons', () async {
+      for (final reason in ExitReason.values) {
+        final order = <String>[];
+        final subDir = Directory.systemTemp.createTempSync(
+          'blink_flush_order_',
+        );
+        addTearDown(() {
+          if (subDir.existsSync()) {
+            subDir.deleteSync(recursive: true);
+          }
+        });
+        final subPaths = BlinkPaths(dataRoot: subDir);
+        final subExitCodes = <int>[];
+        final controller = DesktopLifecycleController(
+          buildInfo: buildInfo,
+          paths: subPaths,
+          settingsStore: DesktopSettingsStore(
+            file: subPaths.desktopSettingsFile,
+          ),
+          windowAdapter: _FakeWindowAdapter(),
+          trayAdapter: _FakeTrayAdapter(),
+          onFlushBeforeShutdown: () async {
+            expect(subPaths.lifecycleFile.existsSync(), isFalse);
+            order.add('flush');
+          },
+          onBeforeExit: () async {
+            expect(subPaths.lifecycleFile.existsSync(), isTrue);
+            order.add('before_exit');
+          },
+          exitProcess: subExitCodes.add,
+          nowUtc: () => fixedUtc,
+        );
+        await controller.initializeStartup(
+          const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+        );
+
+        await controller.performShutdown(reason);
+
+        expect(order, const <String>['flush', 'before_exit']);
+        expect(subExitCodes, const <int>[0]);
+        expect(controller.lastShutdownPersistenceError, isNull);
+      }
+    });
+
+    test(
+      'onFlushBeforeShutdown error is recorded without blocking exit',
+      () async {
+        final controller = DesktopLifecycleController(
+          buildInfo: buildInfo,
+          paths: paths,
+          settingsStore: store,
+          windowAdapter: window,
+          trayAdapter: tray,
+          onFlushBeforeShutdown: () async {
+            throw StateError('simulated wal flush failure');
+          },
+          exitProcess: exitCodes.add,
+          nowUtc: () => fixedUtc,
+        );
+        await controller.initializeStartup(
+          const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+        );
+
+        final ok = await controller.performShutdown(ExitReason.quitForUpdate);
+
+        expect(ok, isTrue);
+        expect(exitCodes, const <int>[0]);
+        expect(paths.lifecycleFile.existsSync(), isTrue);
+        expect(controller.lastShutdownPersistenceError, isA<StateError>());
+      },
+    );
   });
 }

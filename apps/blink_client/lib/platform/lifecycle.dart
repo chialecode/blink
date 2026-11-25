@@ -118,6 +118,7 @@ class DesktopLifecycleController extends ChangeNotifier {
     required this.windowAdapter,
     required this.trayAdapter,
     BusyCheck? isBusy,
+    this.onFlushBeforeShutdown,
     this._onBeforeExit,
     ProcessExitFn? exitProcess,
     DateTime Function()? nowUtc,
@@ -132,10 +133,17 @@ class DesktopLifecycleController extends ChangeNotifier {
   final DesktopWindowAdapter windowAdapter;
   final DesktopTrayAdapter trayAdapter;
   final BusyCheck _isBusy;
+  CleanupHook? onFlushBeforeShutdown;
   final CleanupHook? _onBeforeExit;
   final ProcessExitFn _exitProcess;
   final DateTime Function() _nowUtc;
   final Duration _deferredExitDelay;
+
+  /// Registers or replaces the vault/draft shutdown flush callback executed
+  /// before `lifecycle.json` is written and before process exit.
+  void setShutdownFlushHook(CleanupHook? hook) {
+    onFlushBeforeShutdown = hook;
+  }
 
   DesktopSettings _settings = const DesktopSettings();
   bool _recoveredCorruptSettings = false;
@@ -220,6 +228,36 @@ class DesktopLifecycleController extends ChangeNotifier {
       return;
     }
     _settings = _settings.copyWith(closeButtonBehavior: behavior);
+    settingsStore.saveSync(_settings);
+    notifyListeners();
+  }
+
+  /// Persists the preferred surface mode (`null` = follow OS system theme)
+  /// atomically to `settings/desktop.json`.
+  void updateSurfaceMode(DesktopSurfacePreference? mode) {
+    if (_settings.surfaceMode == mode) {
+      return;
+    }
+    _settings = mode == null
+        ? _settings.copyWith(clearSurfaceMode: true)
+        : _settings.copyWith(surfaceMode: mode);
+    settingsStore.saveSync(_settings);
+    notifyListeners();
+  }
+
+  /// Persists an optional custom portable vault path (`null` = default channel
+  /// vault under `<dataRoot>/vault`) atomically to `settings/desktop.json`.
+  void updateCustomVaultPath(String? path) {
+    final normalized = path?.trim();
+    final effective = (normalized == null || normalized.isEmpty)
+        ? null
+        : normalized;
+    if (_settings.customVaultPath == effective) {
+      return;
+    }
+    _settings = effective == null
+        ? _settings.copyWith(clearCustomVaultPath: true)
+        : _settings.copyWith(customVaultPath: effective);
     settingsStore.saveSync(_settings);
     notifyListeners();
   }
@@ -317,6 +355,17 @@ class DesktopLifecycleController extends ChangeNotifier {
       }
     } catch (error) {
       _lastShutdownPersistenceError = error;
+    }
+
+    // Flush active drafts, mirror exporter, and SQLite WAL checkpoint BEFORE
+    // writing lifecycle.json or exiting (`INV-07`). Any error is captured into
+    // `lastShutdownPersistenceError` without blocking exit.
+    if (onFlushBeforeShutdown != null) {
+      try {
+        await onFlushBeforeShutdown!();
+      } catch (error) {
+        _lastShutdownPersistenceError ??= error;
+      }
     }
 
     try {

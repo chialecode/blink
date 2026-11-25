@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_app.dart';
+import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/cli_args.dart';
 import 'package:blink_client/platform/control_protocol.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
+import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
 import 'package:blink_client/platform/paths.dart';
 import 'package:blink_client/platform/tray.dart';
@@ -69,6 +71,7 @@ Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
   ControlPipeServer? pipeServer;
+  BlinkWorkspaceController? workspaceController;
   final settingsStore = DesktopSettingsStore(file: paths.desktopSettingsFile);
   final windowAdapter = NativeDesktopWindowAdapter();
   final trayAdapter = NativeDesktopTrayAdapter();
@@ -79,6 +82,11 @@ Future<void> main(List<String> args) async {
     settingsStore: settingsStore,
     windowAdapter: windowAdapter,
     trayAdapter: trayAdapter,
+    isBusy: () async =>
+        workspaceController?.vault?.isCriticalOperationRunning ?? false,
+    onFlushBeforeShutdown: () async {
+      await workspaceController?.flushAndCloseForShutdown();
+    },
     deferredExitDelay: const Duration(milliseconds: 80),
     onBeforeExit: () async {
       await pipeServer?.stop();
@@ -97,6 +105,13 @@ Future<void> main(List<String> args) async {
 
   await controller.initializeStartup(options);
 
+  workspaceController = BlinkWorkspaceController(
+    lifecycle: controller,
+    filePicker: createDefaultBlinkFilePicker(quietOverride: options.quiet),
+    enableMirrorExporter: !options.quiet,
+  );
+  await workspaceController.initialize();
+
   if (Platform.isWindows && !buildInfo.isSourceBuild) {
     final pipeName = buildInfo.controlPipeName!;
     try {
@@ -105,6 +120,7 @@ Future<void> main(List<String> args) async {
         onCommand: controller.handleControlCommand,
       );
     } catch (_) {
+      await workspaceController.flushAndCloseForShutdown();
       await trayAdapter.destroy();
       if (!options.quiet) {
         await windowAdapter.destroy();
@@ -114,7 +130,9 @@ Future<void> main(List<String> args) async {
     }
   }
 
-  runApp(BlinkApp(controller: controller));
+  runApp(
+    BlinkApp(controller: controller, workspaceController: workspaceController),
+  );
 }
 
 void _writeStdoutBestEffort(String? line) {

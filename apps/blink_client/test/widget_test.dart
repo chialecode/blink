@@ -1,14 +1,17 @@
 import 'dart:io';
 
+import 'package:blink_core/blink_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_app.dart';
 import 'package:blink_client/app/blink_brand_mark.dart';
 import 'package:blink_client/app/blink_theme.dart';
+import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/cli_args.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
+import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
 import 'package:blink_client/platform/paths.dart';
 
@@ -57,7 +60,7 @@ class _NoopTrayAdapter implements DesktopTrayAdapter {
 }
 
 void main() {
-  group('BlinkApp desktop shell widget tests (M2-K02)', () {
+  group('BlinkApp desktop shell widget tests (M2-K02 preserved)', () {
     late Directory tempDir;
 
     setUp(() {
@@ -96,7 +99,30 @@ void main() {
           const LaunchOptions(mode: LaunchMode.normal, quiet: false),
         );
 
-        await tester.pumpWidget(BlinkApp(controller: controller));
+        final vault = await tester.runAsync(
+          () => VaultManager.open(
+            VaultConfig(
+              vaultDir: paths.vaultDir,
+              expectedChannel: BlinkChannel.blinkDev,
+              enableMirrorExporter: false,
+            ),
+          ),
+        );
+        addTearDown(() async {
+          await tester.runAsync(() async {
+            await vault!.checkpointAndClose();
+          });
+        });
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: controller,
+            initialVault: vault,
+            filePicker: const NoopBlinkFilePicker(),
+            enableMirrorExporter: false,
+            initialDestination: BlinkNavDestination.settings,
+          ),
+        );
         await tester.pumpAndSettle();
 
         expect(find.text('BLINK Dev'), findsOneWidget);
@@ -228,7 +254,30 @@ void main() {
           const LaunchOptions(mode: LaunchMode.normal, quiet: false),
         );
 
-        await tester.pumpWidget(BlinkApp(controller: controller));
+        final vault = await tester.runAsync(
+          () => VaultManager.open(
+            VaultConfig(
+              vaultDir: paths.vaultDir,
+              expectedChannel: BlinkChannel.blink,
+              enableMirrorExporter: false,
+            ),
+          ),
+        );
+        addTearDown(() async {
+          await tester.runAsync(() async {
+            await vault!.checkpointAndClose();
+          });
+        });
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: controller,
+            initialVault: vault,
+            filePicker: const NoopBlinkFilePicker(),
+            enableMirrorExporter: false,
+            initialDestination: BlinkNavDestination.settings,
+          ),
+        );
         await tester.pumpAndSettle();
 
         expect(find.text('BLINK'), findsOneWidget);
@@ -291,9 +340,32 @@ void main() {
           const LaunchOptions(mode: LaunchMode.normal, quiet: false),
         );
 
+        final vault = await tester.runAsync(
+          () => VaultManager.open(
+            VaultConfig(
+              vaultDir: paths.vaultDir,
+              expectedChannel: BlinkChannel.blinkDev,
+              enableMirrorExporter: false,
+            ),
+          ),
+        );
+        addTearDown(() async {
+          await tester.runAsync(() async {
+            await vault!.checkpointAndClose();
+          });
+        });
+
         for (final viewport in const <Size>[Size(760, 560), Size(960, 640)]) {
           tester.view.physicalSize = viewport;
-          await tester.pumpWidget(BlinkApp(controller: controller));
+          await tester.pumpWidget(
+            BlinkApp(
+              controller: controller,
+              initialVault: vault,
+              filePicker: const NoopBlinkFilePicker(),
+              enableMirrorExporter: false,
+              initialDestination: BlinkNavDestination.settings,
+            ),
+          );
           await tester.pumpAndSettle();
 
           expect(tester.takeException(), isNull);

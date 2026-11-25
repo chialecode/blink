@@ -149,6 +149,54 @@ void main() {
         'virtual_mac_home/Library/Application Support/blink-dev',
       );
     });
+
+    test('BLINK_VAULT_DIR override takes precedence over default and custom vault path', () {
+      final info = BlinkBuildInfo.normalized(
+        channel: 'blink-dev',
+        identity: 'blink-dev',
+      );
+      final overridden = BlinkPaths.resolve(
+        info,
+        environment: const <String, String>{
+          'BLINK_DATA_DIR': 'sandbox_data',
+          'BLINK_VAULT_DIR': 'sandbox_portable_vault',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+      );
+      expect(overridden.hasVaultDirOverride, isTrue);
+      expect(overridden.vaultDir.path, 'sandbox_portable_vault');
+      expect(
+        overridden
+            .resolveEffectiveVaultDir(customVaultPath: 'ignored_custom')
+            .path,
+        'sandbox_portable_vault',
+      );
+
+      final standard = BlinkPaths.resolve(
+        info,
+        environment: const <String, String>{'BLINK_DATA_DIR': 'sandbox_data'},
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+      );
+      expect(standard.hasVaultDirOverride, isFalse);
+      expect(
+        standard.vaultDir.path,
+        'sandbox_data${Platform.pathSeparator}vault',
+      );
+      expect(
+        standard.webview2Dir.path,
+        'sandbox_data${Platform.pathSeparator}webview2',
+      );
+      expect(
+        standard
+            .resolveEffectiveVaultDir(customVaultPath: 'custom_vault_dir')
+            .path,
+        'custom_vault_dir',
+      );
+    });
   });
 
   group('Atomic IO & DesktopSettingsStore (M2-K02)', () {
@@ -195,6 +243,8 @@ void main() {
           windowWidth: 960,
           windowHeight: 640,
           windowMaximized: false,
+          surfaceMode: DesktopSurfacePreference.sepia,
+          customVaultPath: 'portable_custom_vault',
         ),
       );
 
@@ -207,7 +257,29 @@ void main() {
       expect(reloaded.settings.windowWidth, 960);
       expect(reloaded.settings.windowHeight, 640);
       expect(reloaded.settings.windowMaximized, isFalse);
+      expect(reloaded.settings.surfaceMode, DesktopSurfacePreference.sepia);
+      expect(reloaded.settings.customVaultPath, 'portable_custom_vault');
     });
+
+    test(
+      'invalid surfaceMode in desktop.json triggers corrupt preservation',
+      () {
+        final paths = BlinkPaths(dataRoot: tempDir);
+        paths.desktopSettingsFile.parent.createSync(recursive: true);
+        paths.desktopSettingsFile.writeAsStringSync(
+          jsonEncode(<String, Object?>{'surfaceMode': 'neon_pink'}),
+        );
+
+        final store = DesktopSettingsStore(
+          file: paths.desktopSettingsFile,
+          nowUtc: () => DateTime.utc(2026, 11, 25, 10, 0, 0),
+        );
+        final result = store.loadSync();
+        expect(result.recoveredFromCorrupt, isTrue);
+        expect(result.settings.surfaceMode, isNull);
+        expect(result.preservedCorruptFile?.existsSync(), isTrue);
+      },
+    );
 
     test(
       'corrupt JSON desktop.json is renamed and preserved, returning default',

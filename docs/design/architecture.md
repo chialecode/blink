@@ -73,21 +73,21 @@ blink/
 │   ├── package.py                     # Windows 双通道打包、--install 静默更新本机 blink-dev 与 --rehearsal 演练（已实现；--cli 待实现）
 │   └── test_*.py                      # 上述门禁、依赖与打包脚本的零依赖 unittest 回归测试（已实现）
 ├── packages/
-│   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M3 核心 / M6 完整）
-│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：drift/sqlite3 WAL、BFM v1、AST、SyncTransport、Readability/EPUB/pdfrx_engine、Mirror、OpenAiCompatClient（M3+）
+│   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M3 核心已实现 / M6 完整）
+│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：sqlite3 WAL、BFM v1、CJK FTS5、BlobStore、Mirror（M3 已实现；同步与文档解析 M4～M5 待实现）
 │   ├── blink_cli/                     # 统一原生 CLI / MCP Server (mcp_dart) / 无头同步 (blink sync serve)，由 dart build cli 捆绑 libsqlite3（M4 同步 / M6 完整）
 │   └── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M6）
 └── apps/
-    └── blink_client/                  # 五端 Flutter 本地优先应用（Windows 桌面外壳与打包已实现，五端业务层待实现）
+    └── blink_client/                  # 五端 Flutter 本地优先应用（Windows M3 桌面工作区与按用户打包已实现，同步/伴读/AI 与其余四端待实现）
         ├── pubspec.yaml
         ├── assets/icons/              # 运行期托盘多尺寸 .ico（blink.ico、blink-dev.ico）
         ├── lib/
-        │   ├── app/                   # 最小桌面外壳：产品占位页、“关于”与关闭行为设置（已实现）
-        │   ├── ui/                    # 自适应外壳、BFM v1 编辑器、Surface 1 原生流与阅读器、Surface 2 沙盒全页视图、pdfrx 伴读、设置（待实现）
-        │   ├── application/           # Riverpod 状态控制器、CJK IME 保护与自动补全、双表面路由协调（待实现）
-        │   └── platform/              # 编译期信息、双通道路径解析、原子写入、桌面设置、单实例锁、控制管道、托盘与生命周期（Windows 已实现，其余平台与密钥仓待实现）
+        │   ├── app/                   # 应用入口、日/纸/夜视觉令牌、品牌标识与壳层装配（已实现）
+        │   ├── ui/                    # 四档自适应外壳、BFM v1 编辑器与分栏预览、CJK 搜索、文件/附件、内生待办与设置页（M3 已实现；伴读与双表面 AI 视图待实现）
+        │   ├── application/           # 纯 Flutter ChangeNotifier 控制器、CJK IME 保护与自动补全（M3 已实现）
+        │   └── platform/              # 编译期信息、双通道路径与便携库解析、原子写入、桌面设置、原生文件选择、单实例锁、控制管道、托盘与生命周期（Windows 已实现，其余平台与密钥仓待实现）
         ├── windows/ macos/ linux/ android/ ios/   # windows/packaging/blink.nsi 为 NSIS 3.13 按用户安装脚本（已实现，DEC-029）
-        └── test/                      # 单元、组件、Win32 IPC 与无焦点生命周期测试（已实现）
+        └── test/                      # 单元、组件、CJK IME 保护、Win32 IPC 与无焦点生命周期测试（已实现）
 ```
 
 <a id="contracts"></a>

@@ -3,6 +3,30 @@ import 'dart:io';
 
 import 'package:blink_client/platform/atomic_io.dart';
 
+/// User-configurable appearance surface preference (`null` = follow system).
+enum DesktopSurfacePreference {
+  day('day', '日间清朗'),
+  sepia('sepia', '暖纸伴读'),
+  dark('dark', '夜间低眩光');
+
+  const DesktopSurfacePreference(this.wireValue, this.label);
+
+  final String wireValue;
+  final String label;
+
+  static DesktopSurfacePreference? tryParse(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+    for (final item in DesktopSurfacePreference.values) {
+      if (item.wireValue == value) {
+        return item;
+      }
+    }
+    return null;
+  }
+}
+
 /// User-configurable behavior when the main window close button is clicked.
 enum CloseButtonBehavior {
   hideToTray('hide_to_tray', '隐藏到托盘'),
@@ -33,6 +57,8 @@ class DesktopSettings {
     this.windowWidth,
     this.windowHeight,
     this.windowMaximized,
+    this.surfaceMode,
+    this.customVaultPath,
   });
 
   final CloseButtonBehavior closeButtonBehavior;
@@ -40,17 +66,31 @@ class DesktopSettings {
   final double? windowHeight;
   final bool? windowMaximized;
 
+  /// Optional theme surface override (`null` follows OS light/dark system theme).
+  final DesktopSurfacePreference? surfaceMode;
+
+  /// Optional custom `<BLINK_VAULT_DIR>` path (`null` uses default `<dataRoot>/vault`).
+  final String? customVaultPath;
+
   DesktopSettings copyWith({
     CloseButtonBehavior? closeButtonBehavior,
     double? windowWidth,
     double? windowHeight,
     bool? windowMaximized,
+    DesktopSurfacePreference? surfaceMode,
+    bool clearSurfaceMode = false,
+    String? customVaultPath,
+    bool clearCustomVaultPath = false,
   }) {
     return DesktopSettings(
       closeButtonBehavior: closeButtonBehavior ?? this.closeButtonBehavior,
       windowWidth: windowWidth ?? this.windowWidth,
       windowHeight: windowHeight ?? this.windowHeight,
       windowMaximized: windowMaximized ?? this.windowMaximized,
+      surfaceMode: clearSurfaceMode ? null : (surfaceMode ?? this.surfaceMode),
+      customVaultPath: clearCustomVaultPath
+          ? null
+          : (customVaultPath ?? this.customVaultPath),
     );
   }
 
@@ -60,6 +100,9 @@ class DesktopSettings {
       if (windowWidth != null) 'windowWidth': windowWidth,
       if (windowHeight != null) 'windowHeight': windowHeight,
       if (windowMaximized != null) 'windowMaximized': windowMaximized,
+      if (surfaceMode != null) 'surfaceMode': surfaceMode!.wireValue,
+      if (customVaultPath != null && customVaultPath!.trim().isNotEmpty)
+        'customVaultPath': customVaultPath!.trim(),
     };
   }
 
@@ -103,11 +146,33 @@ class DesktopSettings {
       maximized = raw;
     }
 
+    DesktopSurfacePreference? surfaceMode;
+    if (json.containsKey('surfaceMode') && json['surfaceMode'] != null) {
+      final parsed = DesktopSurfacePreference.tryParse(json['surfaceMode']);
+      if (parsed == null) {
+        return null;
+      }
+      surfaceMode = parsed;
+    }
+
+    String? customVaultPath;
+    if (json.containsKey('customVaultPath') &&
+        json['customVaultPath'] != null) {
+      final raw = json['customVaultPath'];
+      if (raw is! String) {
+        return null;
+      }
+      final trimmed = raw.trim();
+      customVaultPath = trimmed.isEmpty ? null : trimmed;
+    }
+
     return DesktopSettings(
       closeButtonBehavior: behavior,
       windowWidth: width,
       windowHeight: height,
       windowMaximized: maximized,
+      surfaceMode: surfaceMode,
+      customVaultPath: customVaultPath,
     );
   }
 
@@ -120,7 +185,9 @@ class DesktopSettings {
         other.closeButtonBehavior == closeButtonBehavior &&
         other.windowWidth == windowWidth &&
         other.windowHeight == windowHeight &&
-        other.windowMaximized == windowMaximized;
+        other.windowMaximized == windowMaximized &&
+        other.surfaceMode == surfaceMode &&
+        other.customVaultPath == customVaultPath;
   }
 
   @override
@@ -129,6 +196,8 @@ class DesktopSettings {
     windowWidth,
     windowHeight,
     windowMaximized,
+    surfaceMode,
+    customVaultPath,
   );
 }
 
