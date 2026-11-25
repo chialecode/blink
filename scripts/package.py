@@ -58,6 +58,15 @@ WINDOW_DEFER_TIMEOUT_SECONDS = 600.0
 INSTALLER_TIMEOUT_SECONDS = 600.0
 # run_silent_installer's result when the installer did not finish within INSTALLER_TIMEOUT_SECONDS.
 INSTALLER_TIMED_OUT = -1
+# blink.nsi's BLINK_EXIT_* codes, explained in the install-dev receipt (test_package checks every code is here).
+INSTALLER_EXIT_MEANINGS = {
+    INSTALLER_TIMED_OUT: f"the installer did not finish within {int(INSTALLER_TIMEOUT_SECONDS // 60)} minutes",
+    3: "BLINK reported busy and kept running",
+    4: "BLINK did not exit within 30 s",
+    5: "BLINK is running, but asking it to quit failed",
+    7: "the install folder holds another program's Uninstall.exe",
+    8: "some files could not be written (held open or no write permission); the uninstall entry was left as it was, run it again",
+}
 WINDOW_DEFER_POLL_INTERVAL_SECONDS = 2.0
 REHEARSAL_QUIT_TIMEOUT_SECONDS = 5.0
 TRAY_VERIFY_TIMEOUT_SECONDS = 5.0
@@ -1591,7 +1600,9 @@ def run_dev_auto_install(
     # Step 3: silent install, then check both the uninstall entry and the installed exe.
     rc = deps.run_installer(installer_path)
     if rc != 0:
-        return fail(f"installer_failed_exit_{rc}", f"Silent installer exited with non-zero code {rc}.")
+        meaning = INSTALLER_EXIT_MEANINGS.get(rc)
+        detail = f": {meaning}" if meaning else ""
+        return fail(f"installer_failed_exit_{rc}", f"Silent installer exited with non-zero code {rc}{detail}.")
 
     post_entry = deps.read_dev_uninstall_entry()
     if post_entry is None:
