@@ -16,6 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import re
 import unittest
 from unittest import mock
 import zipfile
@@ -442,13 +443,20 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             "!define BLINK_EXIT_FILES_NOT_WRITTEN 8",
         ):
             self.assertIn(needle, text)
-        # A file /S could not write stops the install before the uninstaller and the entry are written.
-        self.assertRegex(
-            text,
+        # A file /S could not write stops the install before the uninstaller, the shortcuts and the entry.
+        check = re.search(
             r"ClearErrors\n\s*File /r \"\$\{BLINK_SOURCE_DIR\}\\\*\"\n\s*\$\{If\} \$\{Errors\}\n"
-            r"(?:.*\n){0,2}?\s*SetErrorLevel \$\{BLINK_EXIT_FILES_NOT_WRITTEN\}\n\s*Quit\n\s*\$\{EndIf\}\n"
+            r"\s*MessageBox [^\n]*/SD IDOK\n\s*SetErrorLevel \$\{BLINK_EXIT_FILES_NOT_WRITTEN\}\n\s*Quit\n\s*\$\{EndIf\}\n"
             r"\s*WriteUninstaller ",
+            text,
         )
+        self.assertIsNotNone(check, "File /r must be followed by the exit-8 check, then WriteUninstaller")
+        for later in ('WriteRegStr HKCU "${BLINK_UNINSTALL_KEY}"', 'CreateShortCut "$SMPROGRAMS'):
+            self.assertGreater(text.index(later), check.start(), f"{later} must come after the exit-8 check")
+        # Every exit code the script defines is explained in the install-dev receipt.
+        codes = {int(code) for code in re.findall(r"(?m)^!define BLINK_EXIT_\w+ (\d+)", text)}
+        self.assertEqual(codes, {3, 4, 5, 7, 8})
+        self.assertLessEqual(codes, set(package.INSTALLER_EXIT_MEANINGS))
         self.assertNotRegex(text, r"(?im)^\s*SetCompressor\s.*lzma")
         for value in (
             "DisplayName",

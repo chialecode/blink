@@ -58,14 +58,14 @@ WINDOW_DEFER_TIMEOUT_SECONDS = 600.0
 INSTALLER_TIMEOUT_SECONDS = 600.0
 # run_silent_installer's result when the installer did not finish within INSTALLER_TIMEOUT_SECONDS.
 INSTALLER_TIMED_OUT = -1
-# blink.nsi's BLINK_EXIT_* codes, explained in the install-dev receipt.
+# blink.nsi's BLINK_EXIT_* codes, explained in the install-dev receipt (test_package checks every code is here).
 INSTALLER_EXIT_MEANINGS = {
-    INSTALLER_TIMED_OUT: "the installer did not finish within 10 minutes",
+    INSTALLER_TIMED_OUT: f"the installer did not finish within {int(INSTALLER_TIMEOUT_SECONDS // 60)} minutes",
     3: "BLINK reported busy and kept running",
     4: "BLINK did not exit within 30 s",
     5: "BLINK is running, but asking it to quit failed",
     7: "the install folder holds another program's Uninstall.exe",
-    8: "some files could not be written (held open or not writable); the entry keeps the old version, run it again",
+    8: "some files could not be written (held open or no write permission); the uninstall entry was left as it was, run it again",
 }
 WINDOW_DEFER_POLL_INTERVAL_SECONDS = 2.0
 REHEARSAL_QUIT_TIMEOUT_SECONDS = 5.0

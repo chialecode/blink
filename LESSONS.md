@@ -15,5 +15,5 @@
 
 ## 打包与安装
 
-- **NSIS 静默安装写不进文件时不会失败。** `/S` 下 `File` 遇到被占用或只读的文件只置错误标志就跳过，安装器照常写卸载项、返回 0，留下新旧混装；`File` 前 `ClearErrors`、之后检查 `${Errors}` 并以退出码 `8` 结束（写卸载项之前）。证据：[#27](https://github.com/chialecode/blink/issues/27)。出现 1 次。
+- **NSIS 静默安装写不进文件时不会失败。** `/S` 下 `File` 遇到被占用或没有写权限的文件只置错误标志就跳过，安装器照常写卸载项、返回 0，留下新旧混装；`File` 前 `ClearErrors`、之后检查 `${Errors}` 并以退出码 `8` 结束（写卸载项之前）。证据：[#27](https://github.com/chialecode/blink/issues/27)。出现 1 次。
 - **NSIS 的 `/D=` 必须放在命令行最后且不加引号。** 加了引号 NSIS 不认它，引号里的内容还会混进其他参数；`GetOptions` 也取不到整段加了引号的 `"/X=带空格的值"`，要先换成 `/X="带空格的值"` 再取。证据：[#26](https://github.com/chialecode/blink/pull/26)。出现 1 次。
