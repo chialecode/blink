@@ -74,7 +74,7 @@ class BlinkSyntaxTextController extends TextEditingController {
   BlinkSyntaxTextController({super.text});
 
   static final RegExp _tokenPattern = RegExp(
-    r'(!\[\[ai:[^\]]+\]\]|\[\[[^\]]+\]\]|==[^=\n]+==|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*)|^[ \t]*>[ \t]*\[![A-Za-z]+\]|^[ \t]*-[ \t]+\[[ xX>\-]\])',
+    r'(!\[\[ai:[^\]]+\]\]|\[\[[^\]]+\]\]|==[^=\n]+==|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*)|^[ \t]*>[ \t]*\[![A-Za-z]+\]|^[ \t]*[-*][ \t]+\[[ xX>\-]\])',
     multiLine: true,
     unicode: true,
   );
@@ -548,13 +548,42 @@ class BlinkEditorController extends ChangeNotifier {
       ];
 
   /// Loads any persisted crash-recovery draft for the inbox composer.
-  Future<void> loadInboxDraft() async {
+  ///
+  /// When [resetIfMissing] is `true` (default), resets editor state to a clean
+  /// empty inbox whenever the active vault has no inbox draft or is closed,
+  /// preventing prior vault text/attachments/`#private` state from leaking across
+  /// vault switches (`INV-03`, `INV-06`).
+  Future<void> loadInboxDraft({bool resetIfMissing = true}) async {
+    _draftTimer?.cancel();
+    _previewTimer?.cancel();
+    _hasUnsavedDraft = false;
     final vault = vaultProvider();
     if (vault == null || !vault.isOpen) {
+      if (resetIfMissing && !_isDisposed) {
+        _applyLoadedState(
+          entryId: null,
+          bodyMd: '',
+          entryKind: EntryKind.blink,
+          privacyLocked: false,
+          imageBlobSha256s: const <String>[],
+        );
+      }
       return;
     }
     final draft = await vault.raw.loadDraft('inbox');
-    if (draft == null || _isDisposed) {
+    if (_isDisposed) {
+      return;
+    }
+    if (draft == null) {
+      if (resetIfMissing) {
+        _applyLoadedState(
+          entryId: null,
+          bodyMd: '',
+          entryKind: EntryKind.blink,
+          privacyLocked: false,
+          imageBlobSha256s: const <String>[],
+        );
+      }
       return;
     }
     _applyLoadedState(
@@ -564,6 +593,24 @@ class BlinkEditorController extends ChangeNotifier {
       privacyLocked: draft.privacyLocked,
       imageBlobSha256s: draft.imageBlobSha256s,
     );
+  }
+
+  /// Resets the editor cleanly to inbox if [entryId] is currently being edited
+  /// (e.g. after soft-delete or permanent purge) without flushing a stale draft.
+  Future<void> resetIfEditingEntry(String entryId) async {
+    if (_editingEntryId != entryId) {
+      return;
+    }
+    _draftTimer?.cancel();
+    _previewTimer?.cancel();
+    _hasUnsavedDraft = false;
+    final vault = vaultProvider();
+    if (vault != null && vault.isOpen) {
+      try {
+        await vault.raw.clearDraft('entry:$entryId');
+      } catch (_) {}
+    }
+    await loadInboxDraft(resetIfMissing: true);
   }
 
   /// Switches the editor into editing an existing [entry] (restoring any

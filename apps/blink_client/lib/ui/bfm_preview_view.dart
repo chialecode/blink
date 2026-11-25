@@ -647,7 +647,7 @@ class _AiEmbedBlock extends _BfmBlock {
 }
 
 final RegExp _headingRe = RegExp(r'^(#{1,6})\s+(.*)$');
-final RegExp _taskRe = RegExp(r'^[ \t]*-[ \t]+\[([ xX>\-])\][ \t]+(.*)$');
+final RegExp _taskRe = RegExp(r'^[ \t]*[-*][ \t]+\[([ xX>\-])\][ \t]+(.*)$');
 final RegExp _calloutRe = RegExp(r'^[ \t]*>[ \t]*\[!([A-Za-z]+)\][ \t]*(.*)$');
 final RegExp _foldOpenRe = RegExp(r'^[ \t]*:::fold[ \t]*(.*)$');
 final RegExp _foldCloseRe = RegExp(r'^[ \t]*:::[ \t]*$');

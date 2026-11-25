@@ -752,5 +752,210 @@ void main() {
         workspace.dispose();
       }
     });
+
+    testWidgets(
+      'vault switch guards same-path reopen, flushes Vault A draft, and isolates Vault B editor & search (P1)',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final fixture = await createFixture(
+          tester,
+          channel: 'blink-dev',
+          enableMirror: false,
+          initialDestination: BlinkNavDestination.stream,
+        );
+        final vaultADir = fixture.vault.config.vaultDir;
+        final vaultBDir = Directory(
+          '${tempDir.path}${Platform.pathSeparator}clean_vault_b',
+        );
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        const secretDraft = '绝密草稿 #private 不能泄漏到新库';
+        await tester.enterText(
+          find.byKey(const Key('bfm_editor_input')),
+          secretDraft,
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('editor_private_toggle')));
+        await tester.pumpAndSettle();
+
+        // Open search modal and set a query before switching vaults.
+        await tester.tap(find.byKey(const Key('open_search_button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('search_modal_input')),
+          '绝密',
+        );
+        await tester.pump();
+        Navigator.of(tester.element(find.byKey(const Key('search_modal'))))
+            .pop();
+        await tester.pumpAndSettle();
+
+        // Same-path re-open must be a safe no-op keeping Vault A open.
+        final samePathOk = await tester.runAsync(
+          () => fixture.workspace.switchVaultDirectory(vaultADir.path),
+        );
+        expect(samePathOk, isTrue);
+        expect(fixture.vault.isOpen, isTrue);
+
+        // Switch from Vault A -> clean Vault B.
+        final switched = await tester.runAsync(
+          () => fixture.workspace.switchVaultDirectory(vaultBDir.path),
+        );
+        expect(switched, isTrue);
+        await _drainRealIo(tester);
+
+        // Editor must be completely cleared on Vault B (zero Vault A leak).
+        final editorField = tester.widget<TextField>(
+          find.byKey(const Key('bfm_editor_input')),
+        );
+        expect(editorField.controller!.text, isEmpty);
+
+        // Vault B's `editor_drafts` must contain zero leaked draft from Vault A.
+        final vaultBDraft = await tester.runAsync(
+          () => fixture.workspace.vault!.raw.loadDraft('inbox'),
+        );
+        expect(vaultBDraft, isNull);
+
+        // Vault A's pending draft was flushed into Vault A before switching.
+        final vaultADraft = await tester.runAsync(
+          () => fixture.vault.raw.loadDraft('inbox'),
+        );
+        expect(vaultADraft, isNotNull);
+        expect(vaultADraft!.bodyMd, secretDraft);
+        expect(vaultADraft.privacyLocked, isTrue);
+
+        // Search modal opens cleared after vault switch.
+        await tester.tap(find.byKey(const Key('open_search_button')));
+        await tester.pumpAndSettle();
+        final searchField = tester.widget<TextField>(
+          find.byKey(const Key('search_modal_input')),
+        );
+        expect(searchField.controller!.text, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'deleting actively edited entry resets editor and submitting purged entry surfaces honest error banner (P2)',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.stream,
+        );
+        final entry1 = (await tester.runAsync(
+          () => fixture.workspace.createEntry(bodyMd: '第一条待删笔记\n* [ ] 星号待办'),
+        ))!;
+        final entry2 = (await tester.runAsync(
+          () => fixture.workspace.createEntry(bodyMd: '第二条将被后台清除的笔记'),
+        ))!;
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Start editing entry1, then soft-delete entry1 -> editor resets to empty inbox.
+        await tester.tap(find.byKey(Key('entry_edit_${entry1.id}')));
+        await _drainRealIo(tester);
+        expect(
+          tester
+              .widget<TextField>(find.byKey(const Key('bfm_editor_input')))
+              .controller!
+              .text,
+          contains('第一条待删笔记'),
+        );
+
+        await tester.tap(find.byKey(Key('entry_delete_${entry1.id}')));
+        await _drainRealIo(tester);
+        expect(
+          tester
+              .widget<TextField>(find.byKey(const Key('bfm_editor_input')))
+              .controller!
+              .text,
+          isEmpty,
+        );
+
+        // Start editing entry2, purge it underneath, then click submit -> honest error banner (zero unhandled exception).
+        await tester.tap(find.byKey(Key('entry_edit_${entry2.id}')));
+        await _drainRealIo(tester);
+        await tester.runAsync(() async {
+          await fixture.vault.raw.softDeleteEntry(entry2.id);
+          await fixture.vault.raw.purgeEntryPermanently(entry2.id);
+        });
+
+        await tester.tap(find.byKey(const Key('bfm_submit_button')));
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.bannerIsError,
+        );
+        expect(tester.takeException(), isNull);
+        expect(fixture.workspace.bannerIsError, isTrue);
+        expect(fixture.workspace.bannerMessage, contains('not_found'));
+      },
+    );
+
+    test('exportBlobToFile cleans up temporary file when destination rename fails (P2)', () async {
+      final paths = BlinkPaths(dataRoot: tempDir);
+      final lifecycle = DesktopLifecycleController(
+        buildInfo: BlinkBuildInfo.normalized(
+          channel: 'blink-dev',
+          identity: 'blink-dev',
+        ),
+        paths: paths,
+        settingsStore: DesktopSettingsStore(file: paths.desktopSettingsFile),
+        windowAdapter: _NoopWindowAdapter(),
+        trayAdapter: _NoopTrayAdapter(),
+      );
+      await lifecycle.initializeStartup(
+        const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+      );
+      final workspace = BlinkWorkspaceController(
+        lifecycle: lifecycle,
+        filePicker: const NoopBlinkFilePicker(),
+        enableMirrorExporter: false,
+      );
+      await workspace.initialize();
+      try {
+        final blob = await workspace.vault!.blobs.putBytes(
+          Uint8List.fromList('atomic-export-check'.codeUnits),
+          mimeType: 'text/plain',
+        );
+        final blockingDir = Directory(
+          '${tempDir.path}${Platform.pathSeparator}cannot_overwrite_dir',
+        )..createSync(recursive: true);
+
+        final result = await workspace.exportBlobToFile(
+          blob,
+          File(blockingDir.path),
+        );
+        expect(result, isNull);
+        expect(workspace.bannerIsError, isTrue);
+
+        final leftoverTmp = tempDir
+            .listSync()
+            .where((e) => e.path.contains('.blink-tmp-'))
+            .toList();
+        expect(leftoverTmp, isEmpty);
+      } finally {
+        await workspace.flushAndCloseForShutdown();
+        workspace.dispose();
+      }
+    });
   });
 }

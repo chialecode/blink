@@ -75,10 +75,9 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
     final current = widget.workspace.vault;
     if (!identical(current, _lastBoundVault)) {
       _lastBoundVault = current;
+      _searchController.clear();
       unawaited(_tasksController.bindVault(current));
-      if (current != null && current.isOpen) {
-        unawaited(_editorController.loadInboxDraft());
-      }
+      unawaited(_editorController.loadInboxDraft(resetIfMissing: true));
     }
   }
 

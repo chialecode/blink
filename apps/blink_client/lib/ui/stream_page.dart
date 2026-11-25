@@ -87,9 +87,18 @@ class _BlinkStreamPageState extends State<BlinkStreamPage> {
   }
 
   Future<void> _submitEditor() async {
-    final saved = await widget.editor.submit();
-    if (saved != null) {
-      await widget.workspace.refreshAll();
+    try {
+      final saved = await widget.editor.submit();
+      if (saved != null) {
+        await widget.workspace.refreshAll();
+      }
+    } on BlinkException catch (error) {
+      widget.workspace.showBanner(
+        '保存条目失败（${error.code.wireCode}）：${error.message}',
+        isError: true,
+      );
+    } catch (error) {
+      widget.workspace.showBanner('保存条目失败：$error', isError: true);
     }
   }
 
@@ -189,12 +198,24 @@ class _BlinkStreamPageState extends State<BlinkStreamPage> {
                                   await widget.editor.startEditingEntry(entry);
                                 }
                               },
-                              onSoftDelete: () =>
-                                  widget.workspace.softDeleteEntry(entry.id),
+                              onSoftDelete: () async {
+                                await widget.editor.resetIfEditingEntry(
+                                  entry.id,
+                                );
+                                await widget.workspace.softDeleteEntry(
+                                  entry.id,
+                                );
+                              },
                               onRestore: () =>
                                   widget.workspace.restoreEntry(entry.id),
-                              onPurge: () => widget.workspace
-                                  .purgeEntryPermanently(entry.id),
+                              onPurge: () async {
+                                await widget.editor.resetIfEditingEntry(
+                                  entry.id,
+                                );
+                                await widget.workspace.purgeEntryPermanently(
+                                  entry.id,
+                                );
+                              },
                               onTapLink: _handlePreviewLinkTap,
                               onToggleTaskLine: (lineIndex, nextStatus) =>
                                   _handleEntryCheckboxToggle(

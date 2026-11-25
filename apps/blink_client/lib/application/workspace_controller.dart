@@ -543,6 +543,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     if (activeVault == null || !activeVault.isOpen) {
       return null;
     }
+    File? tmp;
     try {
       final bytes = await activeVault.blobs.readBytes(blob.sha256);
       if (bytes == null) {
@@ -550,7 +551,8 @@ class BlinkWorkspaceController extends ChangeNotifier {
         return null;
       }
       await destination.parent.create(recursive: true);
-      final tmp = File('${destination.path}.blink-tmp');
+      final uniqueTag = DateTime.now().microsecondsSinceEpoch;
+      tmp = File('${destination.path}.blink-tmp-$uniqueTag');
       final raf = await tmp.open(mode: FileMode.writeOnly);
       try {
         await raf.writeFrom(bytes);
@@ -558,13 +560,50 @@ class BlinkWorkspaceController extends ChangeNotifier {
       } finally {
         await raf.close();
       }
-      await tmp.rename(destination.path);
+      await _atomicRenameWithRetry(tmp, destination);
+      tmp = null;
       showBanner('已导出附件副本。');
       return destination;
     } catch (error) {
+      if (tmp != null) {
+        try {
+          if (await tmp.exists()) {
+            await tmp.delete();
+          }
+        } catch (_) {}
+      }
       showBanner('导出附件失败：$error', isError: true);
       return null;
     }
+  }
+
+  static Future<void> _atomicRenameWithRetry(File tmp, File target) async {
+    const delays = <int>[10, 25, 50, 100, 200, 400];
+    Object? lastError;
+    for (var attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        await tmp.rename(target.path);
+        return;
+      } on FileSystemException catch (error) {
+        lastError = error;
+        if (attempt == delays.length) {
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: delays[attempt]));
+      }
+    }
+    if (lastError != null) {
+      throw lastError;
+    }
+  }
+
+  static String _normalizePathForCompare(String rawPath) {
+    var resolved = Directory(rawPath).absolute.path;
+    while (resolved.length > 3 &&
+        (resolved.endsWith('/') || resolved.endsWith(r'\'))) {
+      resolved = resolved.substring(0, resolved.length - 1);
+    }
+    return Platform.isWindows ? resolved.toLowerCase() : resolved;
   }
 
   Future<int> gcUnreferencedBlobs() async {
@@ -591,6 +630,17 @@ class BlinkWorkspaceController extends ChangeNotifier {
       return false;
     }
 
+    final currentVault = _vault;
+    if (currentVault != null &&
+        currentVault.isOpen &&
+        _normalizePathForCompare(currentVault.config.vaultDir.path) ==
+            _normalizePathForCompare(trimmed)) {
+      _vaultErrorCode = null;
+      _vaultErrorMessage = null;
+      showBanner('当前已打开该便携库目录。');
+      return true;
+    }
+
     _isLoading = true;
     _safeNotify();
     try {
@@ -603,15 +653,25 @@ class BlinkWorkspaceController extends ChangeNotifier {
       );
       final previous = _vault;
       final previousOwned = _ownsVault;
+      if (previous != null && previous.isOpen) {
+        try {
+          await _onFlushDraftBeforeShutdown?.call();
+        } catch (_) {}
+        try {
+          await previous.mirror.flushNow();
+        } catch (_) {}
+      }
       _vaultErrorCode = null;
       _vaultErrorMessage = null;
       _ownsVault = true;
+      _selectedEntryId = null;
+      _streamFilter = StreamFilterKind.all;
+      _selectedTag = null;
       await _attachVault(candidate);
       if (previous != null && previousOwned && previous.isOpen) {
         await previous.checkpointAndClose();
       }
       lifecycle.updateCustomVaultPath(trimmed);
-      _selectedEntryId = null;
       showBanner('已切换单文件夹便携库。');
       return true;
     } on BlinkException catch (error) {
