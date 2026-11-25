@@ -1865,19 +1865,20 @@ def _query_known_folder_documents_win32() -> Path | None:
     co_task_mem_free.restype = None
 
     path_ptr = ctypes.c_void_p()
-    hr = sh_get_known_folder_path(
-        ctypes.byref(folderid_documents),
-        kf_flag_dont_verify,
-        None,
-        ctypes.byref(path_ptr),
-    )
-    if hr < 0 or not path_ptr.value:
-        return None
     try:
+        hr = sh_get_known_folder_path(
+            ctypes.byref(folderid_documents),
+            kf_flag_dont_verify,
+            None,
+            ctypes.byref(path_ptr),
+        )
+        if hr < 0 or not path_ptr.value:
+            return None
         resolved = ctypes.wstring_at(path_ptr.value).strip()
         return Path(resolved) if resolved else None
     finally:
-        co_task_mem_free(path_ptr.value)
+        if path_ptr.value:
+            co_task_mem_free(path_ptr.value)
 
 
 def resolve_windows_documents_dir(

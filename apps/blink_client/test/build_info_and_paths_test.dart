@@ -598,13 +598,15 @@ void main() {
         throwsStateError,
       );
 
-      // Test identities (`blink-test` & `blink-dev-test`) reject BOTH prod and dev roots.
-      for (final testBuild in <BlinkBuildInfo>[
+      // Test identities (`blink-test` & `blink-dev-test`) and source builds
+      // reject BOTH installed prod (`blink`) and installed dev (`blink-dev`) roots.
+      for (final guardedBuild in <BlinkBuildInfo>[
         BlinkBuildInfo.normalized(channel: 'blink', identity: 'blink-test'),
         BlinkBuildInfo.normalized(
           channel: 'blink-dev',
           identity: 'blink-dev-test',
         ),
+        BlinkBuildInfo.normalized(channel: 'blink-dev'),
       ]) {
         for (final badPath in const <String>[
           r'virtual_local_appdata\blink',
@@ -614,7 +616,7 @@ void main() {
         ]) {
           expect(
             () => BlinkPaths.resolve(
-              testBuild,
+              guardedBuild,
               environment: <String, String>{
                 'LOCALAPPDATA': 'virtual_local_appdata',
                 'BLINK_DATA_DIR': 'isolated_test_root',
@@ -627,13 +629,56 @@ void main() {
             ),
             throwsStateError,
             reason:
-                'Expected ${testBuild.identity} BLINK_VAULT_DIR=$badPath to be rejected',
+                'Expected ${guardedBuild.identity.isEmpty ? "source" : guardedBuild.identity} BLINK_VAULT_DIR=$badPath to be rejected',
           );
         }
       }
+
+      // Source build also rejects BLINK_DATA_DIR targeting installed blink-dev
+      // and flags installed blink-dev as forbidden for customVaultPath.
+      final sourceDev = BlinkBuildInfo.normalized(channel: 'blink-dev');
+      expect(
+        () => BlinkPaths.resolve(
+          sourceDev,
+          environment: const <String, String>{
+            'LOCALAPPDATA': 'virtual_local_appdata',
+            'BLINK_DATA_DIR': r'virtual_local_appdata\blink-dev',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+      final safeSource = BlinkPaths.resolve(
+        sourceDev,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_documents',
+        repoRootOverride: Directory('virtual_repo'),
+      );
+      expect(
+        safeSource.isForbiddenTargetPath(r'virtual_local_appdata\blink-dev'),
+        isTrue,
+      );
+      expect(
+        safeSource.isForbiddenTargetPath(r'virtual_documents\blink-dev'),
+        isTrue,
+      );
+      expect(
+        safeSource.isForbiddenTargetPath(
+          r'virtual_repo\.local\blink-dev\vault',
+        ),
+        isFalse,
+      );
     });
 
-    test('channel isolation guard resolves existing symlinks/junctions to protected roots', () {
+    test('channel isolation guard resolves existing symlinks/junctions including relative symlink + non-existent child', () {
       final tempRoot = Directory.systemTemp.createTempSync('blink_link_guard_');
       addTearDown(() {
         if (tempRoot.existsSync()) {
@@ -662,6 +707,7 @@ void main() {
           channel: 'blink-dev',
           identity: 'blink-dev',
         );
+        final sep = Platform.isWindows ? r'\' : '/';
         expect(
           () => BlinkPaths.resolve(
             dev,
@@ -675,6 +721,23 @@ void main() {
             isLinux: Platform.isLinux,
             resolveSystemDocumentsDir: () =>
                 '${tempRoot.path}${Platform.pathSeparator}docs',
+          ),
+          throwsStateError,
+        );
+        expect(
+          () => BlinkPaths.resolve(
+            dev,
+            environment: <String, String>{
+              'LOCALAPPDATA': fakeLocalAppData.path,
+              'XDG_DATA_HOME': fakeLocalAppData.path,
+              'BLINK_DATA_DIR': 'sneaky_link${sep}nonexistent_child',
+            },
+            isWindows: Platform.isWindows,
+            isMacOS: Platform.isMacOS,
+            isLinux: Platform.isLinux,
+            resolveSystemDocumentsDir: () =>
+                '${tempRoot.path}${Platform.pathSeparator}docs',
+            currentDirectoryOverride: tempRoot,
           ),
           throwsStateError,
         );

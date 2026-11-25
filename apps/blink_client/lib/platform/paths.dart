@@ -531,7 +531,10 @@ class BlinkPaths {
       return const <String>[];
     }
 
-    final guardedSegments = <String>['blink', if (isTestIdentity) 'blink-dev'];
+    final guardedSegments = <String>[
+      'blink',
+      if (isTestIdentity || buildInfo.isSourceBuild) 'blink-dev',
+    ];
     final collected = <String>{};
 
     void addCandidate(String? rawPath) {
@@ -597,6 +600,17 @@ class BlinkPaths {
       path = path.substring(4);
     }
 
+    // Resolve relative paths against canonicalBase BEFORE symlink resolution so
+    // relative paths traversing a symlink/junction + non-existent child still
+    // resolve their existing symlink prefix cleanly.
+    if (path.isNotEmpty &&
+        !_isAbsolutePath(path.replaceAll(r'\', '/'), isWindows: isWindows) &&
+        canonicalBase != null &&
+        canonicalBase.isNotEmpty) {
+      final sep = isWindows ? r'\' : '/';
+      path = _joinPath(canonicalBase, path, sep);
+    }
+
     // Resolve symlinks / NTFS junctions on the deepest existing prefix when
     // targeting the live host OS.
     if (isWindows == Platform.isWindows && path.isNotEmpty) {
@@ -606,13 +620,7 @@ class BlinkPaths {
       }
     }
 
-    var slashed = path.replaceAll(r'\', '/');
-    if (!_isAbsolutePath(slashed, isWindows: isWindows) &&
-        canonicalBase != null &&
-        canonicalBase.isNotEmpty) {
-      final baseSlashed = canonicalBase.replaceAll(r'\', '/');
-      slashed = '$baseSlashed/$slashed';
-    }
+    final slashed = path.replaceAll(r'\', '/');
 
     String prefix = '';
     var rest = slashed;
