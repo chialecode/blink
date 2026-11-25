@@ -99,6 +99,7 @@ final class FileMirrorExporter implements MirrorExporter {
   MirrorStatus _status;
   Timer? _debounceTimer;
   Future<void>? _inFlight;
+  bool _dirty = false;
   bool _rescheduleRequested = false;
   bool _disposed = false;
 
@@ -141,6 +142,7 @@ final class FileMirrorExporter implements MirrorExporter {
     if (!_enabled || _disposed || !_isVaultOpen()) {
       return;
     }
+    _dirty = true;
     _debounceTimer?.cancel();
     _debounceTimer = Timer(_debounceDuration, () {
       _debounceTimer = null;
@@ -248,11 +250,14 @@ final class FileMirrorExporter implements MirrorExporter {
     );
     final latestSeq = (seqRows.first['max_seq'] as int?) ?? 0;
 
+    final wasDirty = _dirty;
     if (!forceFull &&
+        !wasDirty &&
         latestSeq == _status.lastExportedSeq &&
         await _manifestFile().exists()) {
       return latestSeq;
     }
+    _dirty = false;
 
     final mirrorRoot = Directory(p.join(_vaultDir.path, 'mirror'));
     await mirrorRoot.create(recursive: true);
@@ -382,7 +387,8 @@ final class FileMirrorExporter implements MirrorExporter {
     }
 
     // Archive previously owned files that are no longer active (`INV-12`),
-    // NEVER touching unowned user files.
+    // keeping `#private` archives strictly inside the `0700` `private/` subtree
+    // (`INV-03`) and NEVER touching unowned user files.
     final stamp = formatCompactUtcStamp(DateTime.now().toUtc());
     for (final oldRel in previousOwned) {
       if (desiredFiles.containsKey(oldRel)) {
@@ -391,9 +397,30 @@ final class FileMirrorExporter implements MirrorExporter {
       final oldFile = _fileForMirrorRelPath(mirrorRoot, oldRel);
       if (await oldFile.exists()) {
         final archivedRel = oldRel.replaceAll('/', '__');
-        final archiveDest = File(
-          p.join(mirrorRoot.path, '.archived', '$stamp-$archivedRel'),
-        );
+        final isPrivateRel =
+            oldRel.startsWith('markdown/private/') ||
+            oldRel.startsWith('private/');
+        final File archiveDest;
+        if (isPrivateRel) {
+          await applyOwnerOnlyDirPermissions(
+            Directory(p.join(mirrorRoot.path, 'private')),
+          );
+          await applyOwnerOnlyDirPermissions(
+            Directory(p.join(mirrorRoot.path, 'private', '.archived')),
+          );
+          archiveDest = File(
+            p.join(
+              mirrorRoot.path,
+              'private',
+              '.archived',
+              '$stamp-$archivedRel',
+            ),
+          );
+        } else {
+          archiveDest = File(
+            p.join(mirrorRoot.path, '.archived', '$stamp-$archivedRel'),
+          );
+        }
         await atomicRenameWithRetry(oldFile, archiveDest);
       }
     }

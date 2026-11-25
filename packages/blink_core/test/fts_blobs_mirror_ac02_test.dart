@@ -293,6 +293,45 @@ void main() {
         await normalStreamFile.readAsString(),
         contains(autoEntry.id.substring(0, 8)),
       );
+
+      // Direct purgeEntryPermanently (without prior softDeleteEntry) must still reconcile mirror.
+      await vault.raw.purgeEntryPermanently(autoEntry.id);
+      await vault.mirror.flushNow();
+      expect(await normalStreamFile.exists(), isFalse);
+
+      // Deleting a `#private` entry must archive ONLY into `mirror/private/.archived/`,
+      // NEVER into public `mirror/.archived/` (`INV-03`).
+      final publicArchivedBefore = archivedDir
+          .listSync()
+          .whereType<File>()
+          .map((f) => p.basename(f.path))
+          .toSet();
+      await vault.raw.softDeleteEntry(priv.id);
+      await vault.mirror.flushNow();
+
+      expect(await privateStreamFile.exists(), isFalse);
+      final publicArchivedAfter = archivedDir
+          .listSync()
+          .whereType<File>()
+          .map((f) => p.basename(f.path))
+          .toSet();
+      expect(publicArchivedAfter, equals(publicArchivedBefore));
+
+      final privateArchivedDir = Directory(
+        p.join(vaultDir.path, 'mirror', 'private', '.archived'),
+      );
+      expect(await privateArchivedDir.exists(), isTrue);
+      final privateArchivedFiles = privateArchivedDir
+          .listSync()
+          .whereType<File>()
+          .toList();
+      expect(privateArchivedFiles, isNotEmpty);
+      expect(
+        privateArchivedFiles.any(
+          (f) => f.readAsStringSync().contains('私密记录正文'),
+        ),
+        isTrue,
+      );
     });
   });
 }

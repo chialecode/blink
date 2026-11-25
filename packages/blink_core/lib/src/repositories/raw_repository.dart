@@ -509,15 +509,13 @@ final class SqliteRawRepository implements RawRepository {
       }
 
       final nextRev = existing.revision + 1;
+      final entryDeletedAtIso = existing.deletedAtUtc
+          ?.toUtc()
+          .toIso8601String();
       db.execute(
         'UPDATE raw_entries SET deleted_at = NULL, revision = ?, hlc_ts = ?, updated_at = ? '
         'WHERE id = ?',
         <Object?>[nextRev, hlcTs, nowIso, id],
-      );
-      db.execute(
-        'UPDATE raw_tasks SET deleted_at = NULL, updated_at = ?, hlc_ts = ? '
-        'WHERE origin_entry_id = ?',
-        <Object?>[nowIso, hlcTs, id],
       );
 
       restored = existing.copyWith(
@@ -527,12 +525,70 @@ final class SqliteRawRepository implements RawRepository {
         clearDeletedAt: true,
       );
 
-      final taskRows = db.select(
-        'SELECT * FROM raw_tasks WHERE origin_entry_id = ? AND deleted_at IS NULL',
-        <Object?>[id],
-      );
-      for (final row in taskRows) {
-        restoredTasks.add(rowToRawTask(row));
+      // Reconcile tasks strictly against `restored.bodyMd` without resurrecting
+      // tasks that were removed in an earlier edit before soft-deletion.
+      final parsedTasks = _bfm.parse(restored.bodyMd).tasks;
+      final deletedRows = entryDeletedAtIso == null
+          ? <Row>[]
+          : db.select(
+              'SELECT * FROM raw_tasks '
+              'WHERE origin_entry_id = ? AND deleted_at = ? '
+              'ORDER BY origin_line_index ASC, created_at ASC',
+              <Object?>[id, entryDeletedAtIso],
+            ).toList();
+
+      for (final item in parsedTasks) {
+        var matchedIndex = deletedRows.indexWhere(
+          (r) =>
+              (r['origin_line_index'] as int?) == item.lineIndex &&
+              (r['title'] as String) == item.title,
+        );
+        if (matchedIndex < 0) {
+          matchedIndex = deletedRows.indexWhere(
+            (r) => (r['title'] as String) == item.title,
+          );
+        }
+        if (matchedIndex >= 0) {
+          final row = deletedRows.removeAt(matchedIndex);
+          final prev = rowToRawTask(row);
+          db.execute(
+            'UPDATE raw_tasks SET deleted_at = NULL, status = ?, origin_line_index = ?, '
+            'updated_at = ?, hlc_ts = ? WHERE id = ?',
+            <Object?>[
+              item.status.wireValue,
+              item.lineIndex,
+              nowIso,
+              hlcTs,
+              prev.id,
+            ],
+          );
+          restoredTasks.add(
+            RawTask(
+              id: prev.id,
+              title: prev.title,
+              status: item.status,
+              originEntryId: prev.originEntryId,
+              originAnnotationId: prev.originAnnotationId,
+              focusDate: prev.focusDate,
+              completedAtUtc: prev.completedAtUtc,
+              privacyLevel: restored.privacyLevel,
+              revision: prev.revision,
+              hlcTs: hlcTs,
+              createdAtUtc: prev.createdAtUtc,
+              updatedAtUtc: nowUtc,
+            ),
+          );
+        }
+      }
+
+      // Include any already-active tasks if restoreEntry was called on a non-deleted entry.
+      if (entryDeletedAtIso == null) {
+        for (final row in db.select(
+          'SELECT * FROM raw_tasks WHERE origin_entry_id = ? AND deleted_at IS NULL',
+          <Object?>[id],
+        )) {
+          restoredTasks.add(rowToRawTask(row));
+        }
       }
 
       _appendOplogAndOutboxInTx(
@@ -791,8 +847,13 @@ final class SqliteRawRepository implements RawRepository {
   Future<List<BfmLinkRecord>> getBacklinks(String targetId) async {
     final db = _dbProvider();
     final rows = db.select(
-      'SELECT id, src_type, src_id, target_kind, target_id, anchor, privacy_level '
-      'FROM ai_bfm_links WHERE target_id = ? ORDER BY id ASC',
+      'SELECT l.id, l.src_type, l.src_id, l.target_kind, l.target_id, l.anchor, l.privacy_level '
+      'FROM ai_bfm_links l '
+      'WHERE l.target_id = ? '
+      "  AND (l.src_type != 'entry' OR EXISTS ("
+      '    SELECT 1 FROM raw_entries e WHERE e.id = l.src_id AND e.deleted_at IS NULL'
+      '  )) '
+      'ORDER BY l.id ASC',
       <Object?>[targetId],
     );
     return rows.map(rowToBfmLink).toList(growable: false);

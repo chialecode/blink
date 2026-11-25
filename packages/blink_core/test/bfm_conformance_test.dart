@@ -174,6 +174,22 @@ void main() {
       );
       expect(deferred, equals('# 日记\n- [x] 第一项任务\n- [>] 第二项任务\n保留尾行'));
     });
+
+    test('renders inline code inside CJK emphasis and highlights without sentinel leaks', () {
+      final boldCodeHtml = bfm.toSemanticHtml('这是**`foo`**测试');
+      expect(boldCodeHtml, contains('<strong><code>foo</code></strong>'));
+      expect(boldCodeHtml, isNot(contains('\uE010')));
+      expect(boldCodeHtml, isNot(contains('CODE0')));
+
+      final markCodeHtml = bfm.toSemanticHtml('这是==`foo`==高亮');
+      expect(markCodeHtml, contains('<mark><code>foo</code></mark>'));
+      expect(markCodeHtml, isNot(contains('\uE010')));
+      expect(markCodeHtml, isNot(contains('CODE0')));
+
+      final literalPhHtml = bfm.toSemanticHtml('字面量 BLINKPH0ENDPH 与 #标签');
+      expect(literalPhHtml, contains('BLINKPH0ENDPH'));
+      expect(literalPhHtml, contains('<blink-tag name="标签">#标签</blink-tag>'));
+    });
   });
 
   group('Unicode code-point offsets (INV-10) & RFC 9562 UUIDv7', () {

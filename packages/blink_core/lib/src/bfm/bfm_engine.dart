@@ -931,7 +931,7 @@ class BfmEngine {
     var nextId = 0;
 
     String registerPlaceholder(String html) {
-      final token = 'BLINKPH${nextId++}ENDPH';
+      final token = '\uE020PH${nextId++}\uE021';
       placeholders[token] = html;
       return token;
     }
@@ -1111,8 +1111,11 @@ class BfmEngine {
 
     // 6. Highlight `==...==`
     text = text.replaceAllMapped(_markPattern, (m) {
-      final inner = m.group(1)!;
-      return registerPlaceholder('<mark>${_escapeHtml(inner)}</mark>');
+      final inner = _restoreMaskedCodeAsHtml(
+        _escapeHtml(m.group(1)!),
+        codeMask,
+      );
+      return registerPlaceholder('<mark>$inner</mark>');
     });
 
     // 7. Footnote inline reference `[^id]`
@@ -1160,19 +1163,24 @@ class BfmEngine {
 
     // 9. CJK-friendly emphasis (`#650`): resolve `***...***`, `**...**`, `*...*`
     // touching CJK / fullwidth punctuation so `这是**“中文”**测试` and `**结论。**下句` render cleanly.
-    text = _applyCjkEmphasis(text, registerPlaceholder: registerPlaceholder);
+    text = _applyCjkEmphasis(
+      text,
+      codeMask: codeMask,
+      registerPlaceholder: registerPlaceholder,
+    );
 
     return codeMask.restore(text);
   }
 
   String _applyCjkEmphasis(
     String text, {
+    required _MaskedText codeMask,
     required String Function(String html) registerPlaceholder,
   }) {
     var out = text;
     // Bold + italic `***...***` when touching CJK or CJK punctuation.
     out = out.replaceAllMapped(_cjkBoldItalicPattern, (m) {
-      final inner = m.group(1)!;
+      final inner = _restoreMaskedCodeAsHtml(m.group(1)!, codeMask);
       if (!_containsCjkOrFullwidth(m.group(0)!) &&
           !_isAdjacentToCjk(out, m.start, m.end)) {
         return m.group(0)!;
@@ -1181,7 +1189,7 @@ class BfmEngine {
     });
     // Bold `**...**`
     out = out.replaceAllMapped(_cjkBoldPattern, (m) {
-      final inner = m.group(1)!;
+      final inner = _restoreMaskedCodeAsHtml(m.group(1)!, codeMask);
       if (!_containsCjkOrFullwidth(m.group(0)!) &&
           !_isAdjacentToCjk(out, m.start, m.end)) {
         return m.group(0)!;
@@ -1190,7 +1198,7 @@ class BfmEngine {
     });
     // Italic `*...*` (skip list bullet `* ` at start of line)
     out = out.replaceAllMapped(_cjkItalicPattern, (m) {
-      final inner = m.group(1)!;
+      final inner = _restoreMaskedCodeAsHtml(m.group(1)!, codeMask);
       if (!_containsCjkOrFullwidth(m.group(0)!) &&
           !_isAdjacentToCjk(out, m.start, m.end)) {
         return m.group(0)!;
@@ -1499,6 +1507,22 @@ final class _MaskedText {
     }
     return result;
   }
+}
+
+String _restoreMaskedCodeAsHtml(String input, _MaskedText codeMask) {
+  var result = input;
+  for (final entry in codeMask._tokens.entries) {
+    if (!result.contains(entry.key)) {
+      continue;
+    }
+    final match = _inlineCodeSpanPattern.firstMatch(entry.value);
+    final rawCode = match != null ? match.group(2)! : entry.value;
+    result = result.replaceAll(
+      entry.key,
+      '<code>${_escapeHtml(rawCode)}</code>',
+    );
+  }
+  return result;
 }
 
 _MaskedText _maskInlineCodeSpans(String input) {

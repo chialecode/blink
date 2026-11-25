@@ -500,8 +500,11 @@ void main() {
       final backlinks = await vault.raw.getBacklinks(target.id);
       expect(backlinks.map((b) => b.srcId), contains(linker.id));
 
-      // Soft-delete linker and verify retention vs zero-retention purgeExpiredTrash.
+      // Soft-delete linker -> backlinks exclude soft-deleted sources.
       await vault.raw.softDeleteEntry(linker.id);
+      expect(await vault.raw.getBacklinks(target.id), isEmpty);
+
+      // Verify retention vs zero-retention purgeExpiredTrash.
       expect(
         await vault.raw.purgeExpiredTrash(retention: const Duration(days: 30)),
         equals(0),
@@ -514,6 +517,34 @@ void main() {
         await vault.raw.getEntryById(linker.id, includeDeleted: true),
         isNull,
       );
+    });
+
+    test('restoreEntry does not resurrect endogenous tasks removed before soft-delete', () async {
+      final vaultDir = Directory(p.join(tempRoot.path, 'vault-restore-task'));
+      final vault = await VaultManager.open(
+        VaultConfig(
+          vaultDir: vaultDir,
+          expectedChannel: BlinkChannel.blinkDev,
+          enableMirrorExporter: false,
+        ),
+      );
+      addTearDown(vault.checkpointAndClose);
+
+      final entry = await vault.raw.createEntry(
+        bodyMd: '任务测试\n- [ ] 保留任务A\n- [ ] 已移除任务B',
+      );
+      expect((await vault.raw.listTasks()).length, equals(2));
+
+      await vault.raw.updateEntry(id: entry.id, bodyMd: '任务测试\n- [ ] 保留任务A');
+      final activeBeforeDelete = await vault.raw.listTasks();
+      expect(activeBeforeDelete.map((t) => t.title), equals(<String>['保留任务A']));
+
+      await vault.raw.softDeleteEntry(entry.id);
+      expect(await vault.raw.listTasks(), isEmpty);
+
+      await vault.raw.restoreEntry(entry.id);
+      final restoredTasks = await vault.raw.listTasks();
+      expect(restoredTasks.map((t) => t.title), equals(<String>['保留任务A']));
     });
   });
 }
