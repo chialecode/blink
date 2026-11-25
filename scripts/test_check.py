@@ -249,13 +249,15 @@ class GateOrchestrationTests(unittest.TestCase):
             newline="\n",
         )
         (pkg_dir / "lib" / "bad.dart").write_text(
-            "import 'package:flutter/widgets.dart';\n",
+            "import 'package:flutter/widgets.dart';\n"
+            "import 'package:material_ui/material_ui.dart';\n",
             encoding="utf-8",
             newline="\n",
         )
         res = check.check_inv02_dependencies_step(self.root)
         self.assertEqual(res.status, "failed")
         self.assertIn("package:flutter/", res.output)
+        self.assertIn("package:material_ui/", res.output)
 
     def test_inv02_rejects_blink_sanitizer_importing_or_depending_on_blink_core(self) -> None:
         pkg_dir = self.root / "packages" / "blink_sanitizer"

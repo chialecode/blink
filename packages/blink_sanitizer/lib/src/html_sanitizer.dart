@@ -443,6 +443,16 @@ void _sanitizeNode(
       final cssResult = sanitizeCssStylesheet(rawCss);
       diagnostics.addAll(cssResult.diagnostics);
       if (cssResult.css.isNotEmpty) {
+        if (cssResult.css.contains('<')) {
+          diagnostics.add(
+            const SanitizeDiagnostic(
+              code: DiagnosticCode.disallowedAttr,
+              message: 'Blocked unsafe "<" sequence in compiled <style>',
+              tagName: 'style',
+            ),
+          );
+          return;
+        }
         out.write('<style>');
         out.write(cssResult.css);
         out.write('</style>');
@@ -504,6 +514,22 @@ void _sanitizeNode(
       ),
     );
     return;
+  }
+
+  // Enforce identical refValidator / privacy-scope checks on direct `<a href="blink-ref://...">`.
+  if (tag == 'a') {
+    final rawHref = _findRawHrefAttr(node);
+    if (rawHref != null && rawHref.toLowerCase().startsWith('blink-ref:')) {
+      _sanitizeBlinkRefAnchor(
+        node,
+        rawHref: rawHref,
+        options: options,
+        diagnostics: diagnostics,
+        extractedRefs: extractedRefs,
+        out: out,
+      );
+      return;
+    }
   }
 
   final cleanAttrs = _sanitizeHtmlAttributes(
@@ -2003,25 +2029,210 @@ String _extractPlainTextOnly(
   required List<SanitizeDiagnostic> diagnostics,
 }) {
   final buf = StringBuffer();
-  for (final child in element.nodes) {
-    if (child is dom.Text) {
-      buf.write(child.data);
-    } else if (child is dom.Element) {
-      final childTag = _localName(child);
-      diagnostics.add(
-        SanitizeDiagnostic(
-          code: DiagnosticCode.disallowedTag,
-          message:
-              'Nested HTML tag <$childTag> is not permitted inside <$ownerTag>',
-          tagName: childTag,
-        ),
-      );
-      if (!_silentDropNestedTags.contains(childTag)) {
-        buf.write(child.text);
+  void collect(dom.Element container, {required bool reportDisallowed}) {
+    for (final child in container.nodes) {
+      if (child is dom.Text) {
+        buf.write(child.data);
+      } else if (child is dom.Element) {
+        final childTag = _localName(child);
+        if (reportDisallowed) {
+          diagnostics.add(
+            SanitizeDiagnostic(
+              code: DiagnosticCode.disallowedTag,
+              message:
+                  'Nested HTML tag <$childTag> is not permitted inside <$ownerTag>',
+              tagName: childTag,
+            ),
+          );
+        }
+        if (!_silentDropNestedTags.contains(childTag)) {
+          collect(child, reportDisallowed: false);
+        }
       }
     }
   }
+
+  collect(element, reportDisallowed: true);
   return buf.toString();
+}
+
+String? _findRawHrefAttr(dom.Element element) {
+  for (final entry in element.attributes.entries) {
+    if (_attrKeyName(entry.key) == 'href') {
+      return entry.value.trim();
+    }
+  }
+  return null;
+}
+
+BlinkRefTarget? _tryParseBlinkRefUrl(String value, {required String label}) {
+  if (_hasControlChar(value) || !_blinkRefUrlPattern.hasMatch(value)) {
+    return null;
+  }
+  const prefix = 'blink-ref://';
+  final rest = value.substring(prefix.length);
+  final qIdx = rest.indexOf('?');
+  final pathPart = qIdx >= 0 ? rest.substring(0, qIdx) : rest;
+  final queryPart = qIdx >= 0 ? rest.substring(qIdx + 1) : null;
+
+  final slashIdx = pathPart.indexOf('/');
+  if (slashIdx <= 0) {
+    return null;
+  }
+  final kindRaw = pathPart.substring(0, slashIdx);
+  final id = pathPart.substring(slashIdx + 1);
+  final kind = BlinkRefKind.tryParse(kindRaw);
+  if (kind == null ||
+      kind == BlinkRefKind.titleQuery ||
+      !_uuidV7Pattern.hasMatch(id)) {
+    return null;
+  }
+
+  String? decodedAnchor;
+  if (queryPart != null) {
+    if (!queryPart.startsWith('anchor=') || queryPart.contains('&')) {
+      return null;
+    }
+    final encodedAnchor = queryPart.substring('anchor='.length);
+    try {
+      decodedAnchor = Uri.decodeQueryComponent(encodedAnchor);
+    } on ArgumentError {
+      return null;
+    }
+    if (!_blinkAnchorAttrPattern.hasMatch(decodedAnchor)) {
+      return null;
+    }
+  }
+
+  return BlinkRefTarget(
+    kind: kind,
+    id: id,
+    anchor: decodedAnchor,
+    label: label,
+  );
+}
+
+void _sanitizeBlinkRefAnchor(
+  dom.Element element, {
+  required String rawHref,
+  required SanitizeOptions options,
+  required List<SanitizeDiagnostic> diagnostics,
+  required List<BlinkRefTarget> extractedRefs,
+  required StringBuffer out,
+}) {
+  if (options.profile != SanitizeProfile.surface2Sandbox ||
+      options.producer == HtmlProducer.externalContent) {
+    diagnostics.add(
+      SanitizeDiagnostic(
+        code: DiagnosticCode.disallowedAttr,
+        message: 'blink-ref:// links are only permitted in Surface 2 views',
+        tagName: 'a',
+        attributeName: 'href',
+        detail: rawHref,
+      ),
+    );
+    return;
+  }
+
+  final label = _extractPlainTextOnly(
+    element,
+    ownerTag: 'a',
+    diagnostics: diagnostics,
+  );
+  final target = _tryParseBlinkRefUrl(rawHref, label: label);
+  if (target == null) {
+    diagnostics.add(
+      SanitizeDiagnostic(
+        code: DiagnosticCode.invalidBlinkAttr,
+        message: 'Invalid blink-ref:// link syntax or anchor in <a href>',
+        tagName: 'a',
+        attributeName: 'href',
+        detail: rawHref,
+      ),
+    );
+    return;
+  }
+
+  final validator = options.refValidator;
+  if (validator != null) {
+    final status = validator(target, options.privacyScope);
+    switch (status) {
+      case BlinkRefValidationStatus.valid:
+        break;
+      case BlinkRefValidationStatus.notFound:
+        diagnostics.add(
+          SanitizeDiagnostic(
+            code: DiagnosticCode.brokenBlinkRef,
+            message:
+                'Referenced ${target.kind.wireValue} target "${target.id}" not found',
+            tagName: 'a',
+            attributeName: 'href',
+            detail: target.id,
+          ),
+        );
+        return;
+      case BlinkRefValidationStatus.privacyScopeViolation:
+        diagnostics.add(
+          SanitizeDiagnostic(
+            code: DiagnosticCode.privacyScopeViolation,
+            message:
+                'Referenced ${target.kind.wireValue} target violates ${options.privacyScope.wireValue} privacy scope',
+            tagName: 'a',
+            attributeName: 'href',
+            detail: target.id,
+          ),
+        );
+        out.write('[private-ref]');
+        return;
+    }
+  }
+
+  // Still sanitize any other attributes on `<a>` (e.g. catch `onclick`).
+  final cleanAttrs = <String, String>{};
+  final rawEntries = element.attributes.entries.toList()
+    ..sort((a, b) => _attrKeyName(a.key).compareTo(_attrKeyName(b.key)));
+  for (final entry in rawEntries) {
+    final name = _attrKeyName(entry.key);
+    if (name == 'href') {
+      continue;
+    }
+    if (_isEventHandlerAttr(name) || !_globalHtmlAttrs.contains(name)) {
+      diagnostics.add(
+        SanitizeDiagnostic(
+          code: DiagnosticCode.disallowedAttr,
+          message: 'Disallowed attribute "$name" on <a>',
+          tagName: 'a',
+          attributeName: name,
+        ),
+      );
+      continue;
+    }
+    final val = entry.value.trim();
+    if (name == 'class') {
+      final cleanClass = _sanitizeClassList(val);
+      if (cleanClass.isNotEmpty) {
+        cleanAttrs['class'] = cleanClass;
+      }
+    } else if (name == 'id') {
+      if (_safeIdPattern.hasMatch(val)) {
+        cleanAttrs['id'] = val;
+      }
+    } else if (name == 'style') {
+      final cssRes = sanitizeCssInlineStyle(val, ownerTag: 'a');
+      diagnostics.addAll(cssRes.diagnostics);
+      if (cssRes.css.isNotEmpty) {
+        cleanAttrs['style'] = cssRes.css;
+      }
+    } else {
+      cleanAttrs[name] = val;
+    }
+  }
+
+  extractedRefs.add(target);
+  cleanAttrs['href'] = target.toSurface2Href()!;
+  _writeOpeningTag(out, 'a', cleanAttrs);
+  out.write(_escapeHtmlText(label));
+  out.write('</a>');
 }
 
 void _writeElementWithSanitizedChildren(
@@ -2069,10 +2280,6 @@ bool _isValidLinkHref(String value, SanitizeProfile profile) {
     return true;
   }
   if (_blinkAnchorUrlPattern.hasMatch(value)) {
-    return true;
-  }
-  if (profile == SanitizeProfile.surface2Sandbox &&
-      _blinkRefUrlPattern.hasMatch(value)) {
     return true;
   }
   return false;

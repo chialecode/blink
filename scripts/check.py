@@ -45,6 +45,8 @@ INV02_ALWAYS_FORBIDDEN_IN_PACKAGES = frozenset(
         "flutter_test",
         "flutter_localizations",
         "flutter_web_plugins",
+        "material_ui",
+        "cupertino_ui",
         "blink_client",
     }
 )

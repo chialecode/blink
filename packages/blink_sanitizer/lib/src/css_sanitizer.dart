@@ -646,6 +646,17 @@ CssSanitizeResult sanitizeCssStylesheet(String rawCss) {
   final tokens = CssTokenizer(rawCss).tokenize();
   final diagnostics = <SanitizeDiagnostic>[];
   final compiled = _compileRuleList(tokens, diagnostics: diagnostics, depth: 0);
+  // Defense-in-depth: compiled CSS must never contain `<` (prevents `</style>` breakout).
+  if (compiled.contains('<')) {
+    diagnostics.add(
+      const SanitizeDiagnostic(
+        code: DiagnosticCode.disallowedAttr,
+        message: 'Compiled CSS stylesheet rejected due to disallowed "<" token',
+        tagName: 'style',
+      ),
+    );
+    return CssSanitizeResult(css: '', diagnostics: diagnostics);
+  }
   return CssSanitizeResult(css: compiled, diagnostics: diagnostics);
 }
 
@@ -1325,6 +1336,8 @@ String? _validateAndSerializePrelude(
     if (token.type == CssTokenType.badString ||
         token.type == CssTokenType.badUrl ||
         token.type == CssTokenType.atKeyword ||
+        token.type == CssTokenType.cdo ||
+        token.type == CssTokenType.cdc ||
         (token.type == CssTokenType.delim && token.value == '<')) {
       diagnostics.add(
         SanitizeDiagnostic(
@@ -1688,7 +1701,11 @@ String? _validateAndSerializeValue(
         token.type == CssTokenType.badUrl ||
         token.type == CssTokenType.lBrace ||
         token.type == CssTokenType.rBrace ||
-        token.type == CssTokenType.atKeyword) {
+        token.type == CssTokenType.atKeyword ||
+        token.type == CssTokenType.cdo ||
+        token.type == CssTokenType.cdc ||
+        (token.type == CssTokenType.delim &&
+            (token.value == '<' || token.value == '>'))) {
       diagnostics.add(
         SanitizeDiagnostic(
           code: DiagnosticCode.disallowedAttr,
@@ -1869,6 +1886,15 @@ bool _validateVarFunctionArgs(
 
   final fallbackTokens = _trimWhitespace(trimmed.sublist(restIdx + 1));
   if (fallbackTokens.isEmpty) {
+    diagnostics.add(
+      SanitizeDiagnostic(
+        code: DiagnosticCode.disallowedAttr,
+        message: 'Empty fallback in CSS var($varName)',
+        tagName: ownerTag,
+        attributeName: attrName,
+        detail: varName,
+      ),
+    );
     return false;
   }
   if (_containsBlockedUrlOrScheme(
