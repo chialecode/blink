@@ -198,7 +198,7 @@ Function ${UN}BlinkCloseApp
     ${Do}
       System::Call 'kernel32::CreateFileW(w r1, i 0x40000000, i 7, p 0, i 3, i 0x80, p 0) p.r0 ?e'
       Pop $3
-      ${If} $0 != -1
+      ${If} $0 P<> -1
         System::Call 'kernel32::CloseHandle(p r0)'
         ${Break}
       ${EndIf}

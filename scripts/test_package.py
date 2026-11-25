@@ -466,7 +466,7 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
         exe_wait = re.search(
             r"\$\{If\} \$\{FileExists\} \"\$1\"\n\s*\$\{Do\}\n"
             r"\s*System::Call 'kernel32::CreateFileW\(w r1, i 0x40000000, i 7, p 0, i 3, i 0x80, p 0\) p\.r0 \?e'\n"
-            r"\s*Pop \$3\n\s*\$\{If\} \$0 != -1\n\s*System::Call 'kernel32::CloseHandle\(p r0\)'\n\s*\$\{Break\}\n\s*\$\{EndIf\}\n"
+            r"\s*Pop \$3\n\s*\$\{If\} \$0 P<> -1\n\s*System::Call 'kernel32::CloseHandle\(p r0\)'\n\s*\$\{Break\}\n\s*\$\{EndIf\}\n"
             r"\s*\$\{If\} \$3 <> 32\n\s*\$\{Break\}\n\s*\$\{EndIf\}\n"
             r"\s*\$\{If\} \$2 >= \$\{BLINK_QUIT_WAIT_TICKS\}\n[^\n]*\n\s*SetErrorLevel \$\{BLINK_EXIT_QUIT_TIMEOUT\}\n",
             close_app,
@@ -481,6 +481,14 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
         self.assertIsNotNone(mutex_wait_end)
         self.assertLess(mutex_wait_end.end(), exe_wait.start() + 1, "the exe wait runs after the mutex wait, outside it")
         self.assertNotIn("FileOpen", close_app, "FileOpen's append mode would create a missing exe")
+        # package.INSTALLER_EXITS_BEFORE_FILES: those exits happen before the old uninstaller runs and before any file is written.
+        install = text[text.index('Section "Install"') : text.index("SectionEnd", text.index('Section "Install"'))]
+        first_change = min(install.index("ExecWait"), install.index("File /r"))
+        for early in ("Call BlinkFolderTaken", "SetErrorLevel ${BLINK_EXIT_FOLDER_TAKEN}", "Call BlinkCloseApp"):
+            self.assertLess(install.index(early), first_change, f"{early} must come before the install changes anything")
+        early_codes = {int(code) for name, code in re.findall(r"(?m)^!define (BLINK_EXIT_\w+) (\d+)", text)
+                       if name in {"BLINK_EXIT_BUSY", "BLINK_EXIT_QUIT_TIMEOUT", "BLINK_EXIT_QUIT_FAILED", "BLINK_EXIT_FOLDER_TAKEN"}}
+        self.assertEqual(early_codes, set(package.INSTALLER_EXITS_BEFORE_FILES))
         # A file /S could not write stops the install before the uninstaller, the shortcuts and the entry.
         check = re.search(
             r"ClearErrors\n\s*File /r \"\$\{BLINK_SOURCE_DIR\}\\\*\"\n\s*\$\{If\} \$\{Errors\}\n"
