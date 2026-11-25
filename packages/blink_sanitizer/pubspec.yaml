@@ -1,0 +1,17 @@
+name: blink_sanitizer
+description: Pure Dart HTML5/SVG and W3C CSS Syntax L3 whitelist sanitizer for BLINK.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.14.0
+
+resolution: workspace
+
+dependencies:
+  html: 0.15.7
+  meta: 1.19.0
+
+dev_dependencies:
+  lints: 6.1.0
+  test: 1.32.0

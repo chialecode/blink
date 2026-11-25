@@ -7,3 +7,4 @@ environment:
 
 workspace:
   - apps/blink_client
+  - packages/blink_sanitizer
