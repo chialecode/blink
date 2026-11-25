@@ -38,7 +38,7 @@
 
 ; Exit codes besides NSIS's own (0 done, 1 cancelled, 2 aborted).
 !define BLINK_EXIT_BUSY 3          ; BLINK reported busy and kept running
-!define BLINK_EXIT_QUIT_TIMEOUT 4  ; BLINK did not exit within 30 s
+!define BLINK_EXIT_QUIT_TIMEOUT 4  ; BLINK did not exit, or its exe stayed in use, within 30 s
 !define BLINK_EXIT_QUIT_FAILED 5   ; BLINK runs, but asking it to quit failed
 !define BLINK_EXIT_FOLDER_TAKEN 7  ; the folder holds another program's Uninstall.exe
 !define BLINK_EXIT_FILES_NOT_WRITTEN 8 ; some files could not be written; the uninstall entry is left as it was
@@ -129,6 +129,13 @@ Function ${UN}BlinkCloseApp
   Push $0
   Push $1
   Push $2
+  ; The running copy is the installed one, wherever it was installed.
+  ReadRegStr $1 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
+  ${If} $1 == ""
+    StrCpy $1 "$INSTDIR"
+  ${EndIf}
+  StrCpy $1 "$1\${BLINK_EXE}"
+  StrCpy $2 0
   Call ${UN}BlinkIsRunning
   Pop $0
   ${If} $0 == "1"
@@ -136,12 +143,6 @@ Function ${UN}BlinkCloseApp
     SetErrorLevel 1
     Quit
     blink_quit:
-    ; The running copy is the installed one, wherever it was installed.
-    ReadRegStr $1 HKCU "${BLINK_UNINSTALL_KEY}" "InstallLocation"
-    ${If} $1 == ""
-      StrCpy $1 "$INSTDIR"
-    ${EndIf}
-    StrCpy $1 "$1\${BLINK_EXE}"
     ${IfNot} ${FileExists} "$1"
       MessageBox MB_OK|MB_ICONSTOP "${BLINK_PRODUCT_NAME} 正在运行，但找不到 $1 来请它退出。请先从托盘退出 ${BLINK_PRODUCT_NAME} 再试。" /SD IDOK
       SetErrorLevel ${BLINK_EXIT_QUIT_FAILED}
@@ -185,8 +186,27 @@ Function ${UN}BlinkCloseApp
       Sleep 250
       IntOp $2 $2 + 1
     ${Loop}
-    ; Let Windows release the image files of the exited process.
-    Sleep 250
+  ${EndIf}
+  ; The mutex goes before the process has ended and let go of its files, and
+  ; a copy without the mutex (still exiting, or hung) holds them too: within
+  ; the same 30 s, wait until the installed exe can be opened for writing,
+  ; which a running image cannot.
+  ${If} ${FileExists} "$1"
+    ${Do}
+      ClearErrors
+      FileOpen $0 "$1" a
+      ${IfNot} ${Errors}
+        FileClose $0
+        ${Break}
+      ${EndIf}
+      ${If} $2 >= ${BLINK_QUIT_WAIT_TICKS}
+        MessageBox MB_OK|MB_ICONSTOP "$1 仍在使用中（${BLINK_PRODUCT_NAME} 可能还在退出），30 秒后仍未释放，没有强制结束它。请稍后再试。" /SD IDOK
+        SetErrorLevel ${BLINK_EXIT_QUIT_TIMEOUT}
+        Quit
+      ${EndIf}
+      Sleep 250
+      IntOp $2 $2 + 1
+    ${Loop}
   ${EndIf}
   Pop $2
   Pop $1

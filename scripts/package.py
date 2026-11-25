@@ -62,7 +62,7 @@ INSTALLER_TIMED_OUT = -1
 INSTALLER_EXIT_MEANINGS = {
     INSTALLER_TIMED_OUT: f"the installer did not finish within {int(INSTALLER_TIMEOUT_SECONDS // 60)} minutes",
     3: "BLINK reported busy and kept running",
-    4: "BLINK did not exit within 30 s",
+    4: "BLINK did not exit, or its exe stayed in use, within 30 s",
     5: "BLINK is running, but asking it to quit failed",
     7: "the install folder holds another program's Uninstall.exe",
     8: "some files could not be written (held open or no write permission); the uninstall entry was left as it was, run it again",
@@ -230,6 +230,8 @@ class DevInstallDeps:
     clock: Clock
     # True while a visible top-level window of the installed blink-dev.exe is open.
     is_window_open: Callable[[Path], bool] = lambda _exe: False
+    # True while a process of the installed blink-dev.exe has not ended (its files stay locked until then).
+    is_exe_running: Callable[[Path], bool] = lambda _exe: False
 
 
 def utc_iso(dt: datetime | None = None) -> str:
@@ -675,6 +677,70 @@ def is_instance_running(identity: str) -> bool:
         close_handle(handle)
         return True
     return ctypes.get_last_error() == error_access_denied
+
+
+def is_exe_process_running(exe_path: Path) -> bool:
+    """True while a process whose image is exe_path has not ended.
+
+    The single-instance mutex is released before the process has ended and let go of its image
+    files, so the dev install waits on this too before it runs the installer (#31).
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    process_query_limited_information = 0x1000
+    wait_timeout = 0x00000102
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.K32EnumProcesses.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.K32EnumProcesses.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    count = 1024
+    while True:
+        pids = (wintypes.DWORD * count)()
+        needed = wintypes.DWORD(0)
+        if not kernel32.K32EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(needed)):
+            raise OSError(ctypes.get_last_error(), "EnumProcesses failed")
+        if needed.value < ctypes.sizeof(pids):
+            break
+        count *= 2
+
+    # The kernel reports the image path with links and junctions resolved.
+    wanted = os.path.normcase(os.path.realpath(str(exe_path)))
+    for pid in pids[: needed.value // ctypes.sizeof(wintypes.DWORD)]:
+        if not pid:
+            continue
+        handle = kernel32.OpenProcess(synchronize | process_query_limited_information, False, pid)
+        if not handle:
+            continue
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                continue
+            # A process that has ended but is still held open by someone is signalled and no longer maps its files.
+            if os.path.normcase(buf.value) == wanted and kernel32.WaitForSingleObject(handle, 0) == wait_timeout:
+                return True
+        finally:
+            kernel32.CloseHandle(handle)
+    return False
 
 
 def send_pipe_command(identity: str, cmd: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -1192,6 +1258,7 @@ def build_default_dev_install_deps() -> DevInstallDeps:
         verify_running_in_tray=verify_running_in_tray_windows,
         clock=SystemClock(),
         is_window_open=is_app_window_open,
+        is_exe_running=is_exe_process_running,
     )
 
 
@@ -1507,8 +1574,45 @@ def run_dev_auto_install(
     def skip(reason: str, guidance: str) -> tuple[int, dict[str, Any]]:
         return finish(0, skipped=True, reason=reason, guidance=guidance)
 
+    # Set once BLINK Dev was running and agreed to quit for this install.
+    quit_for_install = False
+
+    def start_in_tray(exe: Path) -> tuple[bool, dict[str, Any]]:
+        """Start exe --background, outside this command's job object when it can; the receipt fields."""
+        launch_args = ["--background"]
+        guidance: str | None = None
+        if deps.is_in_job_object():
+            if deps.launch_via_explorer_shell(exe, launch_args):
+                launched, launch_method, child_in_job = True, "explorer_shell", False
+            elif deps.launch_with_breakaway(exe, launch_args):
+                launched, launch_method, child_in_job = True, "breakaway", False
+            else:
+                launched = deps.launch_direct(exe, launch_args)
+                launch_method, child_in_job = "direct_in_job", True
+                guidance = (
+                    "BLINK Dev was launched inside the current job object (inJob=true) and may exit "
+                    "when this command session ends. Please open BLINK Dev once from the Start Menu."
+                )
+        else:
+            launched = deps.launch_direct(exe, launch_args)
+            launch_method, child_in_job = "direct", False
+        fields: dict[str, Any] = {"launchMethod": launch_method, "inJob": child_in_job}
+        if launched:
+            fields.update(
+                relaunched=True,
+                background=True,
+                runningInTray=deps.verify_running_in_tray("blink-dev", TRAY_VERIFY_TIMEOUT_SECONDS),
+                guidance=guidance,
+            )
+        return launched, fields
+
     def fail(reason: str, error: str) -> tuple[int, dict[str, Any]]:
-        return finish(1, reason=reason, error=error)
+        fields: dict[str, Any] = {"reason": reason, "error": error}
+        if quit_for_install:
+            # It was running before this install: start what is installed now in the tray again.
+            _, launch_fields = start_in_tray(installed_exe)
+            fields.update(launch_fields)
+        return finish(1, **fields)
 
     # Guard 0: --install strictly accepts the blink-dev channel and identity (never blink or test identities).
     if channel != "blink-dev" or eff_identity != "blink-dev":
@@ -1563,8 +1667,8 @@ def run_dev_auto_install(
             still_running = deps.is_running("blink-dev")
         receipt["deferMs"] = elapsed_ms(defer_start)
 
+    quit_start = deps.clock.monotonic()
     if still_running:
-        quit_start = deps.clock.monotonic()
         quit_res = deps.request_quit_for_update(installed_exe, "blink-dev", quit_timeout_s)
         if quit_res.busy:
             return finish(
@@ -1580,6 +1684,7 @@ def run_dev_auto_install(
                 error="Failed to request graceful quit from BLINK Dev; aborted without force-killing.",
                 quitMs=elapsed_ms(quit_start),
             )
+        quit_for_install = True
         while deps.is_running("blink-dev"):
             waited = deps.clock.monotonic() - quit_start
             if waited >= quit_timeout_s:
@@ -1593,9 +1698,34 @@ def run_dev_auto_install(
                     quitMs=elapsed_ms(quit_start),
                 )
             deps.clock.sleep(min(poll_interval_s, quit_timeout_s - waited))
+
+    # The single-instance lock goes before the process has ended and let go of its files, and a
+    # blink-dev.exe without the lock (still exiting, or hung) holds them too: wait for the process
+    # itself within the same limit, never ending it (#31).
+    while deps.is_exe_running(installed_exe):
+        waited = deps.clock.monotonic() - quit_start
+        if waited >= quit_timeout_s:
+            if still_running:
+                return finish(
+                    1,
+                    reason="quit_timeout",
+                    error=(
+                        f"BLINK Dev released its lock but its process did not end within {int(quit_timeout_s)}s "
+                        "after --quit-for-update; aborted without force-killing."
+                    ),
+                    quitMs=elapsed_ms(quit_start),
+                )
+            return finish(
+                1,
+                reason="process_running",
+                error=(
+                    f"{installed_exe} was still running after {int(quit_timeout_s)}s without the single-instance "
+                    "lock (still exiting or hung), so its files are locked; aborted without force-killing."
+                ),
+            )
+        deps.clock.sleep(min(poll_interval_s, quit_timeout_s - waited))
+    if still_running:
         receipt["quitMs"] = elapsed_ms(quit_start)
-        # Brief settle pause after the mutex is released so Windows unlocks the image files.
-        deps.clock.sleep(min(0.25, poll_interval_s))
 
     # Step 3: silent install, then check both the uninstall entry and the installed exe.
     rc = deps.run_installer(installer_path)
@@ -1624,44 +1754,16 @@ def run_dev_auto_install(
     receipt["installed"] = True
 
     # Step 4: always start the installed blink-dev.exe --background, leaving this command's job object if any.
-    launch_args = ["--background"]
-    guidance: str | None = None
-    if deps.is_in_job_object():
-        if deps.launch_via_explorer_shell(post_exe, launch_args):
-            launched, launch_method, child_in_job = True, "explorer_shell", False
-        elif deps.launch_with_breakaway(post_exe, launch_args):
-            launched, launch_method, child_in_job = True, "breakaway", False
-        else:
-            launched = deps.launch_direct(post_exe, launch_args)
-            launch_method, child_in_job = "direct_in_job", True
-            guidance = (
-                "BLINK Dev was launched inside the current job object (inJob=true) and may exit "
-                "when this command session ends. Please open BLINK Dev once from the Start Menu."
-            )
-    else:
-        launched = deps.launch_direct(post_exe, launch_args)
-        launch_method, child_in_job = "direct", False
-
+    launched, launch_fields = start_in_tray(post_exe)
     if not launched:
         return finish(
             1,
             reason="launch_failed",
             error="Installed successfully, but failed to launch blink-dev.exe --background.",
-            launchMethod=launch_method,
-            inJob=child_in_job,
+            **launch_fields,
         )
-
-    running_in_tray = deps.verify_running_in_tray("blink-dev", TRAY_VERIFY_TIMEOUT_SECONDS)
     # Step 5: write the final receipt.
-    return finish(
-        0,
-        relaunched=True,
-        background=True,
-        launchMethod=launch_method,
-        runningInTray=running_in_tray,
-        inJob=child_in_job,
-        guidance=guidance,
-    )
+    return finish(0, **launch_fields)
 
 
 def _snapshot_reg_key(subkey: str) -> dict[str, Any]:
