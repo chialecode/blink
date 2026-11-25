@@ -5,6 +5,7 @@ import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
+import 'package:blink_client/platform/paths.dart';
 
 /// Flat hairline Settings page (`docs/ui.md` §4.4):
 /// 1. Single-Folder Portable Vault & Open Mirror controls (including honest
@@ -225,7 +226,7 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                             const SizedBox(height: 12),
                           ],
                           _InfoRow(
-                            label: '便携库目录',
+                            label: '便携库目录（用户数据）',
                             value: widget.workspace.effectiveVaultDir.path,
                             valueKey: const Key('vault_path_value'),
                             valueStyle: BlinkTypography.monoValue(tokens),
@@ -379,6 +380,41 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                               color: tokens.textMuted,
                             ),
                           ),
+                          if (BlinkPaths.isOneDrivePath(
+                            widget.workspace.effectiveVaultDir.path,
+                          )) ...<Widget>[
+                            const SizedBox(height: 8),
+                            Container(
+                              key: const Key('vault_onedrive_hint'),
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: tokens.statusWarnSubtle,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: tokens.statusWarn),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: <Widget>[
+                                  Icon(
+                                    Icons.info_outline_rounded,
+                                    size: 16,
+                                    color: tokens.statusWarn,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      '检测到当前便携库位于 OneDrive 目录内：若开启多设备 OneDrive 文件同步，请避免多台设备同时读写活态 db/blink.db（SQLite WAL 易冲突）；跨设备同步建议使用 BLINK 内置同步或在上方切换至非网盘目录。',
+                                      style: BlinkTypography.metaLabel(
+                                        tokens,
+                                        color: tokens.statusWarn,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -461,7 +497,7 @@ class _AboutCard extends StatelessWidget {
               valueStyle: BlinkTypography.monoValue(tokens, tabular: true),
             ),
             _InfoRow(
-              label: '数据目录',
+              label: '应用本地目录',
               value: dataRootPath,
               valueKey: const Key('about_data_root'),
               valueStyle: BlinkTypography.monoValue(tokens),
@@ -522,7 +558,7 @@ class _InfoRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           SizedBox(
-            width: 88,
+            width: 140,
             child: Text(label, style: BlinkTypography.metaLabel(tokens)),
           ),
           Expanded(

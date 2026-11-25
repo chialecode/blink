@@ -126,18 +126,20 @@ blink/
 
 所有构建产物在编译期注入通道常量 `BLINK_CHANNEL`（正式版 `blink`，开发版 `blink-dev`）。双通道可在同机同时安装并并行运行，便携库、缓存、锁文件、WebView 数据目录、OS 运行态 IPC 文件、CLI 命令名与系统密钥仓完全隔离：
 
-| 运行平台 / 形态 | 正式通道（`blink`）默认库与数据目录 | 开发通道（`blink-dev`）默认库与数据目录 | OS 运行态目录（`ipc.json` / 锁 / WebView 隔离） | 敏感凭据与密钥存储（绝不落入 `<BLINK_VAULT_DIR>`） |
+| 运行平台 / 形态 | 正式通道（`blink`）默认便携库（用户数据） | 开发通道（`blink-dev`）默认便携库（用户数据） | 应用本地态与 OS 运行态（`settings/` / `ipc.json` / 锁 / WebView） | 敏感凭据与密钥存储（绝不落入 `<BLINK_VAULT_DIR>`） |
 | --- | --- | --- | --- | --- |
-| **Windows** | 默认 `<BLINK_VAULT_DIR>`：`%LOCALAPPDATA%/blink/vault`（支持用户指定任意便携目录；程序装于 `%LOCALAPPDATA%/Programs/blink`） | 默认 `%LOCALAPPDATA%/blink-dev/vault`（装于 `%LOCALAPPDATA%/Programs/blink-dev`） | `%LOCALAPPDATA%/blink[-dev]/run/ipc.json`、`app.lock`；WebView2 `userDataFolder` 隔离于 `%LOCALAPPDATA%/blink[-dev]/webview2` | `%LOCALAPPDATA%/blink[-dev]/credentials/`，经当前用户范围 Windows DPAPI（`CryptProtectData`）加通道专属熵加密；不写 `%APPDATA%` 与主目录 `.blink` |
-| **macOS** | 默认 `~/Library/Application Support/blink/vault`（支持自定义便携目录） | 默认 `~/Library/Application Support/blink-dev/vault` | `~/Library/Caches/blink[-dev]/run/ipc.json`、`app.lock` | macOS Keychain，按独立 Bundle ID `io.github.chialecode.blink` 与 `io.github.chialecode.blink.dev` 隔离 |
-| **Linux** | 默认 `$XDG_DATA_HOME/blink/vault`（回退 `~/.local/share/blink/vault`） | 默认 `$XDG_DATA_HOME/blink-dev/vault`（回退 `~/.local/share/blink-dev/vault`） | `$XDG_RUNTIME_DIR/blink[-dev]/ipc.json`（权限 `0600`）、`app.lock` | `libsecret`（Secret Service API），按属性 `application = blink` / `blink-dev` 隔离 |
+| **Windows（已安装）** | `<Documents>\blink`（经 Win32 `SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, null)` 查询真实目录，回退 `%USERPROFILE%\Documents\blink`，再回退 `<dataRoot>\vault`；程序装于 `%LOCALAPPDATA%\Programs\blink`） | `<Documents>\blink-dev`（装于 `%LOCALAPPDATA%\Programs\blink-dev`） | `%LOCALAPPDATA%\blink[-dev]`（`settings/`、`run/ipc.json`、`run/lifecycle.json`、`app.lock`、`webview2/`、`logs/`、`cache/`） | `%LOCALAPPDATA%\blink[-dev]\credentials\`，经当前用户范围 Windows DPAPI（`CryptProtectData`）加通道专属熵加密；不写 `%APPDATA%` 与主目录 `.blink` |
+| **macOS（已安装）** | `~/Documents/blink`（支持自定义便携目录） | `~/Documents/blink-dev` | 应用本地态 `~/Library/Application Support/blink[-dev]`；运行态/缓存 `~/Library/Caches/blink[-dev]` | macOS Keychain，按独立 Bundle ID `io.github.chialecode.blink` 与 `io.github.chialecode.blink.dev` 隔离 |
+| **Linux（已安装）** | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink` | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink-dev` | 应用本地态 `${XDG_DATA_HOME:-~/.local/share}/blink[-dev]`；运行态 `$XDG_RUNTIME_DIR/blink[-dev]/ipc.json`（权限 `0600`）、`app.lock` | `libsecret`（Secret Service API），按属性 `application = blink` / `blink-dev` 隔离 |
+| **桌面源码构建** | 默认拒绝；仅当同时设置 `BLINK_ALLOW_SOURCE_PROD=1` 与隔离的 `BLINK_DATA_DIR`（不与真实 `blink` 根目录重叠）时放行至 `<BLINK_DATA_DIR>/vault` | `<repoRoot>/.local/blink-dev/vault`（仓库外回退 `<systemTemp>/blink-source-dev/vault`） | `<repoRoot>/.local/blink-dev/app`（仓库外回退 `<systemTemp>/blink-source-dev/app`）；不注册单实例互斥量与控制管道 | 仅存于独立沙盒目录或内存桩，绝不触碰本机已安装的 `blink` / `blink-dev` |
 | **Android** | 私有沙盒 `<AppFilesDir>/blink`（包名 `io.github.chialecode.blink`），LRU 媒体缓存 `<AppCacheDir>/media` | 私有沙盒 `<AppFilesDir>/blink-dev`（包名 `io.github.chialecode.blink.dev`） | 沙盒内应用独占运行（无桌面 IPC） | Android Keystore 硬件支持密钥加密存储，双包名天然隔离 |
 | **iOS** | 沙盒 `Application Support/blink`（Bundle ID `io.github.chialecode.blink`），缓存 `Library/Caches/media` 标 `isExcludedFromBackup = true` | 沙盒 `Application Support/blink-dev`（Bundle ID `io.github.chialecode.blink.dev`） | 沙盒内应用独占运行 | iOS Keychain（`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`），按独立 Bundle ID 隔离 |
 | **无头 `blink sync serve` / CLI** | `--vault <BLINK_VAULT_DIR>`（或 `$BLINK_VAULT_DIR`） | `--vault` 默认 `.local/blink-dev/vault`（通道戳强制为 `blink-dev`） | `$XDG_RUNTIME_DIR/blink[-dev]/`（`0600`） | 设备令牌仅存 `SHA-256` 哈希于 `blink.db`；凭据经 OS 密钥库或独立权限 `0600` 宿主机外部密钥文件提供，严禁放入 `<BLINK_VAULT_DIR>` |
 
+- **Windows 文档目录解析与通道隔离硬守卫（[DEC-031](../decisions.md#dec-031)）**：Windows 端一律优先调用 Win32 `SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, null)`（配合 `CoTaskMemFree`）解析真实“文档”目录，正确支持自定义磁盘路径与 OneDrive 目录重定向，绝不硬编码 `%USERPROFILE%\Documents` 越过 Known Folder API；所有非正式构建（源码构建、开发通道与 `*-test` 测试身份）在启动与目录切换前规范化解析目标路径（含符号链接/目录联接与 `..`），拒绝与真实正式通道 `%LOCALAPPDATA%\blink` 或 `<Documents>\blink` 重叠，测试身份同时拒绝与 `blink-dev` 真实目录重叠。
 - **`vault.json` 通道硬守卫**：每个 `<BLINK_VAULT_DIR>/vault.json` 显式写入 `channel`（`blink` 或 `blink-dev`）与 `format_version`；任一客户端或 CLI 试图跨通道打开库目录时立即拒绝并报 `channel_mismatch`。
 - **单文件夹拷贝卫生（`INV-08`）**：设备同步令牌、WebDAV/S3 凭据、E2EE 同步主密钥、本地 `local_with_private` MCP 令牌及可选内置直连 OpenAI 兼容 API Key **全部仅存于各设备 OS 原生安全密钥库，绝不写入 `<BLINK_VAULT_DIR>`、绝不随同步流明文传输**；因此用户可随时放心拷贝或备份整个 `<BLINK_VAULT_DIR>` 而零泄漏凭据。
-- **活库防网盘冲突提示**：文档与设置界面明确提示切勿将正在运行的 `<BLINK_VAULT_DIR>/db/` 直接置于网盘同步盘（避免双机写 SQLite WAL 损坏）；多机实时同步走 BLINK 同步协议，网盘备份仅针对 `mirror/` 或 `db/backups/` 中的 `VACUUM INTO` 原子快照。
+- **活库防网盘冲突提示**：文档与设置界面明确提示切勿将正在运行的 `<BLINK_VAULT_DIR>/db/` 直接置于网盘同步盘（避免双机写 SQLite WAL 损坏）；当 `<Documents>` 被系统重定向至 `OneDrive` 目录时，设置页展示温和非阻塞提示但不强制改写用户目录。多机实时同步走 BLINK 同步协议，网盘备份仅针对 `mirror/` 或 `db/backups/` 中的 `VACUUM INTO` 原子快照。
 
 ### 4.2 原子落盘、热快照备份与日志脱敏
 
@@ -146,15 +148,16 @@ blink/
 3. **日志与诊断脱敏（`INV-08`）**：统一日志清洗层严禁输出 `Authorization` 头、配对码、E2EE 主密钥、API Key、带签名参数 URL 及任何 `privacy_level = "private"` 正文与摘录。
 
 <a id="desktop-lifecycle"></a>
-### 4.3 Windows 安装身份与桌面生命周期（`DEC-027`）
+### 4.3 Windows 安装身份与桌面生命周期（`DEC-027`、`DEC-031`）
 
-安装身份在构建期经 `--dart-define=BLINK_IDENTITY=<身份>` 与 `BLINK_CHANNEL`、`BLINK_VERSION`、`BLINK_GIT_SHA` 一并注入；`flutter run` 等源码构建不带安装身份，不注册互斥量与控制管道，可与已安装的 `blink-dev` 并存。测试身份只用于门禁安装演练，产物不分发。
+安装身份在构建期经 `--dart-define=BLINK_IDENTITY=<身份>` 与 `BLINK_CHANNEL`、`BLINK_VERSION`、`BLINK_GIT_SHA` 一并注入；`flutter run` 等源码构建不带安装身份，不注册互斥量与控制管道，并默认隔离在仓库内 Git 忽略的 `.local/blink-dev/` 沙盒中（与已安装的 `blink`、`blink-dev` 完全互不干扰）。测试身份只用于门禁安装演练，产物不分发。
 
-| 安装身份 | 通道 | 应用标识 / 卸载键（`HKCU\...\Uninstall\<应用标识>`） | 可执行文件 | 默认安装目录 | 单实例互斥量 / 控制管道 | 数据根 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `blink` | 正式 | `io.github.chialecode.blink` | `blink.exe` | `%LOCALAPPDATA%\Programs\blink` | `blink-instance` / `\\.\pipe\blink-control` | `%LOCALAPPDATA%\blink` |
-| `blink-dev` | 开发 | `io.github.chialecode.blink-dev` | `blink-dev.exe` | `%LOCALAPPDATA%\Programs\blink-dev` | `blink-dev-instance` / `\\.\pipe\blink-dev-control` | `%LOCALAPPDATA%\blink-dev` |
-| `blink-test` / `blink-dev-test` | 门禁演练 | `io.github.chialecode.blink-test` / `io.github.chialecode.blink-dev-test` | `blink-test.exe` / `blink-dev-test.exe` | 演练临时目录（安装器 `/D=`） | `<身份>-instance` / `\\.\pipe\<身份>-control` | 演练临时目录（`BLINK_DATA_DIR`） |
+| 安装身份 | 通道 | 应用标识 / 卸载键（`HKCU\...\Uninstall\<应用标识>`） | 可执行文件 | 默认安装目录 | 单实例互斥量 / 控制管道 | 应用本地根（`dataRoot`） | 默认便携库根（`defaultVaultDir`） |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `blink` | 正式 | `io.github.chialecode.blink` | `blink.exe` | `%LOCALAPPDATA%\Programs\blink` | `blink-instance` / `\\.\pipe\blink-control` | `%LOCALAPPDATA%\blink` | `<Documents>\blink` |
+| `blink-dev` | 开发 | `io.github.chialecode.blink-dev` | `blink-dev.exe` | `%LOCALAPPDATA%\Programs\blink-dev` | `blink-dev-instance` / `\\.\pipe\blink-dev-control` | `%LOCALAPPDATA%\blink-dev` | `<Documents>\blink-dev` |
+| `blink-test` / `blink-dev-test` | 门禁演练 | `io.github.chialecode.blink-test` / `io.github.chialecode.blink-dev-test` | `blink-test.exe` / `blink-dev-test.exe` | 演练临时目录（安装器 `/D=`） | `<身份>-instance` / `\\.\pipe\<身份>-control` | 演练临时目录（`BLINK_DATA_DIR`） | `<BLINK_DATA_DIR>\vault`（同时传隔离 `BLINK_DOCUMENTS_DIR`） |
+| 源码构建（空身份） | 开发（默认；正式通道须 `BLINK_ALLOW_SOURCE_PROD=1` + 隔离 `BLINK_DATA_DIR`） | 无 | 构建产物 `blink_client.exe` | 未安装 | 无 | `<repoRoot>\.local\blink-dev\app`（仓库外 `<temp>\blink-source-dev\app`） | `<repoRoot>\.local\blink-dev\vault`（仓库外 `<temp>\blink-source-dev\vault`） |
 
 - **单实例**：已安装身份启动时创建命名互斥量 `<身份>-instance`（安装器与卸载器据此发现运行中的实例，先请其 `--quit-for-update`，见[工程规则 §2.2](../dev-rules/engineering.md#packaging)）。第二个进程根据启动参数决定行为后退出：无参数时经控制管道转交 `focus`（转交前以 `GetNamedPipeServerProcessId` + `AllowSetForegroundWindow` 把前台权限只授予该管道服务端进程，使托盘常驻的主实例能真正前置窗口，安静模式不调用；成功退出码 `0`，管道或协议错误退出码 `1`）；带 `--background` 时直接以退出码 `0` 退出、不聚焦已有窗口；带 `--quit-for-update` 时，若无运行中实例则直接以 `0` 退出，有运行中实例则经控制管道请求保存后退出（接受 `{"ok": true}` 退出码 `0`，对端忙碌 `{"ok": false, "reason": "busy"}` 退出码 `2`，其他管道或协议错误退出码 `1`，并在存在附加标准输出时尽力写出 JSON 应答行）。
 - **控制管道**：`\\.\pipe\<身份>-control` 使用 `FILE_FLAG_FIRST_PIPE_INSTANCE`（`nMaxInstances = 1`）与 `PIPE_REJECT_REMOTE_CLIENTS`，安全描述符仅授予当前用户受保护 DACL（`D:P(A;;GA;;;<当前用户SID>)`）；单行上限 `4096` 字节 UTF-8，每个连接一行 JSON 请求 `{"cmd": "focus" | "quit-for-update" | "ping"}`，一行应答 `{"ok": true}` 或 `{"ok": false, "reason": "busy" | "unknown_command" | "invalid_request"}`（超长行、非法 UTF-8、畸形 JSON 或缺失 `cmd` 均返回 `invalid_request` 而不崩溃）。管道服务在独立 Isolate 中运行，命令交给 UI Isolate 执行，60 秒内无应答回执 `busy`；取消重叠 I/O 时统一执行 `CancelIoEx` + `GetOverlappedResult(..., true)` 排空后再释放或复用缓冲区。

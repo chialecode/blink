@@ -764,6 +764,79 @@ void main() {
       },
     );
 
+    testWidgets(
+      'settings shows non-blocking OneDrive hint when vault sits inside a OneDrive folder',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final oneDriveVaultDir = Directory(
+          '${tempDir.path}${Platform.pathSeparator}OneDrive${Platform.pathSeparator}Documents${Platform.pathSeparator}blink-dev',
+        );
+        final appLocalDir = Directory(
+          '${tempDir.path}${Platform.pathSeparator}app_local',
+        );
+        final paths = BlinkPaths(
+          dataRoot: appLocalDir,
+          defaultVaultDir: oneDriveVaultDir,
+        );
+        final buildInfo = BlinkBuildInfo.normalized(
+          channel: 'blink-dev',
+          identity: 'blink-dev',
+          version: '0.1.0-dev.202611251200',
+          gitSha: '1234567',
+        );
+        final lifecycle = DesktopLifecycleController(
+          buildInfo: buildInfo,
+          paths: paths,
+          settingsStore: DesktopSettingsStore(file: paths.desktopSettingsFile),
+          windowAdapter: _NoopWindowAdapter(),
+          trayAdapter: _NoopTrayAdapter(),
+        );
+        await lifecycle.initializeStartup(
+          const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+        );
+        final vault = (await tester.runAsync(
+          () => VaultManager.open(
+            VaultConfig(
+              vaultDir: oneDriveVaultDir,
+              expectedChannel: BlinkChannel.blinkDev,
+              enableMirrorExporter: false,
+            ),
+          ),
+        ))!;
+        final workspace = BlinkWorkspaceController(
+          lifecycle: lifecycle,
+          filePicker: _FakeFilePicker(),
+          initialVault: vault,
+          initialDestination: BlinkNavDestination.settings,
+          enableMirrorExporter: false,
+        );
+        await tester.runAsync(() => workspace.initialize());
+        addTearDown(() async {
+          workspace.dispose();
+          await tester.runAsync(() async {
+            if (vault.isOpen) {
+              await vault.checkpointAndClose();
+            }
+          });
+        });
+
+        await tester.pumpWidget(
+          BlinkApp(controller: lifecycle, workspaceController: workspace),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('便携库目录（用户数据）'), findsOneWidget);
+        expect(find.text('应用本地目录'), findsOneWidget);
+        expect(find.byKey(const Key('vault_onedrive_hint')), findsOneWidget);
+        expect(find.textContaining('OneDrive'), findsWidgets);
+        // Vault remains open and unblocked.
+        expect(workspace.hasOpenVault, isTrue);
+      },
+    );
+
     test('shutdown flush hook saves pending draft, flushes mirror, and closes WAL before lifecycle.json', () async {
       final paths = BlinkPaths(dataRoot: tempDir);
       final buildInfo = BlinkBuildInfo.normalized(

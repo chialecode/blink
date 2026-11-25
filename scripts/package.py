@@ -1824,12 +1824,94 @@ def _scan_matching_entries(base_dir: Path, prefix_or_contains: str, *, recursive
     return sorted(found)
 
 
+def _query_known_folder_documents_win32() -> Path | None:
+    """Query the real Windows Documents directory via SHGetKnownFolderPath(FOLDERID_Documents)."""
+    if sys.platform != "win32":
+        return None
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    # FOLDERID_Documents = {FDD39AD0-238F-46AF-ADB4-6C85480369C7}
+    folderid_documents = _GUID(
+        0xFDD39AD0,
+        0x238F,
+        0x46AF,
+        (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7),
+    )
+    kf_flag_dont_verify = 0x00004000
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    sh_get_known_folder_path = shell32.SHGetKnownFolderPath
+    sh_get_known_folder_path.argtypes = [
+        ctypes.POINTER(_GUID),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    sh_get_known_folder_path.restype = ctypes.c_long
+
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    co_task_mem_free = ole32.CoTaskMemFree
+    co_task_mem_free.argtypes = [ctypes.c_void_p]
+    co_task_mem_free.restype = None
+
+    path_ptr = ctypes.c_void_p()
+    hr = sh_get_known_folder_path(
+        ctypes.byref(folderid_documents),
+        kf_flag_dont_verify,
+        None,
+        ctypes.byref(path_ptr),
+    )
+    if hr < 0 or not path_ptr.value:
+        return None
+    try:
+        resolved = ctypes.wstring_at(path_ptr.value).strip()
+        return Path(resolved) if resolved else None
+    finally:
+        co_task_mem_free(path_ptr.value)
+
+
+def resolve_windows_documents_dir(
+    env: Mapping[str, str] | None = None,
+    *,
+    query_known_folder: Callable[[], Path | None] | None = None,
+) -> Path | None:
+    """Resolve the host Windows Documents folder via SHGetKnownFolderPath(FOLDERID_Documents),
+    falling back to %USERPROFILE%\\Documents.
+    """
+    effective_env = env if env is not None else os.environ
+    known: Path | None = None
+    if query_known_folder is not None:
+        known = query_known_folder()
+    elif sys.platform == "win32":
+        try:
+            known = _query_known_folder_documents_win32()
+        except OSError:
+            known = None
+    if known is not None:
+        return known
+    userprofile = effective_env.get("USERPROFILE", "").strip()
+    if userprofile:
+        return Path(userprofile) / "Documents"
+    return None
+
+
 def capture_host_snapshot(
     env: Mapping[str, str] | None = None,
     *,
     exclude_dir: Path | None = None,
+    documents_dir_resolver: Callable[[Mapping[str, str]], Path | None] | None = None,
 ) -> dict[str, Any]:
-    """Capture real host state (blink & blink-dev Uninstall keys, Start Menu, %LOCALAPPDATA%\\blink*)."""
+    """Capture real host state (blink & blink-dev Uninstall keys, Start Menu, %LOCALAPPDATA%\\blink*, <Documents>\\blink*)."""
     effective_env = env if env is not None else os.environ
     uninstall_snapshot = {
         ident: _snapshot_reg_key(IDENTITY_SPECS[ident].uninstall_subkey)
@@ -1865,17 +1947,35 @@ def capture_host_snapshot(
             lad_path / "Programs", "blink", recursive=False, contains=False
         )
 
+    documents_entries: dict[str, list[str]] = {}
+    docs_resolver = documents_dir_resolver or resolve_windows_documents_dir
+    docs_path = docs_resolver(effective_env)
+    if docs_path is not None:
+        documents_entries["documents_blink"] = [
+            e
+            for e in _scan_matching_entries(docs_path, "blink", recursive=False, contains=False)
+            if excluded_name is None or e.rstrip("/").lower() != excluded_name
+        ]
+
     desktop_entries: list[str] = []
     userprofile = effective_env.get("USERPROFILE", "").strip()
     if userprofile:
         desktop_entries = _scan_matching_entries(
             Path(userprofile) / "Desktop", "blink", recursive=False, contains=True
         )
+        fallback_docs = Path(userprofile) / "Documents"
+        if docs_path is None or os.path.normcase(str(fallback_docs)) != os.path.normcase(str(docs_path)):
+            documents_entries["userprofile_documents_blink"] = [
+                e
+                for e in _scan_matching_entries(fallback_docs, "blink", recursive=False, contains=False)
+                if excluded_name is None or e.rstrip("/").lower() != excluded_name
+            ]
 
     return {
         "uninstall_keys": uninstall_snapshot,
         "start_menu": start_menu_entries,
         "localappdata": local_entries,
+        "documents": documents_entries,
         "desktop": desktop_entries,
     }
 
@@ -1994,6 +2094,7 @@ def run_rehearsal(
     tmp_root = Path(tempfile.mkdtemp(prefix="blink-rehearsal-"))
     install_dir = tmp_root / "install"
     data_dir = tmp_root / "data"
+    documents_dir = tmp_root / "documents"
     pkg_a_dir = tmp_root / "pkg-a"
     pkg_b_dir = tmp_root / "pkg-b"
 
@@ -2012,6 +2113,7 @@ def run_rehearsal(
 
     quiet_env = dict(effective_env)
     quiet_env["BLINK_DATA_DIR"] = str(data_dir)
+    quiet_env["BLINK_DOCUMENTS_DIR"] = str(documents_dir)
     quiet_env["BLINK_QUIET"] = "1"
 
     try:

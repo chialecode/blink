@@ -552,6 +552,7 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             "uninstall_keys": {"blink": {"exists": False, "values": {}}},
             "start_menu": {"user_start_menu": []},
             "localappdata": {"localappdata_blink": []},
+            "documents": {"documents_blink": []},
             "desktop": [],
         }
         self.assertEqual(package.diff_snapshots(base, dict(base)), {})
@@ -560,6 +561,80 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
         changed["start_menu"] = {"user_start_menu": ["BLINK Dev Test.lnk"]}
         diff = package.diff_snapshots(base, changed)
         self.assertIn("start_menu", diff)
+
+        docs_changed = dict(base)
+        docs_changed["documents"] = {"documents_blink": ["blink-dev-test/"]}
+        docs_diff = package.diff_snapshots(base, docs_changed)
+        self.assertIn("documents", docs_diff)
+
+    def test_resolve_windows_documents_dir_prefers_known_folder_then_userprofile(self) -> None:
+        redirected = Path("mock_redirected") / "Documents"
+        self.assertEqual(
+            package.resolve_windows_documents_dir(
+                {"USERPROFILE": "mock_profile"},
+                query_known_folder=lambda: redirected,
+            ),
+            redirected,
+        )
+        self.assertEqual(
+            package.resolve_windows_documents_dir(
+                {"USERPROFILE": "mock_profile"},
+                query_known_folder=lambda: None,
+            ),
+            Path("mock_profile") / "Documents",
+        )
+        self.assertIsNone(
+            package.resolve_windows_documents_dir({}, query_known_folder=lambda: None)
+        )
+        if sys.platform == "win32":
+            live_docs = package._query_known_folder_documents_win32()
+            self.assertIsNotNone(live_docs)
+            self.assertTrue(str(live_docs).strip())
+
+    def test_capture_host_snapshot_tracks_documents_blink_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lad = root / "localappdata"
+            docs = root / "redirected_docs"
+            profile = root / "profile"
+            profile_docs = profile / "Documents"
+            for d in (lad, docs, profile_docs):
+                d.mkdir(parents=True)
+            (docs / "blink-dev").mkdir()
+            (docs / "other-folder").mkdir()
+
+            fake_env = {
+                "LOCALAPPDATA": str(lad),
+                "USERPROFILE": str(profile),
+            }
+            with mock.patch.object(
+                package,
+                "_snapshot_reg_key",
+                return_value={"exists": False, "values": {}},
+            ):
+                before = package.capture_host_snapshot(
+                    fake_env,
+                    documents_dir_resolver=lambda _env: docs,
+                )
+                self.assertEqual(before["documents"]["documents_blink"], ["blink-dev/"])
+                self.assertEqual(before["documents"]["userprofile_documents_blink"], [])
+
+                # Simulate a rehearsal leak into Documents.
+                (docs / "blink-dev-test").mkdir()
+                after = package.capture_host_snapshot(
+                    fake_env,
+                    documents_dir_resolver=lambda _env: docs,
+                )
+            diff = package.diff_snapshots(before, after)
+            self.assertIn("documents", diff)
+            self.assertEqual(
+                after["documents"]["documents_blink"],
+                ["blink-dev-test/", "blink-dev/"],
+            )
+
+    def test_rehearsal_passes_isolated_blink_documents_dir(self) -> None:
+        source = (SCRIPTS_DIR / "package.py").read_text(encoding="utf-8")
+        self.assertIn('quiet_env["BLINK_DOCUMENTS_DIR"] = str(documents_dir)', source)
 
 
 class DevAutoInstallDecisionTests(unittest.TestCase):

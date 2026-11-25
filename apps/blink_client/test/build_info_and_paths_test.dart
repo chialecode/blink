@@ -7,6 +7,7 @@ import 'package:blink_client/platform/atomic_io.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/paths.dart';
+import 'package:blink_client/platform/windows/win32_bindings.dart';
 
 void main() {
   group('BlinkBuildInfo (M2-K02)', () {
@@ -71,8 +72,8 @@ void main() {
     });
   });
 
-  group('BlinkPaths (M2-K02)', () {
-    test('BLINK_DATA_DIR override takes precedence over OS env', () {
+  group('BlinkPaths 3-root layout & channel isolation (DEC-031, #21)', () {
+    test('BLINK_DATA_DIR override takes precedence over OS env and isolates default vault', () {
       final info = BlinkBuildInfo.normalized(
         channel: 'blink-dev',
         identity: 'blink-dev-test',
@@ -81,17 +82,21 @@ void main() {
         info,
         environment: const <String, String>{
           'BLINK_DATA_DIR': 'sandbox_override_dir',
+          'BLINK_DOCUMENTS_DIR': 'ignored_documents_dir',
           'LOCALAPPDATA': 'ignored_local_app_data',
           'APPDATA': 'ignored_roaming_app_data',
         },
         isWindows: true,
         isMacOS: false,
         isLinux: false,
+        resolveSystemDocumentsDir: () => 'ignored_system_documents',
       );
       expect(paths.dataRoot.path, 'sandbox_override_dir');
+      expect(paths.defaultVaultDir.path, r'sandbox_override_dir\vault');
+      expect(paths.vaultDir.path, r'sandbox_override_dir\vault');
     });
 
-    test('Windows uses LOCALAPPDATA and never APPDATA or home dotdir', () {
+    test('Windows installed builds split LOCALAPPDATA app-local state and Documents portable vault', () {
       final dev = BlinkBuildInfo.normalized(
         channel: 'blink-dev',
         identity: 'blink-dev',
@@ -101,12 +106,19 @@ void main() {
         environment: const <String, String>{
           'LOCALAPPDATA': 'virtual_local_appdata',
           'APPDATA': 'virtual_roaming_appdata',
+          'USERPROFILE': 'virtual_profile',
         },
         isWindows: true,
         isMacOS: false,
         isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_known_documents',
       );
       expect(devPaths.dataRoot.path, r'virtual_local_appdata\blink-dev');
+      expect(
+        devPaths.defaultVaultDir.path,
+        r'virtual_known_documents\blink-dev',
+      );
+      expect(devPaths.vaultDir.path, r'virtual_known_documents\blink-dev');
 
       final prod = BlinkBuildInfo.normalized(
         channel: 'blink',
@@ -116,29 +128,134 @@ void main() {
         prod,
         environment: const <String, String>{
           'LOCALAPPDATA': 'virtual_local_appdata',
+          'USERPROFILE': 'virtual_profile',
         },
         isWindows: true,
         isMacOS: false,
         isLinux: false,
+        resolveSystemDocumentsDir: () =>
+            'virtual_onedrive_root\\OneDrive\\Documents',
       );
       expect(prodPaths.dataRoot.path, r'virtual_local_appdata\blink');
+      expect(
+        prodPaths.defaultVaultDir.path,
+        r'virtual_onedrive_root\OneDrive\Documents\blink',
+      );
+      expect(BlinkPaths.isOneDrivePath(prodPaths.defaultVaultDir.path), isTrue);
+
+      final testId = BlinkBuildInfo.normalized(
+        channel: 'blink',
+        identity: 'blink-test',
+      );
+      final testPaths = BlinkPaths.resolve(
+        testId,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+          'USERPROFILE': 'virtual_profile',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_known_documents',
+      );
+      expect(testPaths.dataRoot.path, r'virtual_local_appdata\blink-test');
+      expect(
+        testPaths.defaultVaultDir.path,
+        r'virtual_known_documents\blink-test',
+      );
     });
 
-    test('Linux honors XDG_DATA_HOME and macOS uses Application Support', () {
-      final info = BlinkBuildInfo.normalized(channel: 'blink-dev');
-      final linuxPaths = BlinkPaths.resolve(
-        info,
+    test('Windows Documents fallback chain: BLINK_DOCUMENTS_DIR > KnownFolder > USERPROFILE\\Documents > dataRoot\\vault', () {
+      final dev = BlinkBuildInfo.normalized(
+        channel: 'blink-dev',
+        identity: 'blink-dev',
+      );
+
+      final withEnvDocs = BlinkPaths.resolve(
+        dev,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+          'USERPROFILE': 'virtual_profile',
+          'BLINK_DOCUMENTS_DIR': 'virtual_env_documents',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_known_documents',
+      );
+      expect(
+        withEnvDocs.defaultVaultDir.path,
+        r'virtual_env_documents\blink-dev',
+      );
+
+      final withUserProfileFallback = BlinkPaths.resolve(
+        dev,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+          'USERPROFILE': 'virtual_profile',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => null,
+      );
+      expect(
+        withUserProfileFallback.defaultVaultDir.path,
+        r'virtual_profile\Documents\blink-dev',
+      );
+
+      final withDataRootFallback = BlinkPaths.resolve(
+        dev,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => null,
+      );
+      expect(
+        withDataRootFallback.defaultVaultDir.path,
+        r'virtual_local_appdata\blink-dev\vault',
+      );
+    });
+
+    test('Linux honors XDG_DATA_HOME/XDG_DOCUMENTS_DIR and macOS uses Application Support/Documents', () {
+      final installedDev = BlinkBuildInfo.normalized(
+        channel: 'blink-dev',
+        identity: 'blink-dev',
+      );
+      final linuxXdg = BlinkPaths.resolve(
+        installedDev,
         environment: const <String, String>{
           'XDG_DATA_HOME': 'virtual_xdg_data',
+          'XDG_DOCUMENTS_DIR': 'virtual_xdg_docs',
         },
         isWindows: false,
         isMacOS: false,
         isLinux: true,
       );
-      expect(linuxPaths.dataRoot.path, 'virtual_xdg_data/blink-dev');
+      expect(linuxXdg.dataRoot.path, 'virtual_xdg_data/blink-dev');
+      expect(linuxXdg.defaultVaultDir.path, 'virtual_xdg_docs/blink-dev');
+
+      final linuxHomeFallback = BlinkPaths.resolve(
+        installedDev,
+        environment: const <String, String>{'HOME': 'virtual_linux_home'},
+        isWindows: false,
+        isMacOS: false,
+        isLinux: true,
+      );
+      expect(
+        linuxHomeFallback.dataRoot.path,
+        'virtual_linux_home/.local/share/blink-dev',
+      );
+      expect(
+        linuxHomeFallback.defaultVaultDir.path,
+        'virtual_linux_home/Documents/blink-dev',
+      );
 
       final macPaths = BlinkPaths.resolve(
-        info,
+        installedDev,
         environment: const <String, String>{'HOME': 'virtual_mac_home'},
         isWindows: false,
         isMacOS: true,
@@ -148,9 +265,13 @@ void main() {
         macPaths.dataRoot.path,
         'virtual_mac_home/Library/Application Support/blink-dev',
       );
+      expect(
+        macPaths.defaultVaultDir.path,
+        'virtual_mac_home/Documents/blink-dev',
+      );
     });
 
-    test('BLINK_VAULT_DIR override takes precedence over default and custom vault path', () {
+    test('BLINK_VAULT_DIR override takes precedence over customVaultPath and defaultVaultDir', () {
       final info = BlinkBuildInfo.normalized(
         channel: 'blink-dev',
         identity: 'blink-dev',
@@ -182,10 +303,7 @@ void main() {
         isLinux: false,
       );
       expect(standard.hasVaultDirOverride, isFalse);
-      expect(
-        standard.vaultDir.path,
-        'sandbox_data${Platform.pathSeparator}vault',
-      );
+      expect(standard.vaultDir.path, r'sandbox_data\vault');
       expect(
         standard.webview2Dir.path,
         'sandbox_data${Platform.pathSeparator}webview2',
@@ -196,6 +314,406 @@ void main() {
             .path,
         'custom_vault_dir',
       );
+
+      final installedWithDocs = BlinkPaths.resolve(
+        info,
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_documents',
+      );
+      expect(
+        installedWithDocs.resolveEffectiveVaultDir().path,
+        r'virtual_documents\blink-dev',
+      );
+      expect(
+        installedWithDocs
+            .resolveEffectiveVaultDir(customVaultPath: 'custom_vault_dir')
+            .path,
+        'custom_vault_dir',
+      );
+    });
+
+    test('source builds isolate into <repoRoot>/.local/blink-dev/{app,vault} across default, dev, and custom channels (#21)', () {
+      final tempRoot = Directory.systemTemp.createTempSync('blink_src_repo_');
+      addTearDown(() {
+        if (tempRoot.existsSync()) {
+          tempRoot.deleteSync(recursive: true);
+        }
+      });
+
+      // Workspace root marker (`.git` file simulating worktree + workspace pubspec).
+      File('${tempRoot.path}${Platform.pathSeparator}.git')
+          .writeAsStringSync('gitdir: mock\n');
+      final nestedClientDir = Directory(
+        '${tempRoot.path}${Platform.pathSeparator}apps${Platform.pathSeparator}blink_client',
+      )..createSync(recursive: true);
+      File('${nestedClientDir.path}${Platform.pathSeparator}pubspec.yaml')
+          .writeAsStringSync('name: blink_client\nresolution: workspace\n');
+
+      for (final channel in const <String>['', 'blink-dev', 'blink-staging']) {
+        final sourceInfo = BlinkBuildInfo.normalized(channel: channel);
+        expect(sourceInfo.isSourceBuild, isTrue);
+
+        final resolved = BlinkPaths.resolve(
+          sourceInfo,
+          environment: const <String, String>{
+            'LOCALAPPDATA': 'virtual_local_appdata',
+            'USERPROFILE': 'virtual_profile',
+          },
+          isWindows: Platform.isWindows,
+          isMacOS: Platform.isMacOS,
+          isLinux: Platform.isLinux,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+          currentDirectoryOverride: nestedClientDir,
+        );
+
+        final sep = Platform.isWindows ? r'\' : '/';
+        expect(
+          resolved.dataRoot.path,
+          '${tempRoot.path}$sep.local${sep}blink-dev${sep}app',
+        );
+        expect(
+          resolved.defaultVaultDir.path,
+          '${tempRoot.path}$sep.local${sep}blink-dev${sep}vault',
+        );
+        expect(
+          resolved.dataRoot.path,
+          isNot(contains('virtual_local_appdata')),
+        );
+        expect(
+          resolved.defaultVaultDir.path,
+          isNot(contains('virtual_documents')),
+        );
+      }
+
+      // Workspace pubspec.yaml alone (without .git) also discovers repo root.
+      final wsOnly = Directory.systemTemp.createTempSync('blink_ws_only_');
+      addTearDown(() {
+        if (wsOnly.existsSync()) {
+          wsOnly.deleteSync(recursive: true);
+        }
+      });
+      File('${wsOnly.path}${Platform.pathSeparator}pubspec.yaml')
+          .writeAsStringSync(
+            'name: blink_workspace\nworkspace:\n  - apps/blink_client\n',
+          );
+      final wsChild = Directory(
+        '${wsOnly.path}${Platform.pathSeparator}apps${Platform.pathSeparator}blink_client',
+      )..createSync(recursive: true);
+      File('${wsChild.path}${Platform.pathSeparator}pubspec.yaml')
+          .writeAsStringSync('name: blink_client\nresolution: workspace\n');
+
+      final wsResolved = BlinkPaths.resolve(
+        BlinkBuildInfo.normalized(channel: 'blink-dev'),
+        environment: const <String, String>{},
+        isWindows: false,
+        isMacOS: false,
+        isLinux: true,
+        currentDirectoryOverride: wsChild,
+      );
+      expect(wsResolved.dataRoot.path, '${wsOnly.path}/.local/blink-dev/app');
+      expect(
+        wsResolved.defaultVaultDir.path,
+        '${wsOnly.path}/.local/blink-dev/vault',
+      );
+    });
+
+    test('source build falls back to <temp>/blink-source-dev/{app,vault} when outside any repository (#21)', () {
+      final outsideDir = Directory.systemTemp.createTempSync('blink_no_repo_');
+      addTearDown(() {
+        if (outsideDir.existsSync()) {
+          outsideDir.deleteSync(recursive: true);
+        }
+      });
+
+      final resolved = BlinkPaths.resolve(
+        BlinkBuildInfo.normalized(channel: 'blink-dev'),
+        environment: const <String, String>{
+          'LOCALAPPDATA': 'virtual_local_appdata',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        fallbackTempPath: 'virtual_temp',
+        currentDirectoryOverride: outsideDir,
+      );
+      expect(resolved.dataRoot.path, r'virtual_temp\blink-source-dev\app');
+      expect(
+        resolved.defaultVaultDir.path,
+        r'virtual_temp\blink-source-dev\vault',
+      );
+    });
+
+    test('source build targeting production channel blink requires explicit opt-in and isolated BLINK_DATA_DIR (#21)', () {
+      final sourceProd = BlinkBuildInfo.normalized(channel: 'blink');
+      expect(sourceProd.isSourceBuild, isTrue);
+      expect(sourceProd.isProductionChannel, isTrue);
+
+      // Default: rejected.
+      expect(
+        () => BlinkPaths.resolve(
+          sourceProd,
+          environment: const <String, String>{
+            'LOCALAPPDATA': 'virtual_local_appdata',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Opt-in without explicit BLINK_DATA_DIR: rejected.
+      expect(
+        () => BlinkPaths.resolve(
+          sourceProd,
+          environment: const <String, String>{
+            'BLINK_ALLOW_SOURCE_PROD': '1',
+            'LOCALAPPDATA': 'virtual_local_appdata',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Explicit BLINK_DATA_DIR without opt-in: rejected.
+      expect(
+        () => BlinkPaths.resolve(
+          sourceProd,
+          environment: const <String, String>{
+            'BLINK_DATA_DIR': 'isolated_source_prod_data',
+            'LOCALAPPDATA': 'virtual_local_appdata',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Opt-in + BLINK_DATA_DIR overlapping real prod LOCALAPPDATA\blink: rejected.
+      expect(
+        () => BlinkPaths.resolve(
+          sourceProd,
+          environment: const <String, String>{
+            'BLINK_ALLOW_SOURCE_PROD': '1',
+            'BLINK_DATA_DIR': r'virtual_local_appdata\blink-dev\..\BLINK',
+            'LOCALAPPDATA': 'virtual_local_appdata',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Opt-in + BLINK_DATA_DIR safe, but BLINK_VAULT_DIR overlapping real <Documents>\blink: rejected.
+      expect(
+        () => BlinkPaths.resolve(
+          sourceProd,
+          environment: const <String, String>{
+            'BLINK_ALLOW_SOURCE_PROD': '1',
+            'BLINK_DATA_DIR': 'isolated_source_prod_data',
+            'BLINK_VAULT_DIR': r'virtual_documents\blink\sub',
+            'LOCALAPPDATA': 'virtual_local_appdata',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Opt-in + isolated BLINK_DATA_DIR: succeeds!
+      final allowed = BlinkPaths.resolve(
+        sourceProd,
+        environment: const <String, String>{
+          'BLINK_ALLOW_SOURCE_PROD': '1',
+          'BLINK_DATA_DIR': 'isolated_source_prod_data',
+          'LOCALAPPDATA': 'virtual_local_appdata',
+        },
+        isWindows: true,
+        isMacOS: false,
+        isLinux: false,
+        resolveSystemDocumentsDir: () => 'virtual_documents',
+      );
+      expect(allowed.dataRoot.path, 'isolated_source_prod_data');
+      expect(allowed.defaultVaultDir.path, r'isolated_source_prod_data\vault');
+    });
+
+    test('channel isolation guard blocks non-prod from prod roots and test identities from dev roots', () {
+      final dev = BlinkBuildInfo.normalized(
+        channel: 'blink-dev',
+        identity: 'blink-dev',
+      );
+
+      // Dev build targeting prod LOCALAPPDATA\blink (exact, child, ancestor, .. traversal).
+      for (final badData in const <String>[
+        r'virtual_local_appdata\blink',
+        r'virtual_local_appdata\BLINK\nested',
+        r'virtual_local_appdata\blink-dev\..\blink',
+        'virtual_local_appdata',
+      ]) {
+        expect(
+          () => BlinkPaths.resolve(
+            dev,
+            environment: <String, String>{
+              'LOCALAPPDATA': 'virtual_local_appdata',
+              'BLINK_DATA_DIR': badData,
+            },
+            isWindows: true,
+            isMacOS: false,
+            isLinux: false,
+            resolveSystemDocumentsDir: () => 'virtual_documents',
+          ),
+          throwsStateError,
+          reason: 'Expected dev BLINK_DATA_DIR=$badData to be rejected',
+        );
+      }
+
+      // Dev build targeting prod <Documents>\blink via BLINK_VAULT_DIR.
+      expect(
+        () => BlinkPaths.resolve(
+          dev,
+          environment: const <String, String>{
+            'LOCALAPPDATA': 'virtual_local_appdata',
+            'BLINK_VAULT_DIR': r'virtual_documents\blink',
+          },
+          isWindows: true,
+          isMacOS: false,
+          isLinux: false,
+          resolveSystemDocumentsDir: () => 'virtual_documents',
+        ),
+        throwsStateError,
+      );
+
+      // Test identities (`blink-test` & `blink-dev-test`) reject BOTH prod and dev roots.
+      for (final testBuild in <BlinkBuildInfo>[
+        BlinkBuildInfo.normalized(channel: 'blink', identity: 'blink-test'),
+        BlinkBuildInfo.normalized(
+          channel: 'blink-dev',
+          identity: 'blink-dev-test',
+        ),
+      ]) {
+        for (final badPath in const <String>[
+          r'virtual_local_appdata\blink',
+          r'virtual_local_appdata\blink-dev',
+          r'virtual_documents\blink',
+          r'virtual_documents\blink-dev',
+        ]) {
+          expect(
+            () => BlinkPaths.resolve(
+              testBuild,
+              environment: <String, String>{
+                'LOCALAPPDATA': 'virtual_local_appdata',
+                'BLINK_DATA_DIR': 'isolated_test_root',
+                'BLINK_VAULT_DIR': badPath,
+              },
+              isWindows: true,
+              isMacOS: false,
+              isLinux: false,
+              resolveSystemDocumentsDir: () => 'virtual_documents',
+            ),
+            throwsStateError,
+            reason:
+                'Expected ${testBuild.identity} BLINK_VAULT_DIR=$badPath to be rejected',
+          );
+        }
+      }
+    });
+
+    test('channel isolation guard resolves existing symlinks/junctions to protected roots', () {
+      final tempRoot = Directory.systemTemp.createTempSync('blink_link_guard_');
+      addTearDown(() {
+        if (tempRoot.existsSync()) {
+          tempRoot.deleteSync(recursive: true);
+        }
+      });
+
+      final fakeLocalAppData = Directory(
+        '${tempRoot.path}${Platform.pathSeparator}lad',
+      )..createSync(recursive: true);
+      final fakeProdDir = Directory(
+        '${fakeLocalAppData.path}${Platform.pathSeparator}blink',
+      )..createSync(recursive: true);
+      final linkPath = '${tempRoot.path}${Platform.pathSeparator}sneaky_link';
+
+      var linkCreated = false;
+      try {
+        Link(linkPath).createSync(fakeProdDir.path);
+        linkCreated = true;
+      } on FileSystemException {
+        linkCreated = false;
+      }
+
+      if (linkCreated) {
+        final dev = BlinkBuildInfo.normalized(
+          channel: 'blink-dev',
+          identity: 'blink-dev',
+        );
+        expect(
+          () => BlinkPaths.resolve(
+            dev,
+            environment: <String, String>{
+              'LOCALAPPDATA': fakeLocalAppData.path,
+              'XDG_DATA_HOME': fakeLocalAppData.path,
+              'BLINK_DATA_DIR': linkPath,
+            },
+            isWindows: Platform.isWindows,
+            isMacOS: Platform.isMacOS,
+            isLinux: Platform.isLinux,
+            resolveSystemDocumentsDir: () =>
+                '${tempRoot.path}${Platform.pathSeparator}docs',
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('isOneDrivePath detects OneDrive folders accurately without false positives', () {
+      expect(
+        BlinkPaths.isOneDrivePath(r'virtual_profile\OneDrive\Documents\blink'),
+        isTrue,
+      );
+      expect(
+        BlinkPaths.isOneDrivePath(
+          r'virtual_profile\OneDrive - Personal\Documents\blink-dev',
+        ),
+        isTrue,
+      );
+      expect(
+        BlinkPaths.isOneDrivePath('virtual_home/OneDrive/Documents/blink'),
+        isTrue,
+      );
+      expect(
+        BlinkPaths.isOneDrivePath(r'virtual_profile\Documents\blink'),
+        isFalse,
+      );
+      expect(
+        BlinkPaths.isOneDrivePath(r'virtual_profile\MyOneDriveClone\blink'),
+        isFalse,
+      );
+    });
+
+    test('queryKnownFolderDocuments returns a non-empty path on Windows and null elsewhere', () {
+      final result = queryKnownFolderDocuments();
+      if (Platform.isWindows) {
+        expect(result, isNotNull);
+        expect(result!.trim(), isNotEmpty);
+      } else {
+        expect(result, isNull);
+      }
     });
   });
 
