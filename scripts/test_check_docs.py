@@ -9,6 +9,8 @@ Fixture names are synthetic and must never be real sibling or reference project 
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -152,6 +154,36 @@ class HygieneTests(FixtureCase):
         self.write(".githooks/pre-push", f"#!/bin/sh\necho {fake}\n")
         self.assertFlags("AWS access key", self.run_check())
 
+    def test_private_key_block(self) -> None:
+        header = "-----BEGIN " + "PRIVATE KEY-----"
+        self.write("docs/guide.md", GOOD_GUIDE + f"\n{header}\n")
+        self.assertFlags("private key block", self.run_check())
+
+    def test_credential_embedded_url(self) -> None:
+        sample = "https://" + "alice" + ":" + "notreal" + "@example.invalid/repo"
+        self.write("docs/guide.md", GOOD_GUIDE + f"\n{sample}\n")
+        self.assertFlags("credential-embedded URL", self.run_check())
+
+    def test_session_cookie_token(self) -> None:
+        sample = "sessionid" + "=" + "SyntheticVal99"
+        self.write("docs/guide.md", GOOD_GUIDE + f"\n{sample}\n")
+        self.assertFlags("session or cookie token", self.run_check())
+
+    def test_signed_url_parameter(self) -> None:
+        sample = "https://example.invalid/feed?" + "a_bogus" + "=ABCD1234"
+        self.write("docs/guide.md", GOOD_GUIDE + f"\n{sample}\n")
+        self.assertFlags("signed URL parameter", self.run_check())
+
+    def test_hardcoded_credential_assignment(self) -> None:
+        sample = "api_" + 'key = "' + "Z" * 24 + '"'
+        self.write("notes.txt", f"{sample}\n")
+        self.assertFlags("hardcoded credential assignment", self.run_check())
+
+    def test_disallowed_content_rules_have_matching_labels(self) -> None:
+        pattern_ids = [rule_id for rule_id, _ in check_docs.DISALLOWED_CONTENT_PATTERNS]
+        self.assertEqual(len(pattern_ids), len(set(pattern_ids)))
+        self.assertEqual(set(pattern_ids), set(check_docs.DISALLOWED_CONTENT_LABELS))
+
     def test_forbidden_database_file(self) -> None:
         self.write("data/blink.db", "", raw=b"SQLite format 3\x00")
         self.assertFlags("forbidden sensitive or database file", self.run_check())
@@ -229,6 +261,20 @@ class CliTests(FixtureCase):
     def test_layout_check_reports_missing_files(self) -> None:
         errors, _, _ = check_docs.check(self.root, check_layout=True)
         self.assertFlags("missing required file: AGENTS.md", errors)
+
+    def test_cli_reports_label_without_echoing_matched_value(self) -> None:
+        sample = "sk-" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        self.write("docs/guide.md", GOOD_GUIDE + f"\nvalue {sample}\n")
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        args = ["--root", str(self.root), "--no-layout-check"]
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            code = check_docs.main(args)
+        self.assertEqual(code, 1)
+        self.assertIn("docs/guide.md:", err_buf.getvalue())
+        self.assertIn("API secret key", err_buf.getvalue())
+        self.assertNotIn(sample, err_buf.getvalue())
+        self.assertNotIn(sample, out_buf.getvalue())
 
 
 if __name__ == "__main__":
