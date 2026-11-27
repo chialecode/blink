@@ -4,7 +4,7 @@
 ;
 ; Command line: /S installs silently; /D=<folder> (last, unquoted) picks the
 ; folder; /RELAUNCH starts BLINK once a silent update is done; /NODESKTOP
-; keeps a silent first install off the desktop (the rehearsal uses it).
+; keeps a silent install off the desktop (the rehearsal uses it).
 ; The uninstall entry is HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<app id>.
 ; An update goes into the installed folder (no folder page); a /D= naming
 ; another folder moves the installation there (the old copy is uninstalled).
@@ -29,6 +29,13 @@
 !insertmacro BLINK_REQUIRE BLINK_ICON            ; channel icon
 !insertmacro BLINK_REQUIRE BLINK_OUT_FILE        ; installer path
 !insertmacro BLINK_REQUIRE BLINK_FILES_NSH       ; generated: BLINK_REMOVE_INSTALLED_FILES
+!insertmacro BLINK_REQUIRE BLINK_DESKTOP_ON_UPDATE ; 1: silent over-install creates desktop shortcut (dev); 0: first install only (release)
+
+!if "${BLINK_DESKTOP_ON_UPDATE}" != "0"
+  !if "${BLINK_DESKTOP_ON_UPDATE}" != "1"
+    !error "BLINK_DESKTOP_ON_UPDATE must be 0 or 1, not ${BLINK_DESKTOP_ON_UPDATE}"
+  !endif
+!endif
 
 !define BLINK_EXE "${BLINK_IDENTITY}.exe"
 !define BLINK_MUTEX "${BLINK_IDENTITY}-instance"
@@ -67,7 +74,8 @@ ShowUninstDetails nevershow
 !define MUI_UNICON "${BLINK_ICON}"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${BLINK_EXE}"
 ; The finish page offers the desktop shortcut, unticked as before; silent
-; installs make it on a first install only (see the install section).
+; installs make it on a first install, and on over-install when
+; BLINK_DESKTOP_ON_UPDATE is 1 (unless /NODESKTOP is passed).
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "创建桌面快捷方式"
@@ -334,14 +342,21 @@ Section "Install"
   ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  CreateShortCut "$SMPROGRAMS\${BLINK_PRODUCT_NAME}.lnk" "$INSTDIR\${BLINK_EXE}"
+  ; Create the Start Menu shortcut only on a first install (or after /D= moved
+  ; the install, which uninstalled the old copy first). Over-installs leave the
+  ; Start Menu untouched: absent stays absent, existing keeps its timestamp.
+  ${If} $FirstInstall == "1"
+    CreateShortCut "$SMPROGRAMS\${BLINK_PRODUCT_NAME}.lnk" "$INSTDIR\${BLINK_EXE}"
+  ${EndIf}
   ${If} ${Silent}
-  ${AndIf} $FirstInstall == "1"
-    ${GetParameters} $0
-    ClearErrors
-    ${GetOptions} $0 "/NODESKTOP" $1
-    ${If} ${Errors}
-      Call CreateDesktopShortcut
+    ${If} $FirstInstall == "1"
+    ${OrIf} "${BLINK_DESKTOP_ON_UPDATE}" == "1"
+      ${GetParameters} $0
+      ClearErrors
+      ${GetOptions} $0 "/NODESKTOP" $1
+      ${If} ${Errors}
+        Call CreateDesktopShortcut
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
@@ -401,8 +416,9 @@ Section "Uninstall"
 
   !insertmacro BLINK_REMOVE_INSTALLED_FILES
 
-  ; An update (run by the next installer) stops here: the installer then
-  ; writes the new files, the uninstaller, the shortcuts and the entry.
+  ; An update (run by the next installer) stops here: existing shortcuts and
+  ; the uninstall entry stay intact while the installer writes the new files,
+  ; the uninstaller, any update-time desktop shortcut, and the entry.
   ClearErrors
   ${GetOptions} $0 "/UPDATE" $1
   ${If} ${Errors}
