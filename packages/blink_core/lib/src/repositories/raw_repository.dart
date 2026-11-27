@@ -403,14 +403,29 @@ final class SqliteRawRepository implements RawRepository {
         privacyLevel: nextPrivacy,
       );
 
-      if (nextPrivacy == PrivacyLevel.private &&
-          existing.privacyLevel != PrivacyLevel.private) {
-        // Ensure any still-pending earlier normal ops for this entry inherit
-        // `#private` protection before relay upload (`INV-03`).
+      if (nextPrivacy == PrivacyLevel.private) {
+        // Cascade `#private` protection atomically to ALL child tasks (active and soft-deleted)
+        // plus historical `sync_oplog` and `outbox_ops` for the entry and its child tasks (`INV-03`).
+        db.execute(
+          "UPDATE raw_tasks SET privacy_level = 'private' "
+          'WHERE origin_entry_id = ?',
+          <Object?>[id],
+        );
+        db.execute(
+          "UPDATE sync_oplog SET privacy_level = 'private' "
+          'WHERE entity_id = ? '
+          "   OR (entity_type = 'raw_task' AND entity_id IN ("
+          '        SELECT id FROM raw_tasks WHERE origin_entry_id = ?'
+          '      ))',
+          <Object?>[id, id],
+        );
         db.execute(
           "UPDATE outbox_ops SET privacy_level = 'private' "
-          "WHERE entity_id = ? AND status = 'pending'",
-          <Object?>[id],
+          'WHERE entity_id = ? '
+          "   OR (entity_type = 'raw_task' AND entity_id IN ("
+          '        SELECT id FROM raw_tasks WHERE origin_entry_id = ?'
+          '      ))',
+          <Object?>[id, id],
         );
       }
 
@@ -1308,13 +1323,14 @@ final class SqliteRawRepository implements RawRepository {
       }
     }
 
-    // Soft-delete tasks removed from `body_md`.
+    // Soft-delete tasks removed from `body_md` (inheriting any upgraded `#private` latch).
     for (final orphanRow in remaining) {
       final orphanId = orphanRow['id'] as String;
       outRemovedTaskIds.add(orphanId);
       db.execute(
-        'UPDATE raw_tasks SET deleted_at = ?, updated_at = ? WHERE id = ?',
-        <Object?>[nowIso, nowIso, orphanId],
+        'UPDATE raw_tasks SET deleted_at = ?, updated_at = ?, privacy_level = ? '
+        'WHERE id = ?',
+        <Object?>[nowIso, nowIso, entry.privacyLevel.wireValue, orphanId],
       );
     }
   }

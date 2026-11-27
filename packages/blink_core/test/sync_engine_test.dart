@@ -471,6 +471,128 @@ CREATE TABLE sync_devices (
         contains('检查清单'),
       );
     });
+
+    test('multi-step offline edits (A1 vs B1->B2) produce exactly 1 conflict without false self-conflict or copy soft_delete broadcast', () async {
+      final vaultA = await _openTempVault(tempRoot, 'multi-a', 'Desktop-A');
+      final vaultB = await _openTempVault(tempRoot, 'multi-b', 'Phone-B');
+      addTearDown(vaultA.checkpointAndClose);
+      addTearDown(vaultB.checkpointAndClose);
+
+      // Shared base entry rev=1.
+      final base = await vaultA.raw.createEntry(bodyMd: '共享初稿 v1');
+      final initOps = (await vaultA.syncEngine.readOplogSince(sinceSeq: 0)).ops;
+      await vaultB.syncEngine.ingestRemoteOps(initOps);
+
+      // Offline: A edits once (T1), B edits twice (B1 at T2 > T1, then B2 at T3 > T2).
+      await vaultA.raw.updateEntry(id: base.id, bodyMd: 'A端离线版本 A1');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await vaultB.raw.updateEntry(id: base.id, bodyMd: 'B端第一稿 B1');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await vaultB.raw.updateEntry(id: base.id, bodyMd: 'B端最终稿 B2');
+
+      final opsFromA = (await vaultA.syncEngine.readOplogSince(sinceSeq: 1))
+          .ops;
+      final opsFromB = (await vaultB.syncEngine.readOplogSince(sinceSeq: 1))
+          .ops;
+      expect(opsFromA, hasLength(1));
+      expect(opsFromB, hasLength(2));
+
+      // Cross-ingest on both sides.
+      final resA = await vaultA.syncEngine.ingestRemoteOps(opsFromB);
+      final resB = await vaultB.syncEngine.ingestRemoteOps(opsFromA);
+      expect(resA.conflictsCreated, equals(1));
+      expect(resB.conflictsCreated, equals(1));
+
+      // Both devices converge to B2 with EXACTLY 1 open conflict and 1 conflict copy (A1).
+      expect(
+        (await vaultA.raw.getEntryById(base.id))?.bodyMd,
+        equals('B端最终稿 B2'),
+      );
+      expect(
+        (await vaultB.raw.getEntryById(base.id))?.bodyMd,
+        equals('B端最终稿 B2'),
+      );
+      final conflictsA = await vaultA.syncEngine.listOpenConflicts();
+      final conflictsB = await vaultB.syncEngine.listOpenConflicts();
+      expect(conflictsA, hasLength(1));
+      expect(conflictsB, hasLength(1));
+      expect(conflictsA.single.remoteBodyMd, equals('B端最终稿 B2'));
+      expect(conflictsA.single.localBodyMd, equals('A端离线版本 A1'));
+
+      final allEntriesA = await vaultA.raw.listEntries();
+      expect(
+        allEntriesA,
+        hasLength(2),
+      ); // main entry + 1 copy of A1 (zero B1 self-conflict!)
+      final copyA = await vaultA.raw.getEntryById(
+        conflictsA.single.localCopyId,
+      );
+      expect(copyA!.bodyMd, contains('A端离线版本 A1'));
+      expect(copyA.bodyMd, isNot(contains('B端第一稿 B1')));
+
+      // Resolving conflict with keepCurrent soft-deletes localCopyId WITHOUT writing
+      // any `soft_delete` op for that local-only copy UUID to `sync_oplog` or `outbox_ops`.
+      final seqBeforeResolve = vaultA.syncEngine.getLatestSeqId();
+      final outboxBeforeResolve = vaultA.pendingOutboxCount;
+      final localCopyId = conflictsA.single.localCopyId;
+
+      await vaultA.syncEngine.resolveConflict(
+        conflictId: conflictsA.single.id,
+        resolution: ConflictResolutionChoice.keepCurrent,
+      );
+      expect(vaultA.openConflictCount, equals(0));
+      expect(await vaultA.raw.getEntryById(localCopyId), isNull);
+      expect(vaultA.syncEngine.getLatestSeqId(), equals(seqBeforeResolve));
+      expect(vaultA.pendingOutboxCount, equals(outboxBeforeResolve));
+
+      final afterOps = (await vaultA.syncEngine.readOplogSince(sinceSeq: 0))
+          .ops;
+      expect(afterOps.where((op) => op.entityId == localCopyId), isEmpty);
+    });
+
+    test('interleaved multi-step offline edits (A1 < B1 < A2) overtake cleanly without spawning a second conflict', () async {
+      final vaultA = await _openTempVault(tempRoot, 'inter-a', 'Desktop-A');
+      final vaultB = await _openTempVault(tempRoot, 'inter-b', 'Phone-B');
+      addTearDown(vaultA.checkpointAndClose);
+      addTearDown(vaultB.checkpointAndClose);
+
+      final base = await vaultA.raw.createEntry(bodyMd: '共享初稿');
+      await vaultB.syncEngine.ingestRemoteOps(
+        (await vaultA.syncEngine.readOplogSince(sinceSeq: 0)).ops,
+      );
+
+      // A1 (T1) < B1 (T2) < A2 (T3).
+      await vaultA.raw.updateEntry(id: base.id, bodyMd: 'A第一稿 A1');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await vaultB.raw.updateEntry(id: base.id, bodyMd: 'B中间稿 B1');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await vaultA.raw.updateEntry(id: base.id, bodyMd: 'A最新稿 A2');
+
+      final opsFromA = (await vaultA.syncEngine.readOplogSince(sinceSeq: 1))
+          .ops;
+      final opsFromB = (await vaultB.syncEngine.readOplogSince(sinceSeq: 1))
+          .ops;
+
+      await vaultB.syncEngine.ingestRemoteOps(opsFromA);
+      await vaultA.syncEngine.ingestRemoteOps(opsFromB);
+
+      expect(
+        (await vaultA.raw.getEntryById(base.id))?.bodyMd,
+        equals('A最新稿 A2'),
+      );
+      expect(
+        (await vaultB.raw.getEntryById(base.id))?.bodyMd,
+        equals('A最新稿 A2'),
+      );
+      expect(await vaultA.syncEngine.listOpenConflicts(), hasLength(1));
+      expect(await vaultB.syncEngine.listOpenConflicts(), hasLength(1));
+
+      final copyOnB = await vaultB.raw.getEntryById(
+        (await vaultB.syncEngine.listOpenConflicts()).single.localCopyId,
+      );
+      expect(copyOnB!.bodyMd, contains('B中间稿 B1'));
+      expect((await vaultB.raw.listEntries()), hasLength(2));
+    });
   });
 }
 

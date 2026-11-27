@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:blink_core/blink_core.dart';
 import 'package:path/path.dart' as p;
+import 'package:sqlite3/sqlite3.dart' as sq;
 import 'package:test/test.dart';
 
 void main() {
@@ -235,6 +236,235 @@ void main() {
           await vaultB.blobs.readBytes(privBlob.sha256),
           equals(utf8.encode('PRIVATE_BINARY_SECRET_999')),
         );
+      });
+
+      test('blocks #private leakage across orphan tasks, purged entries, ai_synthesis, and excludePrivate=false override, and backfills when relay switch toggles off (INV-03, INV-05)', () async {
+        final fakeDav = _FakeLoopbackWebDavServer(
+          username: 'blink-user',
+          password: 'synthetic-dav-password',
+        );
+        await fakeDav.start();
+        addTearDown(fakeDav.stop);
+
+        final masterKey = SyncCrypto().generateMasterKey();
+        final vaultA = await _openTempVault(tempRoot, 'priv-hard-a', 'Phone-A');
+        final vaultB = await _openTempVault(
+          tempRoot,
+          'priv-hard-b',
+          'Laptop-B',
+        );
+        addTearDown(vaultB.checkpointAndClose);
+
+        const sharedTransportId = 'relay:dav-toggle-test';
+        final strictRelayA = EncryptedRelayTransport(
+          store: WebDavClient(
+            baseUri: fakeDav.baseUri,
+            username: 'blink-user',
+            password: 'synthetic-dav-password',
+          ),
+          masterKey: masterKey,
+          localVaultId: vaultA.metadata.vaultId,
+          expectedChannel: BlinkChannel.blinkDev,
+          localDeviceId: vaultA.localDeviceId,
+          excludePrivateFromRelay: true,
+          stateStore: vaultA.syncEngine,
+          transportId: sharedTransportId,
+        );
+        addTearDown(strictRelayA.close);
+
+        // Initialize vault.meta.enc via a baseline normal sync.
+        final baselineEntry = await vaultA.raw.createEntry(
+          bodyMd: '公开基线笔记 BASELINE_NORMAL',
+        );
+        await vaultA.syncEngine.syncWithTransport(strictRelayA);
+        fakeDav.resetWriteCounters();
+
+        // Path A (P0): normal entry with task -> toggle task -> promote to #private & remove task (orphan soft-delete).
+        final taskEntry = await vaultA.raw.createEntry(
+          bodyMd: '待升级笔记\n- [ ] 敏感任务 ORPHAN_PRIVATE_TASK_88',
+        );
+        final task = (await vaultA.raw.listTasks()).single;
+        await vaultA.raw.toggleTaskStatus(task.id);
+        await vaultA.raw.updateEntry(
+          id: taskEntry.id,
+          bodyMd: '已移除子任务并升级私密 ORPHAN_PRIVATE_BODY_88 #private',
+        );
+
+        // Path B (P0): normal entry with blob promoted to #private then permanently purged.
+        final purgedBlob = await vaultA.blobs.putBytes(
+          Uint8List.fromList(utf8.encode('PURGED_PRIVATE_BLOB_77')),
+          mimeType: 'application/octet-stream',
+        );
+        final purgedEntry = await vaultA.raw.createEntry(
+          bodyMd: '将要清空的普通笔记',
+          imageBlobSha256s: <String>[purgedBlob.sha256],
+        );
+        await vaultA.raw.updateEntry(
+          id: purgedEntry.id,
+          bodyMd: '升级后永久清空 PURGED_PRIVATE_BODY_77 #private',
+        );
+        await vaultA.raw.purgeEntryPermanently(purgedEntry.id);
+
+        // Path C (P0): active #private entry + attachment blob, synced with explicit `excludePrivate: false`
+        // against a relay configured with `excludePrivateFromRelay: true` -> MUST NOT bypass!
+        final privBlob = await vaultA.blobs.putBytes(
+          Uint8List.fromList(utf8.encode('STRICT_PRIVATE_BLOB_55')),
+          mimeType: 'application/octet-stream',
+        );
+        final strictPrivEntry = await vaultA.raw.createEntry(
+          bodyMd: '严格本地私密 STRICT_PRIVATE_BODY_55 #private',
+          imageBlobSha256s: <String>[privBlob.sha256],
+        );
+
+        // Path D (P0): ai_synthesis with `privacy_scope = 'local_with_private'` (even if oplog privacy_level was 'normal').
+        final synthId = generateUuidV7();
+        final synthOpId = generateUuidV7();
+        final synthNow = DateTime.now().toUtc().toIso8601String();
+        final synthPayload = jsonEncode(<String, Object?>{
+          'synth_kind': 'morning_brief',
+          'period_key': '2026-11-27',
+          'title': '私密总结',
+          'summary_md': 'LOCAL_WITH_PRIVATE_SYNTH_99',
+          'view_html': '<p>LOCAL_WITH_PRIVATE_SYNTH_99</p>',
+        });
+        final localDeviceIdA = vaultA.localDeviceId;
+        await vaultA.checkpointAndClose();
+
+        final rawDbPath = p.join(
+          tempRoot.path,
+          'priv-hard-a',
+          'db',
+          'blink.db',
+        );
+        final directDb = sq.sqlite3.open(rawDbPath);
+        try {
+          directDb.execute(
+            "INSERT INTO ai_syntheses (id, synth_kind, period_key, title, privacy_scope, render_surface, summary_md, view_html, citations_json, model_id, source_agent, computed_at) "
+            "VALUES (?, 'morning_brief', '2026-11-27', '私密总结', 'local_with_private', 'surface1_native', 'LOCAL_WITH_PRIVATE_SYNTH_99', '<p>ok</p>', '[]', 'm', 'a', ?)",
+            <Object?>[synthId, synthNow],
+          );
+          directDb.execute(
+            "INSERT INTO sync_oplog (device_id, client_op_id, hlc_ts, base_revision, entity_layer, entity_type, entity_id, op_type, op_origin, privacy_level, payload_json, created_at) "
+            "VALUES (?, ?, '2026-11-27T10:00:00.000Z-0000-00000001', 0, 'ai', 'ai_synthesis', ?, 'upsert', 'mcp_capture', 'normal', ?, ?)",
+            <Object?>[
+              localDeviceIdA,
+              synthOpId,
+              synthId,
+              synthPayload,
+              synthNow,
+            ],
+          );
+          directDb.execute(
+            "INSERT INTO outbox_ops (client_op_id, device_id, hlc_ts, base_revision, entity_layer, entity_type, entity_id, op_type, privacy_level, payload_json, status, created_at) "
+            "VALUES (?, ?, '2026-11-27T10:00:00.000Z-0000-00000001', 0, 'ai', 'ai_synthesis', ?, 'upsert', 'normal', ?, 'pending', ?)",
+            <Object?>[
+              synthOpId,
+              localDeviceIdA,
+              synthId,
+              synthPayload,
+              synthNow,
+            ],
+          );
+        } finally {
+          directDb.close();
+        }
+
+        final vaultAReopened = await _openTempVault(
+          tempRoot,
+          'priv-hard-a',
+          'Phone-A',
+        );
+        addTearDown(vaultAReopened.checkpointAndClose);
+
+        final strictRelayA2 = EncryptedRelayTransport(
+          store: WebDavClient(
+            baseUri: fakeDav.baseUri,
+            username: 'blink-user',
+            password: 'synthetic-dav-password',
+          ),
+          masterKey: masterKey,
+          localVaultId: vaultAReopened.metadata.vaultId,
+          expectedChannel: BlinkChannel.blinkDev,
+          localDeviceId: vaultAReopened.localDeviceId,
+          excludePrivateFromRelay: true,
+          stateStore: vaultAReopened.syncEngine,
+          transportId: sharedTransportId,
+        );
+        addTearDown(strictRelayA2.close);
+
+        // Even with explicit `excludePrivate: false`, relay's `excludePrivateFromRelay: true`
+        // MUST NOT be bypassed -> 0 PUT requests and 0 bytes uploaded!
+        final blockedRun = await vaultAReopened.syncEngine.syncWithTransport(
+          strictRelayA2,
+          excludePrivate: false,
+        );
+        expect(blockedRun.pushedOps, equals(0));
+        expect(blockedRun.blobsUploaded, equals(0));
+        expect(blockedRun.skippedPrivateOps, greaterThanOrEqualTo(6));
+        expect(fakeDav.putRequestCount, equals(0));
+        expect(fakeDav.putTotalBytes, equals(0));
+        // All skipped private ops MUST remain pending in `outbox_ops`!
+        expect(vaultAReopened.pendingOutboxCount, greaterThanOrEqualTo(6));
+
+        // P1 Toggle Switch: user explicitly opts in (`excludePrivateFromRelay: false`)
+        // on the SAME transportId -> historical `#private` ops AND blobs MUST backfill!
+        final optInRelayA = EncryptedRelayTransport(
+          store: WebDavClient(
+            baseUri: fakeDav.baseUri,
+            username: 'blink-user',
+            password: 'synthetic-dav-password',
+          ),
+          masterKey: masterKey,
+          localVaultId: vaultAReopened.metadata.vaultId,
+          expectedChannel: BlinkChannel.blinkDev,
+          localDeviceId: vaultAReopened.localDeviceId,
+          excludePrivateFromRelay: false,
+          stateStore: vaultAReopened.syncEngine,
+          transportId: sharedTransportId,
+        );
+        addTearDown(optInRelayA.close);
+
+        final backfillRun = await vaultAReopened.syncEngine.syncWithTransport(
+          optInRelayA,
+        );
+        expect(backfillRun.pushedOps, greaterThanOrEqualTo(6));
+        expect(
+          backfillRun.blobsUploaded,
+          equals(1),
+        ); // strictPrivEntry's active privBlob
+        expect(vaultAReopened.pendingOutboxCount, equals(0));
+
+        // Device B pulls from relay and receives baseline + backfilled `#private` entry & blob!
+        final relayB = EncryptedRelayTransport(
+          store: WebDavClient(
+            baseUri: fakeDav.baseUri,
+            username: 'blink-user',
+            password: 'synthetic-dav-password',
+          ),
+          masterKey: masterKey,
+          localVaultId: vaultB.metadata.vaultId,
+          expectedChannel: BlinkChannel.blinkDev,
+          localDeviceId: vaultB.localDeviceId,
+          excludePrivateFromRelay: false,
+          stateStore: vaultB.syncEngine,
+          transportId: sharedTransportId,
+        );
+        addTearDown(relayB.close);
+
+        await vaultB.syncEngine.syncWithTransport(relayB);
+        expect(
+          (await vaultB.raw.getEntryById(baselineEntry.id))?.bodyMd,
+          equals(baselineEntry.bodyMd),
+        );
+        final syncedPriv = await vaultB.raw.getEntryById(strictPrivEntry.id);
+        expect(syncedPriv, isNotNull);
+        expect(syncedPriv!.privacyLevel, equals(PrivacyLevel.private));
+        expect(
+          await vaultB.blobs.readBytes(privBlob.sha256),
+          equals(utf8.encode('STRICT_PRIVATE_BLOB_55')),
+        );
+        final syncedTaskEntry = await vaultB.raw.getEntryById(taskEntry.id);
+        expect(syncedTaskEntry!.privacyLevel, equals(PrivacyLevel.private));
       });
     },
   );

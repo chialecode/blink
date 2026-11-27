@@ -525,20 +525,31 @@ final class PushOpsResult {
     required this.duplicateCount,
     required this.latestSeqId,
     List<String> acceptedClientOpIds = const <String>[],
+    List<String> duplicateClientOpIds = const <String>[],
     this.skippedPrivateCount = 0,
-  }) : acceptedClientOpIds = List<String>.unmodifiable(acceptedClientOpIds);
+  }) : acceptedClientOpIds = List<String>.unmodifiable(acceptedClientOpIds),
+       duplicateClientOpIds = List<String>.unmodifiable(duplicateClientOpIds);
 
   final int acceptedCount;
   final int duplicateCount;
   final int latestSeqId;
   final List<String> acceptedClientOpIds;
+  final List<String> duplicateClientOpIds;
   final int skippedPrivateCount;
+
+  /// All operation IDs durably acknowledged by the peer/relay (newly accepted or already present).
+  List<String> get acknowledgedClientOpIds => <String>[
+    ...acceptedClientOpIds,
+    ...duplicateClientOpIds,
+  ];
 
   Map<String, Object?> toJson() => <String, Object?>{
     'accepted_count': acceptedCount,
     'duplicate_count': duplicateCount,
     'latest_seq_id': latestSeqId,
     'accepted_client_op_ids': acceptedClientOpIds,
+    if (duplicateClientOpIds.isNotEmpty)
+      'duplicate_client_op_ids': duplicateClientOpIds,
     if (skippedPrivateCount > 0) 'skipped_private_count': skippedPrivateCount,
   };
 
@@ -547,11 +558,16 @@ final class PushOpsResult {
     final ids = rawIds is List
         ? rawIds.whereType<String>().toList(growable: false)
         : const <String>[];
+    final rawDupIds = json['duplicate_client_op_ids'];
+    final dupIds = rawDupIds is List
+        ? rawDupIds.whereType<String>().toList(growable: false)
+        : const <String>[];
     return PushOpsResult(
       acceptedCount: (json['accepted_count'] as int?) ?? 0,
       duplicateCount: (json['duplicate_count'] as int?) ?? 0,
       latestSeqId: (json['latest_seq_id'] as int?) ?? 0,
       acceptedClientOpIds: ids,
+      duplicateClientOpIds: dupIds,
       skippedPrivateCount: (json['skipped_private_count'] as int?) ?? 0,
     );
   }
@@ -625,8 +641,10 @@ final class IngestOpsResult {
     required this.conflictsCreated,
     required this.latestSeqId,
     List<String> acceptedClientOpIds = const <String>[],
+    List<String> duplicateClientOpIds = const <String>[],
     List<String> referencedBlobSha256s = const <String>[],
   }) : acceptedClientOpIds = List<String>.unmodifiable(acceptedClientOpIds),
+       duplicateClientOpIds = List<String>.unmodifiable(duplicateClientOpIds),
        referencedBlobSha256s = List<String>.unmodifiable(referencedBlobSha256s);
 
   final int acceptedCount;
@@ -634,6 +652,7 @@ final class IngestOpsResult {
   final int conflictsCreated;
   final int latestSeqId;
   final List<String> acceptedClientOpIds;
+  final List<String> duplicateClientOpIds;
   final List<String> referencedBlobSha256s;
 }
 

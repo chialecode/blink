@@ -38,6 +38,8 @@ final class DirectShelfServer {
     String? deviceName,
     this.defaultPairingCodeTtl = const Duration(minutes: 5),
     this.maxBatchSize = 500,
+    this.maxJsonBodyBytes = 4 * 1024 * 1024,
+    this.maxBlobBytes = 256 * 1024 * 1024,
     Random? secureRandom,
   }) : deviceName = (deviceName != null && deviceName.trim().isNotEmpty)
            ? deviceName.trim()
@@ -48,13 +50,15 @@ final class DirectShelfServer {
   final String deviceName;
   final Duration defaultPairingCodeTtl;
   final int maxBatchSize;
+  final int maxJsonBodyBytes;
+  final int maxBlobBytes;
   final Random _random;
 
   HttpServer? _httpServer;
   final Map<String, _ActivePairingCode> _pairingCodes =
       <String, _ActivePairingCode>{};
-  final Set<StreamController<List<int>>> _activeSseStreams =
-      <StreamController<List<int>>>{};
+  final Map<String, Set<StreamController<List<int>>>>
+  _activeSseStreamsByDevice = <String, Set<StreamController<List<int>>>>{};
 
   bool get isRunning => _httpServer != null;
 
@@ -97,9 +101,15 @@ final class DirectShelfServer {
   Future<List<SyncDeviceRecord>> listDevices() =>
       vault.syncEngine.listDevices();
 
-  /// Revokes a paired device immediately; subsequent requests fail with `401 device_revoked`.
-  Future<bool> revokeDevice(String deviceId) =>
-      vault.syncEngine.revokeDevice(deviceId);
+  /// Revokes a paired device immediately; subsequent requests fail with `401 device_revoked`
+  /// and any active SSE streams for that device are terminated.
+  Future<bool> revokeDevice(String deviceId) async {
+    final revoked = await vault.syncEngine.revokeDevice(deviceId);
+    if (revoked) {
+      await _closeDeviceSseStreams(deviceId);
+    }
+    return revoked;
+  }
 
   /// Starts listening on [host]:[port] (defaults to quiet loopback `127.0.0.1:0`).
   Future<void> start({String host = '127.0.0.1', int port = 0}) async {
@@ -113,8 +123,10 @@ final class DirectShelfServer {
 
   /// Closes active SSE streams and shuts down the HTTP server cleanly.
   Future<void> stop() async {
-    final controllers = _activeSseStreams.toList(growable: false);
-    _activeSseStreams.clear();
+    final controllers = <StreamController<List<int>>>[
+      for (final group in _activeSseStreamsByDevice.values) ...group,
+    ];
+    _activeSseStreamsByDevice.clear();
     for (final controller in controllers) {
       if (!controller.isClosed) {
         await controller.close();
@@ -125,6 +137,18 @@ final class DirectShelfServer {
     _httpServer = null;
     if (server != null) {
       await server.close(force: true);
+    }
+  }
+
+  Future<void> _closeDeviceSseStreams(String deviceId) async {
+    final group = _activeSseStreamsByDevice.remove(deviceId);
+    if (group == null || group.isEmpty) {
+      return;
+    }
+    for (final controller in group.toList(growable: false)) {
+      if (!controller.isClosed) {
+        await controller.close();
+      }
     }
   }
 
@@ -369,7 +393,7 @@ final class DirectShelfServer {
     SyncDeviceRecord caller,
     String targetDeviceId,
   ) async {
-    final revoked = await vault.syncEngine.revokeDevice(targetDeviceId);
+    final revoked = await revokeDevice(targetDeviceId);
     if (!revoked) {
       return _errorResponse(
         404,
@@ -453,6 +477,7 @@ final class DirectShelfServer {
       duplicateCount: ingest.duplicateCount,
       latestSeqId: ingest.latestSeqId,
       acceptedClientOpIds: ingest.acceptedClientOpIds,
+      duplicateClientOpIds: ingest.duplicateClientOpIds,
     );
     return _jsonResponse(200, result.toJson());
   }
@@ -494,7 +519,9 @@ final class DirectShelfServer {
 
     controller = StreamController<List<int>>(
       onListen: () {
-        _activeSseStreams.add(controller);
+        _activeSseStreamsByDevice
+            .putIfAbsent(device.deviceId, () => <StreamController<List<int>>>{})
+            .add(controller);
         sendFrame('ready', <String, Object?>{
           'latest_seq_id': vault.syncEngine.getLatestSeqId(),
         });
@@ -503,7 +530,13 @@ final class DirectShelfServer {
         });
       },
       onCancel: () async {
-        _activeSseStreams.remove(controller);
+        final group = _activeSseStreamsByDevice[device.deviceId];
+        if (group != null) {
+          group.remove(controller);
+          if (group.isEmpty) {
+            _activeSseStreamsByDevice.remove(device.deviceId);
+          }
+        }
         await seqSub?.cancel();
         seqSub = null;
         if (!controller.isClosed) {
@@ -566,7 +599,16 @@ final class DirectShelfServer {
     }
 
     final builder = BytesBuilder(copy: false);
+    var totalBytes = 0;
     await for (final chunk in request.read()) {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBlobBytes) {
+        return _errorResponse(
+          413,
+          BlinkErrorCode.invalidArgument,
+          'Blob payload exceeds limit ($maxBlobBytes bytes)',
+        );
+      }
       builder.add(chunk);
     }
     final bytes = builder.takeBytes();
@@ -612,9 +654,9 @@ final class DirectShelfServer {
 
     final totalLength = await file.length();
     final rangeHeader = request.headers['range']?.trim();
-    if (rangeHeader == null || rangeHeader.isEmpty) {
+    if (totalLength == 0 || rangeHeader == null || rangeHeader.isEmpty) {
       return Response.ok(
-        file.openRead(),
+        totalLength == 0 ? Uint8List(0) : file.openRead(),
         headers: <String, String>{
           'content-type': meta.mimeType,
           'content-length': totalLength.toString(),
@@ -631,6 +673,8 @@ final class DirectShelfServer {
         headers: <String, String>{
           'content-range': 'bytes */$totalLength',
           'content-type': 'application/json; charset=utf-8',
+          'x-blink-error-code': BlinkErrorCode.invalidArgument.wireCode,
+          'x-blink-retryable': 'false',
         },
         body: jsonEncode(<String, Object?>{
           'code': BlinkErrorCode.invalidArgument.wireCode,
@@ -657,10 +701,16 @@ final class DirectShelfServer {
 
   bool _consumePairingCodeConstantTime(String submitted) {
     _purgeExpiredPairingCodes();
-    final normalizedSubmitted = submitted.trim().toUpperCase();
+    final normalizedSubmitted = _normalizePairingCode(submitted);
+    if (normalizedSubmitted.isEmpty) {
+      return false;
+    }
     String? matchedKey;
     for (final entry in _pairingCodes.entries) {
-      if (_constantTimeEquals(entry.key, normalizedSubmitted)) {
+      if (_constantTimeEquals(
+        _normalizePairingCode(entry.key),
+        normalizedSubmitted,
+      )) {
         matchedKey = entry.key;
       }
     }
@@ -671,6 +721,9 @@ final class DirectShelfServer {
     _pairingCodes.remove(matchedKey);
     return true;
   }
+
+  static String _normalizePairingCode(String raw) =>
+      raw.toUpperCase().replaceAll(RegExp(r'[\s-]+'), '');
 
   void _purgeExpiredPairingCodes() {
     final nowUtc = DateTime.now().toUtc();
@@ -725,9 +778,21 @@ final class DirectShelfServer {
     return (start: start, endInclusive: end);
   }
 
-  static Future<Map<String, Object?>?> _readJsonObject(Request request) async {
+  Future<Map<String, Object?>?> _readJsonObject(Request request) async {
+    final builder = BytesBuilder(copy: false);
+    var totalBytes = 0;
+    await for (final chunk in request.read()) {
+      totalBytes += chunk.length;
+      if (totalBytes > maxJsonBodyBytes) {
+        throw BlinkException(
+          code: BlinkErrorCode.invalidArgument,
+          message: 'JSON request body exceeds limit ($maxJsonBodyBytes bytes)',
+        );
+      }
+      builder.add(chunk);
+    }
     try {
-      final raw = await request.readAsString();
+      final raw = utf8.decode(builder.takeBytes());
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
         return decoded.map(
@@ -752,11 +817,19 @@ final class DirectShelfServer {
     BlinkErrorCode code,
     String message, {
     bool retryable = false,
-  }) => _jsonResponse(statusCode, <String, Object?>{
-    'code': code.wireCode,
-    'message': message,
-    'retryable': retryable,
-  });
+  }) => Response(
+    statusCode,
+    body: jsonEncode(<String, Object?>{
+      'code': code.wireCode,
+      'message': message,
+      'retryable': retryable,
+    }),
+    headers: <String, String>{
+      'content-type': 'application/json; charset=utf-8',
+      'x-blink-error-code': code.wireCode,
+      'x-blink-retryable': retryable ? 'true' : 'false',
+    },
+  );
 
   static int _httpStatusForError(BlinkErrorCode code) => switch (code) {
     BlinkErrorCode.authRequired || BlinkErrorCode.deviceRevoked => 401,

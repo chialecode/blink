@@ -357,6 +357,7 @@ final class SyncEngine implements SyncStateStore {
     var duplicateCount = 0;
     var conflictsCreated = 0;
     final acceptedClientOpIds = <String>[];
+    final duplicateClientOpIds = <String>[];
     final referencedBlobs = <String>{};
     final entriesToIndex = <RawEntry>[];
     final tasksToIndex = <RawTask>[];
@@ -370,6 +371,7 @@ final class SyncEngine implements SyncStateStore {
         );
         if (existingOp.isNotEmpty) {
           duplicateCount += 1;
+          duplicateClientOpIds.add(op.clientOpId);
           continue;
         }
 
@@ -443,6 +445,7 @@ final class SyncEngine implements SyncStateStore {
       conflictsCreated: conflictsCreated,
       latestSeqId: latestSeqId,
       acceptedClientOpIds: acceptedClientOpIds,
+      duplicateClientOpIds: duplicateClientOpIds,
       referencedBlobSha256s: referencedBlobs.toList(growable: false),
     );
   }
@@ -451,76 +454,167 @@ final class SyncEngine implements SyncStateStore {
   Future<SyncRunResult> syncWithTransport(
     SyncTransport transport, {
     bool? excludePrivate,
+    int pushBatchSize = 200,
     int pullBatchSize = 200,
     int blobDownloadChunkSize = 262144,
   }) async {
+    if (pushBatchSize <= 0 ||
+        pullBatchSize <= 0 ||
+        blobDownloadChunkSize <= 0) {
+      throw BlinkException(
+        code: BlinkErrorCode.invalidArgument,
+        message: 'Batch and chunk sizes must be positive integers',
+      );
+    }
+
+    // Enforce transport-level `#private` exclusion (`INV-03`): if the transport
+    // itself enforces `excludesPrivateOps == true`, callers cannot bypass it.
     final effectiveExcludePrivate =
-        excludePrivate ?? transport.isRelayTransport;
+        (excludePrivate ?? transport.excludesPrivateOps) ||
+        transport.excludesPrivateOps;
 
     await transport.checkHealth();
 
-    final pushCursorKey = 'push_seq:${transport.transportId}';
+    final legacyPushCursorKey = 'push_seq:${transport.transportId}';
+    final pushNormalCursorKey = 'push_seq_normal:${transport.transportId}';
+    final pushPrivateCursorKey = 'push_seq_private:${transport.transportId}';
     final pullCursorKey = 'pull_seq:${transport.transportId}';
-    final lastPushSeq = int.tryParse(read(pushCursorKey) ?? '') ?? 0;
 
-    final candidateOps = _readLocalOpsAfterSeq(lastPushSeq);
+    final legacyPushSeq = int.tryParse(read(legacyPushCursorKey) ?? '') ?? 0;
+    final lastNormalSeq =
+        int.tryParse(read(pushNormalCursorKey) ?? '') ?? legacyPushSeq;
+    final lastPrivateSeq =
+        int.tryParse(read(pushPrivateCursorKey) ?? '') ??
+        (transport.isRelayTransport ? 0 : lastNormalSeq);
+
+    final minScanSeq = effectiveExcludePrivate
+        ? lastNormalSeq
+        : (lastNormalSeq < lastPrivateSeq ? lastNormalSeq : lastPrivateSeq);
+    final candidateOps = _readLocalOpsAfterSeq(minScanSeq);
+
     final opsToPush = <SyncOpEnvelope>[];
-    final skippedPrivateClientOpIds = <String>[];
-    var highestScannedSeq = lastPushSeq;
+    final opIsPrivateByClientId = <String, bool>{};
+    var skippedPrivateOps = 0;
+    var highestScannedSeq = lastNormalSeq;
 
     for (final op in candidateOps) {
       final seq = op.seqId ?? 0;
       if (seq > highestScannedSeq) {
         highestScannedSeq = seq;
       }
-      if (effectiveExcludePrivate && _isOpOrCurrentEntityPrivate(op)) {
-        skippedPrivateClientOpIds.add(op.clientOpId);
-        continue;
+      final isPriv = _isOpOrCurrentEntityPrivate(op);
+      opIsPrivateByClientId[op.clientOpId] = isPriv;
+
+      if (isPriv) {
+        if (effectiveExcludePrivate) {
+          if (seq > lastNormalSeq) {
+            skippedPrivateOps += 1;
+          }
+          // Leave `push_seq_private` unchanged so disabling exclusion later
+          // backfills all historical `#private` ops cleanly.
+          continue;
+        }
+        if (seq <= lastPrivateSeq) {
+          continue;
+        }
+        opsToPush.add(op);
+      } else {
+        if (seq <= lastNormalSeq) {
+          continue;
+        }
+        opsToPush.add(op);
       }
-      opsToPush.add(op);
     }
 
     var blobsUploaded = 0;
-    final blobsToUpload = _collectUploadableBlobs(
-      opsToPush,
-      excludePrivate: effectiveExcludePrivate,
-    );
-    for (final sha256 in blobsToUpload) {
-      if (await transport.hasBlob(sha256)) {
-        continue;
-      }
-      final meta = await _blobs.getMetadata(sha256);
-      final bytes = await _blobs.readBytes(sha256);
-      if (meta == null || bytes == null) {
-        continue;
-      }
-      final verifiedSha = crypto.sha256.convert(bytes).toString();
-      if (verifiedSha != sha256) {
-        throw BlinkException(
-          code: BlinkErrorCode.ioError,
-          message: 'Local blob integrity check failed for $sha256',
-        );
-      }
-      await transport.uploadBlob(
-        sha256: sha256,
-        bytes: bytes,
-        mimeType: meta.mimeType,
-      );
-      blobsUploaded += 1;
-    }
-
     var pushedOps = 0;
     var duplicateOps = 0;
-    if (opsToPush.isNotEmpty) {
-      final pushRes = await transport.pushOps(opsToPush);
-      pushedOps = pushRes.acceptedCount;
-      duplicateOps = pushRes.duplicateCount;
-      _markOutboxOpsSent(
-        opsToPush.map((op) => op.clientOpId).toList(growable: false),
+    var currentNormalSeq = lastNormalSeq;
+    var currentPrivateSeq = lastPrivateSeq;
+    final uploadedBlobsThisRun = <String>{};
+
+    for (var offset = 0; offset < opsToPush.length; offset += pushBatchSize) {
+      final end = (offset + pushBatchSize).clamp(0, opsToPush.length);
+      final chunk = opsToPush.sublist(offset, end);
+
+      final blobsToUpload = _collectUploadableBlobs(
+        chunk,
+        excludePrivate: effectiveExcludePrivate,
       );
+      for (final sha256 in blobsToUpload) {
+        if (!uploadedBlobsThisRun.add(sha256)) {
+          continue;
+        }
+        if (await transport.hasBlob(sha256)) {
+          continue;
+        }
+        final meta = await _blobs.getMetadata(sha256);
+        final bytes = await _blobs.readBytes(sha256);
+        if (meta == null || bytes == null) {
+          continue;
+        }
+        final verifiedSha = crypto.sha256.convert(bytes).toString();
+        if (verifiedSha != sha256) {
+          throw BlinkException(
+            code: BlinkErrorCode.ioError,
+            message: 'Local blob integrity check failed for $sha256',
+          );
+        }
+        await transport.uploadBlob(
+          sha256: sha256,
+          bytes: bytes,
+          mimeType: meta.mimeType,
+        );
+        blobsUploaded += 1;
+      }
+
+      final pushRes = await transport.pushOps(chunk);
+      pushedOps += pushRes.acceptedCount;
+      duplicateOps += pushRes.duplicateCount;
+      skippedPrivateOps += pushRes.skippedPrivateCount;
+
+      var ackIds = pushRes.acknowledgedClientOpIds;
+      if (ackIds.isEmpty &&
+          pushRes.skippedPrivateCount == 0 &&
+          (pushRes.acceptedCount + pushRes.duplicateCount) == chunk.length) {
+        ackIds = chunk.map((op) => op.clientOpId).toList(growable: false);
+      }
+      final ackSet = ackIds.toSet();
+      _markOutboxOpsSent(ackIds);
+
+      var chunkMaxNormal = currentNormalSeq;
+      var chunkMaxPrivate = currentPrivateSeq;
+      for (final op in chunk) {
+        final seq = op.seqId ?? 0;
+        if (!ackSet.contains(op.clientOpId)) {
+          continue;
+        }
+        if (opIsPrivateByClientId[op.clientOpId] == true) {
+          if (seq > chunkMaxPrivate) {
+            chunkMaxPrivate = seq;
+          }
+        } else {
+          if (seq > chunkMaxNormal) {
+            chunkMaxNormal = seq;
+          }
+        }
+      }
+      if (chunkMaxNormal > currentNormalSeq) {
+        currentNormalSeq = chunkMaxNormal;
+        write(pushNormalCursorKey, currentNormalSeq.toString());
+      }
+      if (chunkMaxPrivate > currentPrivateSeq) {
+        currentPrivateSeq = chunkMaxPrivate;
+        write(pushPrivateCursorKey, currentPrivateSeq.toString());
+      }
     }
-    if (highestScannedSeq > lastPushSeq) {
-      write(pushCursorKey, highestScannedSeq.toString());
+
+    // When private ops were intentionally skipped, advance only the normal lane
+    // past the highest scanned seq so they are not re-scanned on every normal sync,
+    // while keeping `push_seq_private` untouched for future backfill.
+    if (effectiveExcludePrivate && highestScannedSeq > currentNormalSeq) {
+      currentNormalSeq = highestScannedSeq;
+      write(pushNormalCursorKey, currentNormalSeq.toString());
     }
 
     var pulledOps = 0;
@@ -582,7 +676,7 @@ final class SyncEngine implements SyncStateStore {
       duplicateOps: duplicateOps,
       pulledOps: pulledOps,
       appliedOps: appliedOps,
-      skippedPrivateOps: skippedPrivateClientOpIds.length,
+      skippedPrivateOps: skippedPrivateOps,
       conflictsCreated: conflictsCreated,
       blobsUploaded: blobsUploaded,
       blobsDownloaded: blobsDownloaded,
@@ -724,34 +818,135 @@ final class SyncEngine implements SyncStateStore {
     if (op.payload['privacy_scope'] == 'local_with_private') {
       return true;
     }
-    final bodyMd = op.payload['body_md'] as String?;
-    if (bodyMd != null && _bfm.parse(bodyMd).hasPrivateToken) {
+    final bodyMd = op.payload['body_md'];
+    if (bodyMd is String && _bfm.parse(bodyMd).hasPrivateToken) {
       return true;
+    }
+    final noteMd = op.payload['note_md'];
+    if (noteMd is String && _bfm.parse(noteMd).hasPrivateToken) {
+      return true;
+    }
+    final embeddedTasks = op.payload['tasks'];
+    if (embeddedTasks is List) {
+      for (final item in embeddedTasks) {
+        if (item is Map &&
+            item['privacy_level'] == PrivacyLevel.private.wireValue) {
+          return true;
+        }
+      }
     }
 
     final db = _dbProvider();
-    final String? table = switch (op.entityType) {
-      'raw_entry' => 'raw_entries',
-      'raw_task' => 'raw_tasks',
-      'raw_source' => 'raw_sources',
-      'raw_annotation' => 'raw_annotations',
-      'ai_entry_enrichment' => 'ai_entry_enrichments',
-      'ai_task_candidate' => 'ai_task_candidates',
-      'ai_user_principle' => 'ai_user_principles',
-      _ => null,
-    };
-    if (table == null) {
-      return false;
+    // Defense-in-depth (`INV-03`): if any historical OpLog row for this entity
+    // was ever upgraded to `private`, keep it private even after permanent purge.
+    if (db.select(
+      "SELECT 1 FROM sync_oplog WHERE entity_type = ? AND entity_id = ? AND privacy_level = 'private' LIMIT 1",
+      <Object?>[op.entityType, op.entityId],
+    ).isNotEmpty) {
+      return true;
     }
-    final idCol = table == 'ai_entry_enrichments' ? 'entry_id' : 'id';
-    final rows = db.select(
-      'SELECT privacy_level FROM $table WHERE $idCol = ? LIMIT 1',
-      <Object?>[op.entityId],
-    );
-    if (rows.isEmpty) {
-      return false;
+
+    switch (op.entityType) {
+      case 'raw_entry':
+        return db.select(
+          "SELECT 1 FROM raw_entries WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'raw_task':
+        final taskRows = db.select(
+          'SELECT privacy_level, origin_entry_id FROM raw_tasks WHERE id = ? LIMIT 1',
+          <Object?>[op.entityId],
+        );
+        String? originEntryId = op.payload['origin_entry_id'] as String?;
+        if (taskRows.isNotEmpty) {
+          if (taskRows.first['privacy_level'] ==
+              PrivacyLevel.private.wireValue) {
+            return true;
+          }
+          originEntryId ??= taskRows.first['origin_entry_id'] as String?;
+        }
+        if (originEntryId != null && originEntryId.isNotEmpty) {
+          if (db.select(
+            "SELECT 1 FROM raw_entries WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+            <Object?>[originEntryId],
+          ).isNotEmpty) {
+            return true;
+          }
+          if (db.select(
+            "SELECT 1 FROM sync_oplog WHERE entity_type = 'raw_entry' AND entity_id = ? AND privacy_level = 'private' LIMIT 1",
+            <Object?>[originEntryId],
+          ).isNotEmpty) {
+            return true;
+          }
+        }
+        return false;
+      case 'raw_source':
+        return db.select(
+          "SELECT 1 FROM raw_sources WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'raw_annotation':
+        final annRows = db.select(
+          'SELECT privacy_level, source_id FROM raw_annotations WHERE id = ? LIMIT 1',
+          <Object?>[op.entityId],
+        );
+        String? sourceId = op.payload['source_id'] as String?;
+        if (annRows.isNotEmpty) {
+          if (annRows.first['privacy_level'] ==
+              PrivacyLevel.private.wireValue) {
+            return true;
+          }
+          sourceId ??= annRows.first['source_id'] as String?;
+        }
+        if (sourceId != null && sourceId.isNotEmpty) {
+          if (db.select(
+            "SELECT 1 FROM raw_sources WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+            <Object?>[sourceId],
+          ).isNotEmpty) {
+            return true;
+          }
+          if (db.select(
+            "SELECT 1 FROM sync_oplog WHERE entity_type = 'raw_source' AND entity_id = ? AND privacy_level = 'private' LIMIT 1",
+            <Object?>[sourceId],
+          ).isNotEmpty) {
+            return true;
+          }
+        }
+        return false;
+      case 'ai_entry_enrichment':
+        if (db.select(
+          "SELECT 1 FROM ai_entry_enrichments WHERE entry_id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty) {
+          return true;
+        }
+        return db.select(
+          "SELECT 1 FROM raw_entries WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'ai_task_candidate':
+        return db.select(
+          "SELECT 1 FROM ai_task_candidates WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'ai_user_principle':
+        return db.select(
+          "SELECT 1 FROM ai_user_principles WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'ai_synthesis':
+        return db.select(
+          "SELECT 1 FROM ai_syntheses WHERE id = ? AND privacy_scope = 'local_with_private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      case 'ai_echo_link':
+        return db.select(
+          "SELECT 1 FROM ai_echo_links WHERE id = ? AND privacy_scope = 'local_with_private' LIMIT 1",
+          <Object?>[op.entityId],
+        ).isNotEmpty;
+      default:
+        return false;
     }
-    return rows.first['privacy_level'] == PrivacyLevel.private.wireValue;
   }
 
   List<String> _collectUploadableBlobs(
@@ -857,9 +1052,43 @@ final class SyncEngine implements SyncStateStore {
   }
 
   Future<void> _softDeleteCopyIfPresent(String copyId) async {
-    final copy = await _rawRepository.getEntryById(copyId);
-    if (copy != null && !copy.isDeleted) {
-      await _rawRepository.softDeleteEntry(copyId);
+    // Conflict copies are local-only preservation entries that are never
+    // published to `sync_oplog`/`outbox_ops`; soft-delete them locally without
+    // broadcasting an unknown `soft_delete` op to peers (`INV-05`).
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final hlcTs = _hlcClock.next();
+    final taskIdsToRemove = <String>[];
+    final deleted = _runWriteTx<bool>((db) {
+      final rows = db.select(
+        'SELECT deleted_at FROM raw_entries WHERE id = ? LIMIT 1',
+        <Object?>[copyId],
+      );
+      if (rows.isEmpty || rows.first['deleted_at'] != null) {
+        return false;
+      }
+      db.execute(
+        'UPDATE raw_entries SET deleted_at = ?, updated_at = ?, hlc_ts = ? '
+        'WHERE id = ?',
+        <Object?>[nowIso, nowIso, hlcTs, copyId],
+      );
+      for (final row in db.select(
+        'SELECT id FROM raw_tasks WHERE origin_entry_id = ? AND deleted_at IS NULL',
+        <Object?>[copyId],
+      )) {
+        taskIdsToRemove.add(row['id'] as String);
+      }
+      db.execute(
+        'UPDATE raw_tasks SET deleted_at = ?, updated_at = ?, hlc_ts = ? '
+        'WHERE origin_entry_id = ? AND deleted_at IS NULL',
+        <Object?>[nowIso, nowIso, hlcTs, copyId],
+      );
+      return true;
+    });
+    if (deleted) {
+      _fts.removeDocumentSync(copyId);
+      for (final taskId in taskIdsToRemove) {
+        _fts.removeDocumentSync(taskId);
+      }
     }
   }
 
@@ -980,6 +1209,14 @@ final class SyncEngine implements SyncStateStore {
           deletedAt?.toIso8601String(),
         ],
       );
+      _writeEntryTipInTx(
+        db,
+        op.entityId,
+        deviceId: op.deviceId,
+        remoteRev: rev,
+        localRev: rev,
+        nowIso: updatedAt.toIso8601String(),
+      );
 
       final inserted = RawEntry(
         id: op.entityId,
@@ -1025,12 +1262,53 @@ final class SyncEngine implements SyncStateStore {
         ? PrivacyLevel.private
         : PrivacyLevel.normal;
     if (effectivePrivacy == PrivacyLevel.private && !existing.isPrivate) {
-      db.execute(
-        "UPDATE outbox_ops SET privacy_level = 'private' "
-        "WHERE entity_id = ? AND status = 'pending'",
+      final activeTasksToMove = db.select(
+        "SELECT * FROM raw_tasks WHERE origin_entry_id = ? AND deleted_at IS NULL AND privacy_level != 'private'",
         <Object?>[existing.id],
       );
+      db.execute(
+        "UPDATE raw_tasks SET privacy_level = 'private' WHERE origin_entry_id = ?",
+        <Object?>[existing.id],
+      );
+      for (final row in activeTasksToMove) {
+        final task = rowToRawTask(row);
+        tasksToIndex.add(
+          RawTask(
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            originEntryId: task.originEntryId,
+            originAnnotationId: task.originAnnotationId,
+            focusDate: task.focusDate,
+            completedAtUtc: task.completedAtUtc,
+            privacyLevel: PrivacyLevel.private,
+            revision: task.revision,
+            hlcTs: task.hlcTs,
+            createdAtUtc: task.createdAtUtc,
+            updatedAtUtc: task.updatedAtUtc,
+            deletedAtUtc: task.deletedAtUtc,
+          ),
+        );
+      }
+      db.execute(
+        "UPDATE sync_oplog SET privacy_level = 'private' "
+        'WHERE entity_id = ? '
+        "   OR (entity_type = 'raw_task' AND entity_id IN ("
+        '        SELECT id FROM raw_tasks WHERE origin_entry_id = ?'
+        '      ))',
+        <Object?>[existing.id, existing.id],
+      );
+      db.execute(
+        "UPDATE outbox_ops SET privacy_level = 'private' "
+        'WHERE entity_id = ? '
+        "   OR (entity_type = 'raw_task' AND entity_id IN ("
+        '        SELECT id FROM raw_tasks WHERE origin_entry_id = ?'
+        '      ))',
+        <Object?>[existing.id, existing.id],
+      );
     }
+
+    final existingTip = _readEntryTipInTx(db, existing.id);
 
     // Subcase 2a: Incoming soft_delete tombstone.
     if (op.opType == 'soft_delete') {
@@ -1042,6 +1320,7 @@ final class SyncEngine implements SyncStateStore {
         // Delete tombstone vs concurrent edit -> edit wins (stays alive), still apply `#private` latch.
         final mergedHlc = _maxHlc(existing.hlcTs, op.hlcTs);
         final nextRev = existing.revision + 1;
+        final nowIso = DateTime.now().toUtc().toIso8601String();
         db.execute(
           'UPDATE raw_entries SET privacy_level = ?, revision = ?, hlc_ts = ?, updated_at = ? '
           'WHERE id = ?',
@@ -1049,10 +1328,20 @@ final class SyncEngine implements SyncStateStore {
             effectivePrivacy.wireValue,
             nextRev,
             mergedHlc,
-            DateTime.now().toUtc().toIso8601String(),
+            nowIso,
             existing.id,
           ],
         );
+        if (existingTip != null && existingTip.localRev == existing.revision) {
+          _writeEntryTipInTx(
+            db,
+            existing.id,
+            deviceId: existingTip.deviceId,
+            remoteRev: existingTip.remoteRev,
+            localRev: nextRev,
+            nowIso: nowIso,
+          );
+        }
         final kept = existing.copyWith(
           privacyLevel: effectivePrivacy,
           revision: nextRev,
@@ -1082,6 +1371,7 @@ final class SyncEngine implements SyncStateStore {
           existing.id,
         ],
       );
+      _deleteSyncStateInTx(db, _entryTipKey(existing.id));
       for (final row in db.select(
         'SELECT id FROM raw_tasks WHERE origin_entry_id = ? AND deleted_at IS NULL',
         <Object?>[existing.id],
@@ -1142,6 +1432,14 @@ final class SyncEngine implements SyncStateStore {
           existing.id,
         ],
       );
+      _writeEntryTipInTx(
+        db,
+        existing.id,
+        deviceId: op.deviceId,
+        remoteRev: remoteRev,
+        localRev: nextRev,
+        nowIso: updatedAt.toIso8601String(),
+      );
       final resurrected = existing.copyWith(
         entryKind: incomingKind,
         bodyMd: incomingBody,
@@ -1172,15 +1470,24 @@ final class SyncEngine implements SyncStateStore {
       return false;
     }
 
-    // Subcase 2c: Both active — check for concurrent divergent body edit (`INV-01`, `INV-05`).
+    // Subcase 2c: Both active — check for linear continuation of winning remote branch
+    // before flagging a concurrent divergent body edit (`INV-01`, `INV-05`).
+    final isLinearContinuationOfWinningBranch =
+        existingTip != null &&
+        existingTip.localRev == existing.revision &&
+        existingTip.deviceId == op.deviceId &&
+        op.baseRevision >= existingTip.remoteRev;
     final isConcurrentBodyConflict =
-        op.baseRevision < existing.revision && incomingBody != existing.bodyMd;
+        !isLinearContinuationOfWinningBranch &&
+        op.baseRevision < existing.revision &&
+        incomingBody != existing.bodyMd;
 
     if (!isConcurrentBodyConflict) {
       final mergedHlc = _maxHlc(existing.hlcTs, op.hlcTs);
       final nextRev = _maxInt(existing.revision + 1, remoteRev);
       final targetImages =
-          op.baseRevision >= existing.revision &&
+          (op.baseRevision >= existing.revision ||
+                  isLinearContinuationOfWinningBranch) &&
               payload.containsKey('image_blob_sha256s')
           ? incomingImages
           : mergedImages;
@@ -1201,6 +1508,22 @@ final class SyncEngine implements SyncStateStore {
           existing.id,
         ],
       );
+      _writeEntryTipInTx(
+        db,
+        existing.id,
+        deviceId: op.deviceId,
+        remoteRev: remoteRev,
+        localRev: nextRev,
+        nowIso: updatedAt.toIso8601String(),
+      );
+      if (isLinearContinuationOfWinningBranch) {
+        db.execute(
+          'UPDATE sync_conflicts SET remote_body_md = ?, remote_hlc_ts = ? '
+          "WHERE entity_type = 'raw_entry' AND entity_id = ? "
+          "  AND remote_device_id = ? AND status = 'open'",
+          <Object?>[incomingBody, op.hlcTs, existing.id, op.deviceId],
+        );
+      }
       final updated = existing.copyWith(
         entryKind: incomingKind,
         bodyMd: incomingBody,
@@ -1262,6 +1585,8 @@ final class SyncEngine implements SyncStateStore {
     final mergedHlc = _maxHlc(existing.hlcTs, op.hlcTs);
     final nextRev = _maxInt(existing.revision, remoteRev) + 1;
     final winningParsed = _bfm.parse(winningBody);
+    final nowUtc = DateTime.now().toUtc();
+    final nowIso = nowUtc.toIso8601String();
 
     db.execute(
       'UPDATE raw_entries SET entry_kind = ?, body_md = ?, audio_blob_sha256 = ?, '
@@ -1276,7 +1601,7 @@ final class SyncEngine implements SyncStateStore {
         effectivePrivacy.wireValue,
         nextRev,
         mergedHlc,
-        DateTime.now().toUtc().toIso8601String(),
+        nowIso,
         existing.id,
       ],
     );
@@ -1290,7 +1615,7 @@ final class SyncEngine implements SyncStateStore {
       privacyLevel: effectivePrivacy,
       revision: nextRev,
       hlcTs: mergedHlc,
-      updatedAtUtc: DateTime.now().toUtc(),
+      updatedAtUtc: nowUtc,
     );
     _syncEntryTasksFromRemoteInTx(
       db,
@@ -1308,16 +1633,107 @@ final class SyncEngine implements SyncStateStore {
     );
     entriesToIndex.add(winningEntry);
 
-    // Create preserved conflict copy entry (`[离线冲突副本 · <设备名> <UTC时间>]`).
-    final nowUtc = DateTime.now().toUtc();
-    final nowIso = nowUtc.toIso8601String();
-    final copyId = generateUuidV7(timestamp: nowUtc);
     final copyHlc = _hlcClock.next(nowUtc: nowUtc);
     final copyHeader =
         '[离线冲突副本 · $losingDeviceName ${losingTimeUtc.toUtc().toIso8601String()}]';
     final copyBodyMd =
         '$copyHeader\n来源条目：[[entry:${existing.id}|原文条目]]\n\n$losingBody';
     final copyParsed = _bfm.parse(copyBodyMd);
+    final copyImages = remoteWins ? existing.imageBlobSha256s : incomingImages;
+
+    // If this op linearly extends an existing open conflict branch from the
+    // same remote device, update that conflict & copy in-place instead of
+    // spawning a second spurious conflict copy (`INV-05`).
+    final losingTip = _readEntryLosingTipInTx(db, existing.id, op.deviceId);
+    final canUpdateExistingOpenConflict =
+        losingTip != null &&
+        op.baseRevision >= losingTip.remoteRev &&
+        db.select(
+          "SELECT 1 FROM sync_conflicts WHERE id = ? AND status = 'open' LIMIT 1",
+          <Object?>[losingTip.conflictId],
+        ).isNotEmpty &&
+        db.select(
+          'SELECT 1 FROM raw_entries WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+          <Object?>[losingTip.copyId],
+        ).isNotEmpty;
+
+    if (canUpdateExistingOpenConflict) {
+      db.execute(
+        'UPDATE raw_entries SET body_md = ?, image_blob_sha256s = ?, '
+        'privacy_level = ?, hlc_ts = ?, updated_at = ? WHERE id = ?',
+        <Object?>[
+          copyBodyMd,
+          jsonEncode(copyImages),
+          effectivePrivacy.wireValue,
+          copyHlc,
+          nowIso,
+          losingTip.copyId,
+        ],
+      );
+      final updatedCopyRow = db.select(
+        'SELECT * FROM raw_entries WHERE id = ? LIMIT 1',
+        <Object?>[losingTip.copyId],
+      ).single;
+      _replaceEntryBfmLinksInTx(
+        db,
+        entryId: losingTip.copyId,
+        links: copyParsed.links,
+        privacyLevel: effectivePrivacy,
+      );
+      entriesToIndex.add(rowToRawEntry(updatedCopyRow));
+
+      if (remoteWins) {
+        db.execute(
+          'UPDATE sync_conflicts SET remote_hlc_ts = ?, local_body_md = ?, remote_body_md = ? '
+          'WHERE id = ?',
+          <Object?>[
+            op.hlcTs,
+            existing.bodyMd,
+            incomingBody,
+            losingTip.conflictId,
+          ],
+        );
+        _deleteSyncStateInTx(db, _entryLosingTipKey(existing.id, op.deviceId));
+        _writeEntryTipInTx(
+          db,
+          existing.id,
+          deviceId: op.deviceId,
+          remoteRev: remoteRev,
+          localRev: nextRev,
+          nowIso: nowIso,
+        );
+      } else {
+        db.execute(
+          'UPDATE sync_conflicts SET remote_hlc_ts = ?, remote_body_md = ? '
+          'WHERE id = ?',
+          <Object?>[op.hlcTs, incomingBody, losingTip.conflictId],
+        );
+        if (existingTip != null && existingTip.localRev == existing.revision) {
+          _writeEntryTipInTx(
+            db,
+            existing.id,
+            deviceId: existingTip.deviceId,
+            remoteRev: existingTip.remoteRev,
+            localRev: nextRev,
+            nowIso: nowIso,
+          );
+        }
+        _writeEntryLosingTipInTx(
+          db,
+          existing.id,
+          op.deviceId,
+          remoteRev: remoteRev,
+          conflictId: losingTip.conflictId,
+          copyId: losingTip.copyId,
+          nowIso: nowIso,
+        );
+      }
+      return false;
+    }
+
+    // Create preserved conflict copy entry (`[离线冲突副本 · <设备名> <UTC时间>]`).
+    final copyId = generateUuidV7(timestamp: nowUtc);
+    final conflictId = generateUuidV7(timestamp: nowUtc);
 
     db.execute(
       'INSERT INTO raw_entries '
@@ -1329,7 +1745,7 @@ final class SyncEngine implements SyncStateStore {
         copyId,
         existing.entryKind.wireValue,
         copyBodyMd,
-        jsonEncode(remoteWins ? existing.imageBlobSha256s : incomingImages),
+        jsonEncode(copyImages),
         existing.sourceRefId,
         CaptureOrigin.appUi.wireValue,
         effectivePrivacy.wireValue,
@@ -1342,7 +1758,7 @@ final class SyncEngine implements SyncStateStore {
       id: copyId,
       entryKind: existing.entryKind,
       bodyMd: copyBodyMd,
-      imageBlobSha256s: remoteWins ? existing.imageBlobSha256s : incomingImages,
+      imageBlobSha256s: copyImages,
       sourceRefId: existing.sourceRefId,
       captureOrigin: CaptureOrigin.appUi,
       privacyLevel: effectivePrivacy,
@@ -1365,7 +1781,7 @@ final class SyncEngine implements SyncStateStore {
       'remote_hlc_ts, local_body_md, remote_body_md, status, resolution, created_at, resolved_at) '
       "VALUES (?, 'raw_entry', ?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, NULL)",
       <Object?>[
-        generateUuidV7(timestamp: nowUtc),
+        conflictId,
         existing.id,
         copyId,
         op.deviceId,
@@ -1376,6 +1792,37 @@ final class SyncEngine implements SyncStateStore {
         nowIso,
       ],
     );
+
+    if (remoteWins) {
+      _writeEntryTipInTx(
+        db,
+        existing.id,
+        deviceId: op.deviceId,
+        remoteRev: remoteRev,
+        localRev: nextRev,
+        nowIso: nowIso,
+      );
+    } else {
+      if (existingTip != null && existingTip.localRev == existing.revision) {
+        _writeEntryTipInTx(
+          db,
+          existing.id,
+          deviceId: existingTip.deviceId,
+          remoteRev: existingTip.remoteRev,
+          localRev: nextRev,
+          nowIso: nowIso,
+        );
+      }
+      _writeEntryLosingTipInTx(
+        db,
+        existing.id,
+        op.deviceId,
+        remoteRev: remoteRev,
+        conflictId: conflictId,
+        copyId: copyId,
+        nowIso: nowIso,
+      );
+    }
     return true;
   }
 
@@ -1390,9 +1837,26 @@ final class SyncEngine implements SyncStateStore {
       'SELECT * FROM raw_tasks WHERE id = ? LIMIT 1',
       <Object?>[op.entityId],
     );
-    final remotePrivacy =
-        PrivacyLevel.tryParse(payload['privacy_level'] as String?) ??
-        op.privacyLevel;
+    final payloadOriginEntryId = payload['origin_entry_id'] as String?;
+    final existingOriginEntryId = rows.isEmpty
+        ? null
+        : rows.first['origin_entry_id'] as String?;
+    final originEntryId = payloadOriginEntryId ?? existingOriginEntryId;
+    final parentIsPrivate =
+        originEntryId != null &&
+        originEntryId.isNotEmpty &&
+        (db.select(
+              "SELECT 1 FROM raw_entries WHERE id = ? AND privacy_level = 'private' LIMIT 1",
+              <Object?>[originEntryId],
+            ).isNotEmpty ||
+            db.select(
+              "SELECT 1 FROM sync_oplog WHERE entity_type = 'raw_entry' AND entity_id = ? AND privacy_level = 'private' LIMIT 1",
+              <Object?>[originEntryId],
+            ).isNotEmpty);
+    final remotePrivacy = parentIsPrivate
+        ? PrivacyLevel.private
+        : (PrivacyLevel.tryParse(payload['privacy_level'] as String?) ??
+              op.privacyLevel);
     final status =
         TaskStatus.tryParse(payload['status'] as String?) ?? TaskStatus.open;
     final focusDate = payload['focus_date'] as String?;
@@ -2114,10 +2578,128 @@ final class SyncEngine implements SyncStateStore {
       final orphanId = orphan['id'] as String;
       outTaskIdsToRemove.add(orphanId);
       db.execute(
-        'UPDATE raw_tasks SET deleted_at = ?, updated_at = ? WHERE id = ?',
-        <Object?>[nowIso, nowIso, orphanId],
+        'UPDATE raw_tasks SET deleted_at = ?, updated_at = ?, '
+        "privacy_level = CASE WHEN ? = 'private' THEN 'private' ELSE privacy_level END "
+        'WHERE id = ?',
+        <Object?>[nowIso, nowIso, entry.privacyLevel.wireValue, orphanId],
       );
     }
+  }
+
+  static String _entryTipKey(String entityId) => 'entry_tip:$entityId';
+
+  static String _entryLosingTipKey(String entityId, String deviceId) =>
+      'entry_losing_tip:$entityId:$deviceId';
+
+  static String? _readSyncStateInTx(Database db, String key) {
+    final rows = db.select(
+      'SELECT value FROM sync_state WHERE key = ? LIMIT 1',
+      <Object?>[key],
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    return rows.first['value'] as String;
+  }
+
+  static void _writeSyncStateInTx(
+    Database db,
+    String key,
+    String value,
+    String nowIso,
+  ) {
+    db.execute(
+      'INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?) '
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      <Object?>[key, value, nowIso],
+    );
+  }
+
+  static void _deleteSyncStateInTx(Database db, String key) {
+    db.execute('DELETE FROM sync_state WHERE key = ?', <Object?>[key]);
+  }
+
+  static ({String deviceId, int remoteRev, int localRev})? _readEntryTipInTx(
+    Database db,
+    String entityId,
+  ) {
+    final raw = _readSyncStateInTx(db, _entryTipKey(entityId));
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final deviceId = decoded['device_id'];
+        final remoteRev = decoded['remote_rev'];
+        final localRev = decoded['local_rev'];
+        if (deviceId is String && remoteRev is int && localRev is int) {
+          return (deviceId: deviceId, remoteRev: remoteRev, localRev: localRev);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static void _writeEntryTipInTx(
+    Database db,
+    String entityId, {
+    required String deviceId,
+    required int remoteRev,
+    required int localRev,
+    required String nowIso,
+  }) {
+    _writeSyncStateInTx(
+      db,
+      _entryTipKey(entityId),
+      jsonEncode(<String, Object?>{
+        'device_id': deviceId,
+        'remote_rev': remoteRev,
+        'local_rev': localRev,
+      }),
+      nowIso,
+    );
+  }
+
+  static ({int remoteRev, String conflictId, String copyId})?
+  _readEntryLosingTipInTx(Database db, String entityId, String deviceId) {
+    final raw = _readSyncStateInTx(db, _entryLosingTipKey(entityId, deviceId));
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final remoteRev = decoded['remote_rev'];
+        final conflictId = decoded['conflict_id'];
+        final copyId = decoded['copy_id'];
+        if (remoteRev is int && conflictId is String && copyId is String) {
+          return (remoteRev: remoteRev, conflictId: conflictId, copyId: copyId);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static void _writeEntryLosingTipInTx(
+    Database db,
+    String entityId,
+    String deviceId, {
+    required int remoteRev,
+    required String conflictId,
+    required String copyId,
+    required String nowIso,
+  }) {
+    _writeSyncStateInTx(
+      db,
+      _entryLosingTipKey(entityId, deviceId),
+      jsonEncode(<String, Object?>{
+        'remote_rev': remoteRev,
+        'conflict_id': conflictId,
+        'copy_id': copyId,
+      }),
+      nowIso,
+    );
   }
 
   void _replaceEntryBfmLinksInTx(

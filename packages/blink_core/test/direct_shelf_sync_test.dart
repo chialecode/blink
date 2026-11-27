@@ -320,6 +320,113 @@ void main() {
           ),
         ),
       );
+
+      // 9b. Revoked device calling HEAD /media/blobs/{sha} must ALSO surface `deviceRevoked` (`INV-11`).
+      await expectLater(
+        () => authedTransport.hasBlob(serverBlob.sha256),
+        throwsA(
+          isA<BlinkException>().having(
+            (e) => e.code,
+            'code',
+            BlinkErrorCode.deviceRevoked,
+          ),
+        ),
+      );
+    });
+
+    test('batches > 500 ops cleanly, syncs 0-byte blobs without HTTP 416, accepts hyphenless pairing codes, and closes SSE on revoke', () async {
+      final serverVault = await VaultManager.open(
+        VaultConfig(
+          vaultDir: Directory(p.join(tempRoot.path, 'batch-server')),
+          expectedChannel: BlinkChannel.blinkDev,
+          deviceName: 'Batch-Server',
+          enableMirrorExporter: false,
+        ),
+      );
+      final clientVault = await VaultManager.open(
+        VaultConfig(
+          vaultDir: Directory(p.join(tempRoot.path, 'batch-client')),
+          expectedChannel: BlinkChannel.blinkDev,
+          deviceName: 'Batch-Client',
+          enableMirrorExporter: false,
+        ),
+      );
+      final server = DirectShelfServer(vault: serverVault, maxBatchSize: 500);
+      await server.start(host: '127.0.0.1', port: 0);
+      addTearDown(() async {
+        await server.stop();
+        await clientVault.checkpointAndClose();
+        await serverVault.checkpointAndClose();
+      });
+
+      // Pair using hyphenless lowercase code (normalization polish).
+      final code = server.createPairingCode();
+      final unauth = DirectShelfTransport(
+        baseUri: server.baseUri,
+        expectedChannel: BlinkChannel.blinkDev,
+      );
+      addTearDown(unauth.close);
+      final paired = await unauth.pair(
+        pairingCode: code.code.replaceAll('-', '').toLowerCase(),
+        deviceId: clientVault.localDeviceId,
+        deviceName: clientVault.localDeviceName,
+      );
+      final authed = unauth.withDeviceToken(
+        paired.deviceToken,
+        transportId: 'direct:batch-server',
+      );
+      addTearDown(authed.close);
+
+      // 1. 0-byte blob on server synced via Range requests must succeed (no HTTP 416!).
+      final emptyBlob = await serverVault.blobs.putBytes(
+        Uint8List(0),
+        mimeType: 'application/octet-stream',
+      );
+      await serverVault.raw.createEntry(
+        bodyMd: '空附件条目',
+        imageBlobSha256s: <String>[emptyBlob.sha256],
+      );
+
+      // 2. Generate 520 local ops on client (> DirectShelfServer.maxBatchSize = 500).
+      for (var i = 0; i < 520; i++) {
+        await clientVault.raw.createEntry(bodyMd: '批量同步条目 #$i');
+      }
+      expect(clientVault.pendingOutboxCount, equals(520));
+
+      final run = await clientVault.syncEngine.syncWithTransport(
+        authed,
+        pushBatchSize: 200,
+      );
+      expect(run.pushedOps, equals(520));
+      expect(run.blobsDownloaded, equals(1));
+      expect(clientVault.pendingOutboxCount, equals(0));
+      expect(await clientVault.blobs.readBytes(emptyBlob.sha256), isEmpty);
+      expect(
+        (await serverVault.raw.listEntries(const EntryQuery(limit: 600)))
+            .length,
+        equals(521),
+      );
+
+      // 3. Active SSE stream is terminated immediately when device is revoked.
+      final sseReady = Completer<void>();
+      final sseClosed = Completer<void>();
+      final sub = authed.watchSeqEvents().listen(
+        (_) {
+          if (!sseReady.isCompleted) {
+            sseReady.complete();
+          }
+        },
+        onDone: () {
+          if (!sseClosed.isCompleted) {
+            sseClosed.complete();
+          }
+        },
+      );
+      addTearDown(sub.cancel);
+      await sseReady.future.timeout(const Duration(seconds: 5));
+
+      expect(await server.revokeDevice(clientVault.localDeviceId), isTrue);
+      await sseClosed.future.timeout(const Duration(seconds: 5));
     });
 
     test('maps unreachable peer to honest peerAsleep error (INV-11) and isolates LAN discovery channels', () async {

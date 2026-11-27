@@ -11,6 +11,9 @@ abstract interface class SyncTransport {
   /// Whether this transport uses an untrusted async relay (enabling `#private` relay exclusion).
   bool get isRelayTransport;
 
+  /// Whether this transport enforces physical exclusion of `#private` ops & blobs (`INV-03`).
+  bool get excludesPrivateOps;
+
   /// Probes remote peer/relay availability and validates channel & protocol compatibility.
   Future<SyncPeerHealth> checkHealth();
 

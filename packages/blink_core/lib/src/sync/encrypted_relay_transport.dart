@@ -84,6 +84,9 @@ final class EncryptedRelayTransport implements SyncTransport {
   @override
   bool get isRelayTransport => true;
 
+  @override
+  bool get excludesPrivateOps => excludePrivateFromRelay;
+
   /// Canonical `vault_id` negotiated via `vault.meta.enc` (discovered automatically
   /// on new-device recovery from a recovery code).
   String get effectiveVaultId => _canonicalRelayVaultId ?? localVaultId;

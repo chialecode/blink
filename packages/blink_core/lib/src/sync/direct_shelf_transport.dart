@@ -42,6 +42,9 @@ final class DirectShelfTransport implements SyncTransport {
   @override
   bool get isRelayTransport => false;
 
+  @override
+  bool get excludesPrivateOps => false;
+
   /// Releases the underlying [HttpClient] if owned by this transport.
   void close({bool force = false}) {
     if (_ownsClient) {
@@ -179,7 +182,13 @@ final class DirectShelfTransport implements SyncTransport {
     if (response.statusCode == 404) {
       return false;
     }
-    throw _mapHttpStatusError(response.statusCode, const <String, Object?>{});
+    final headerCode = response.headers.value('x-blink-error-code');
+    final headerRetryable =
+        response.headers.value('x-blink-retryable') == 'true';
+    throw _mapHttpStatusError(response.statusCode, <String, Object?>{
+      if (headerCode != null && headerCode.isNotEmpty) 'code': headerCode,
+      'retryable': headerRetryable,
+    });
   }
 
   @override
