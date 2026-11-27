@@ -543,6 +543,8 @@ final class VaultStats {
     required this.totalBlobBytes,
     required this.latestSeqId,
     required this.mirrorWatermarkSeq,
+    this.pendingOutboxCount = 0,
+    this.openConflictCount = 0,
   });
 
   final int activeEntries;
@@ -553,6 +555,8 @@ final class VaultStats {
   final int totalBlobBytes;
   final int latestSeqId;
   final int mirrorWatermarkSeq;
+  final int pendingOutboxCount;
+  final int openConflictCount;
 
   @override
   bool operator ==(Object other) =>
@@ -565,7 +569,9 @@ final class VaultStats {
           totalBlobs == other.totalBlobs &&
           totalBlobBytes == other.totalBlobBytes &&
           latestSeqId == other.latestSeqId &&
-          mirrorWatermarkSeq == other.mirrorWatermarkSeq;
+          mirrorWatermarkSeq == other.mirrorWatermarkSeq &&
+          pendingOutboxCount == other.pendingOutboxCount &&
+          openConflictCount == other.openConflictCount;
 
   @override
   int get hashCode => Object.hash(
@@ -577,5 +583,7 @@ final class VaultStats {
     totalBlobBytes,
     latestSeqId,
     mirrorWatermarkSeq,
+    pendingOutboxCount,
+    openConflictCount,
   );
 }

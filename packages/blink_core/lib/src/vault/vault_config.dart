@@ -11,6 +11,7 @@ final class VaultConfig {
     required this.vaultDir,
     required this.expectedChannel,
     this.deviceId,
+    this.deviceName,
     this.enableMirrorExporter = true,
     this.mirrorDebounce = const Duration(seconds: 5),
     this.trashRetention = const Duration(days: 30),
@@ -19,6 +20,7 @@ final class VaultConfig {
   final Directory vaultDir;
   final BlinkChannel expectedChannel;
   final String? deviceId;
+  final String? deviceName;
   final bool enableMirrorExporter;
   final Duration mirrorDebounce;
   final Duration trashRetention;

@@ -52,6 +52,47 @@ export 'src/search/fts_search_service.dart'
         buildSafeFtsMatchQuery,
         cjkFtsPretokenize;
 export 'src/storage/blob_store.dart' show BlobStore, isValidBlobSha256;
+export 'src/sync/direct_shelf_server.dart' show DirectShelfServer;
+export 'src/sync/direct_shelf_transport.dart' show DirectShelfTransport;
+export 'src/sync/encrypted_relay_transport.dart'
+    show EncryptedRelayTransport, RelayObjectStore;
+export 'src/sync/lan_discovery.dart'
+    show
+        DiscoveredLanPeer,
+        InMemoryLanDiscoveryAdapter,
+        LanDiscovery,
+        LanDiscoveryAdapter,
+        LanPeerAnnouncement,
+        MdnsDartDiscoveryAdapter,
+        NoopLanDiscoveryAdapter,
+        blinkSyncMdnsServiceType;
+export 'src/sync/s3_client.dart' show S3Client;
+export 'src/sync/s3_sigv4.dart' show S3SigV4Signer, S3SignedRequest;
+export 'src/sync/sync_crypto.dart'
+    show SyncCrypto, SyncKeyBundle, SyncMasterKey;
+export 'src/sync/sync_engine.dart' show SyncEngine;
+export 'src/sync/sync_models.dart'
+    show
+        BlobRangeResponse,
+        ConflictResolutionChoice,
+        IngestOpsResult,
+        PairingCodeInfo,
+        PairingResult,
+        PullOpsResult,
+        PushOpsResult,
+        SyncCapabilities,
+        SyncConflict,
+        SyncConflictStatus,
+        SyncConnectionState,
+        SyncDeviceRecord,
+        SyncEntityLayer,
+        SyncOpEnvelope,
+        SyncPeerHealth,
+        SyncRunResult,
+        SyncStatusSnapshot,
+        currentSyncProtocolVersion;
+export 'src/sync/sync_transport.dart' show SyncStateStore, SyncTransport;
+export 'src/sync/webdav_client.dart' show WebDavClient;
 export 'src/utils/unicode_offsets.dart'
     show
         codePointToUtf16Index,

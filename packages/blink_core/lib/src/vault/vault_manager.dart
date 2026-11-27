@@ -15,6 +15,8 @@ import '../repositories/external_ai_repository.dart';
 import '../repositories/raw_repository.dart';
 import '../search/fts_search_service.dart';
 import '../storage/blob_store.dart';
+import '../sync/sync_engine.dart';
+import '../sync/sync_models.dart';
 import '../utils/atomic_io.dart';
 import '../utils/hlc.dart';
 import '../utils/uuid_v7.dart';
@@ -31,6 +33,7 @@ class VaultManager {
     required this._mainDb,
     required this._ftsDb,
     required this._deviceId,
+    required this._deviceName,
     required this._hlcClock,
   }) {
     _bfm = const BfmEngine();
@@ -53,6 +56,19 @@ class VaultManager {
       bfm: _bfm,
       fts: _fts,
       blobs: _blobs,
+      onMutated: _notifyMutation,
+      mutationStream: _mutationController.stream,
+    );
+    _syncEngine = SyncEngine(
+      dbProvider: _requireMainDb,
+      runWriteTx: _runWriteTransaction,
+      deviceIdProvider: () => _deviceId,
+      deviceNameProvider: () => _deviceName,
+      hlcClock: _hlcClock,
+      bfm: _bfm,
+      fts: _fts,
+      blobs: _blobs,
+      rawRepository: _raw,
       onMutated: _notifyMutation,
       mutationStream: _mutationController.stream,
     );
@@ -88,7 +104,7 @@ class VaultManager {
     await vaultDir.create(recursive: true);
 
     final vaultJsonFile = File(p.join(vaultDir.path, 'vault.json'));
-    final metadata = await _loadOrCreateVaultMetadata(
+    var metadata = await _loadOrCreateVaultMetadata(
       vaultJsonFile: vaultJsonFile,
       expectedChannel: config.expectedChannel,
     );
@@ -113,14 +129,18 @@ class VaultManager {
       mainDb = sqlite3.open(mainDbPath);
       applyBlinkSqlitePragmas(mainDb);
 
-      // Guard against future schema versions or channel tampering inside `blink.db`.
-      _validateOrInitMainDatabase(
+      // Guard against future schema versions, run safe v1 -> v2 migration with
+      // pre-migration VACUUM INTO hot snapshot (`INV-07`), or initialize fresh schema.
+      metadata = await _validateMigrateOrInitMainDatabase(
         mainDb,
+        vaultJsonFile: vaultJsonFile,
+        backupsDir: backupsDir,
         metadata: metadata,
         expectedChannel: config.expectedChannel,
       );
 
       final deviceId = _resolveOrPersistDeviceId(mainDb, config.deviceId);
+      final deviceName = _resolveDeviceName(config.deviceName);
       final hlcClock = HlcClock(nodeId: deviceId);
       _seedHlcFromDatabase(mainDb, hlcClock);
 
@@ -134,6 +154,7 @@ class VaultManager {
         mainDb: mainDb,
         ftsDb: ftsDb,
         deviceId: deviceId,
+        deviceName: deviceName,
         hlcClock: hlcClock,
       );
     } catch (error) {
@@ -155,12 +176,14 @@ class VaultManager {
   final Database _mainDb;
   final Database _ftsDb;
   final String _deviceId;
+  final String _deviceName;
   final HlcClock _hlcClock;
 
   late final BfmEngine _bfm;
   late final SqliteFtsSearchService _fts;
   late final SqliteBlobStore _blobs;
   late final SqliteRawRepository _raw;
+  late final SyncEngine _syncEngine;
   late final SqliteExternalAiRepository _externalAiNormal;
   late final SqliteExternalAiRepository _externalAiPrivate;
   late final FileMirrorExporter _mirror;
@@ -173,10 +196,33 @@ class VaultManager {
 
   bool get isOpen => _isOpen;
 
+  /// Per-local-instance UUIDv7 device identifier persisted in `vault_meta`.
+  String get localDeviceId => _deviceId;
+
+  /// Human-readable device name advertised during pairing and conflict copy labels.
+  String get localDeviceName => _deviceName;
+
   /// `true` while `VACUUM INTO` hot backup or derived-store rebuild is running.
   bool get isCriticalOperationRunning => _isCriticalOperationRunning;
 
   RawRepository get raw => _raw;
+
+  /// Causal OpLog sync engine, conflict manager, and device registry.
+  SyncEngine get syncEngine => _syncEngine;
+
+  /// Pending local outbox operation count (`outbox_ops.status = 'pending'`).
+  int get pendingOutboxCount => _syncEngine.getPendingOutboxCount();
+
+  /// Open preserved dual-copy conflict count (`sync_conflicts.status = 'open'`).
+  int get openConflictCount => _syncEngine.getOpenConflictCount();
+
+  Stream<int> watchPendingOutboxCount() =>
+      _syncEngine.watchPendingOutboxCount();
+
+  Stream<List<SyncConflict>> watchOpenConflicts() =>
+      _syncEngine.watchOpenConflicts();
+
+  Stream<SyncStatusSnapshot> watchSyncStatus() => _syncEngine.watchSyncStatus();
 
   /// Default `PrivacyScope.normalOnly` external AI facade (`INV-01`, `INV-03`).
   ExternalAiRepository get externalAi => _externalAiNormal;
@@ -244,6 +290,8 @@ class VaultManager {
             as int?) ??
         0;
     final mirrorWatermarkSeq = _readMirrorWatermarkSeq(db);
+    final pendingOutbox = _syncEngine.getPendingOutboxCount();
+    final openConflicts = _syncEngine.getOpenConflictCount();
 
     return VaultStats(
       activeEntries: activeEntries,
@@ -254,6 +302,8 @@ class VaultManager {
       totalBlobBytes: totalBlobBytes,
       latestSeqId: latestSeqId,
       mirrorWatermarkSeq: mirrorWatermarkSeq,
+      pendingOutboxCount: pendingOutbox,
+      openConflictCount: openConflicts,
     );
   }
 
@@ -416,6 +466,7 @@ class VaultManager {
       await _mirror.flushNow();
     } finally {
       await _mirror.dispose();
+      await _syncEngine.dispose();
       _isOpen = false;
       try {
         checkpointSqliteTruncate(_ftsDb);
@@ -474,6 +525,7 @@ class VaultManager {
     if (!_mutationController.isClosed) {
       _mutationController.add(_mutationEpoch);
     }
+    _syncEngine.notifyLocalSeqAdvanced();
     if (triggerMirror && config.enableMirrorExporter) {
       _mirror.scheduleExport();
     }
@@ -607,25 +659,26 @@ class VaultManager {
     );
   }
 
-  static void _validateOrInitMainDatabase(
+  static Future<VaultMetadata> _validateMigrateOrInitMainDatabase(
     Database db, {
+    required File vaultJsonFile,
+    required Directory backupsDir,
     required VaultMetadata metadata,
     required BlinkChannel expectedChannel,
-  }) {
+  }) async {
     final metaTableExists = db
         .select(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vault_meta'",
         )
         .isNotEmpty;
 
+    int? dbSchemaVersion;
     if (metaTableExists) {
       final schemaRows = db.select(
         "SELECT value FROM vault_meta WHERE key = 'schema_version' LIMIT 1",
       );
       if (schemaRows.isNotEmpty) {
-        final dbSchemaVersion = int.tryParse(
-          schemaRows.first['value'] as String,
-        );
+        dbSchemaVersion = int.tryParse(schemaRows.first['value'] as String);
         if (dbSchemaVersion != null &&
             dbSchemaVersion > currentVaultSchemaVersion) {
           throw BlinkException(
@@ -650,12 +703,41 @@ class VaultManager {
       }
     }
 
+    final needsMigration =
+        metaTableExists &&
+        dbSchemaVersion != null &&
+        dbSchemaVersion < currentVaultSchemaVersion;
+
+    if (needsMigration) {
+      // Take an atomic pre-migration VACUUM INTO hot snapshot (`INV-07`).
+      await _createPreMigrationHotSnapshot(
+        db,
+        backupsDir: backupsDir,
+        fromVersion: dbSchemaVersion,
+        toVersion: currentVaultSchemaVersion,
+      );
+
+      db.execute('BEGIN IMMEDIATE;');
+      try {
+        if (dbSchemaVersion < 2) {
+          migrateMainDatabaseV1ToV2(db);
+        }
+        db.execute('COMMIT;');
+      } catch (_) {
+        try {
+          db.execute('ROLLBACK;');
+        } catch (_) {}
+        rethrow;
+      }
+    }
+
     initializeMainDatabaseSchema(db);
 
     db.execute('BEGIN IMMEDIATE;');
     try {
       db.execute(
-        "INSERT OR IGNORE INTO vault_meta (key, value) VALUES ('schema_version', ?)",
+        "INSERT INTO vault_meta (key, value) VALUES ('schema_version', ?) "
+        'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         <Object?>[currentVaultSchemaVersion.toString()],
       );
       db.execute(
@@ -674,6 +756,74 @@ class VaultManager {
       db.execute('ROLLBACK;');
       rethrow;
     }
+
+    if (metadata.schemaVersion < currentVaultSchemaVersion) {
+      final upgraded = VaultMetadata(
+        formatVersion: metadata.formatVersion,
+        schemaVersion: currentVaultSchemaVersion,
+        vaultId: metadata.vaultId,
+        channel: metadata.channel,
+        createdAtUtc: metadata.createdAtUtc,
+      );
+      final encoded = const JsonEncoder.withIndent('  ')
+          .convert(upgraded.toJson());
+      await writeStringAtomically(vaultJsonFile, '$encoded\n');
+      return upgraded;
+    }
+    return metadata;
+  }
+
+  static Future<void> _createPreMigrationHotSnapshot(
+    Database db, {
+    required Directory backupsDir,
+    required int fromVersion,
+    required int toVersion,
+  }) async {
+    await backupsDir.create(recursive: true);
+    final stamp = formatCompactUtcStamp(DateTime.now().toUtc());
+    final target = File(
+      p.join(
+        backupsDir.path,
+        'blink-pre-migration-v$fromVersion-to-v$toVersion-$stamp.db',
+      ),
+    );
+    final tempFile = siblingTempFile(target);
+    try {
+      final escapedTmpPath = tempFile.path.replaceAll("'", "''");
+      db.execute("VACUUM INTO '$escapedTmpPath';");
+      final raf = await tempFile.open(mode: FileMode.append);
+      try {
+        await raf.flush();
+      } finally {
+        await raf.close();
+      }
+      await atomicRenameWithRetry(tempFile, target);
+    } catch (error) {
+      try {
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+      } catch (_) {}
+      throw BlinkException(
+        code: BlinkErrorCode.ioError,
+        message: 'Pre-migration VACUUM INTO hot snapshot failed: $error',
+        cause: error,
+      );
+    }
+  }
+
+  static String _resolveDeviceName(String? configuredName) {
+    final trimmed = configuredName?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) {
+      return trimmed;
+    }
+    try {
+      final host = Platform.localHostname.trim();
+      if (host.isNotEmpty) {
+        return host;
+      }
+    } catch (_) {}
+    return 'BLINK Device';
   }
 
   static String _resolveOrPersistDeviceId(

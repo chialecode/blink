@@ -1,0 +1,22 @@
+name: blink_cli
+description: Pure Dart headless CLI and direct sync server for BLINK.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.14.0
+
+resolution: workspace
+
+dependencies:
+  args: 2.7.0
+  blink_core:
+    path: ../blink_core
+  path: 1.9.1
+
+dev_dependencies:
+  lints: 6.1.0
+  test: 1.32.0
+
+executables:
+  blink: blink

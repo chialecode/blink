@@ -285,7 +285,10 @@ final class SqliteRawRepository implements RawRepository {
         opType: 'create',
         opOrigin: captureOrigin.wireValue,
         privacyLevel: effectivePrivacy,
-        payload: _entryOpPayload(created),
+        payload: _entryOpPayload(
+          created,
+          tasks: _serializeEntryTasksInTx(db, entryId),
+        ),
         createdAtIso: nowIso,
       );
     });
@@ -400,6 +403,17 @@ final class SqliteRawRepository implements RawRepository {
         privacyLevel: nextPrivacy,
       );
 
+      if (nextPrivacy == PrivacyLevel.private &&
+          existing.privacyLevel != PrivacyLevel.private) {
+        // Ensure any still-pending earlier normal ops for this entry inherit
+        // `#private` protection before relay upload (`INV-03`).
+        db.execute(
+          "UPDATE outbox_ops SET privacy_level = 'private' "
+          "WHERE entity_id = ? AND status = 'pending'",
+          <Object?>[id],
+        );
+      }
+
       _appendOplogAndOutboxInTx(
         db,
         deviceId: deviceId,
@@ -411,7 +425,10 @@ final class SqliteRawRepository implements RawRepository {
         opType: 'update',
         opOrigin: 'app_ui',
         privacyLevel: nextPrivacy,
-        payload: _entryOpPayload(updated),
+        payload: _entryOpPayload(
+          updated,
+          tasks: _serializeEntryTasksInTx(db, id),
+        ),
         createdAtIso: nowIso,
       );
     });
@@ -478,7 +495,14 @@ final class SqliteRawRepository implements RawRepository {
         opType: 'soft_delete',
         opOrigin: 'app_ui',
         privacyLevel: existing.privacyLevel,
-        payload: <String, Object?>{'id': id, 'deleted_at': nowIso},
+        payload: <String, Object?>{
+          'id': id,
+          'deleted_at': nowIso,
+          'updated_at': nowIso,
+          'revision': existing.revision + 1,
+          'hlc_ts': hlcTs,
+          'privacy_level': existing.privacyLevel.wireValue,
+        },
         createdAtIso: nowIso,
       );
     });
@@ -602,7 +626,10 @@ final class SqliteRawRepository implements RawRepository {
         opType: 'restore',
         opOrigin: 'app_ui',
         privacyLevel: restored.privacyLevel,
-        payload: _entryOpPayload(restored),
+        payload: _entryOpPayload(
+          restored,
+          tasks: _serializeEntryTasksInTx(db, id),
+        ),
         createdAtIso: nowIso,
       );
     });
@@ -978,7 +1005,10 @@ final class SqliteRawRepository implements RawRepository {
               opType: 'update',
               opOrigin: 'app_ui',
               privacyLevel: sourceEntry.privacyLevel,
-              payload: _entryOpPayload(updatedSourceEntry!),
+              payload: _entryOpPayload(
+                updatedSourceEntry!,
+                tasks: _serializeEntryTasksInTx(db, sourceEntry.id),
+              ),
               createdAtIso: nowIso,
             );
           }
@@ -996,12 +1026,7 @@ final class SqliteRawRepository implements RawRepository {
         opType: 'update',
         opOrigin: 'app_ui',
         privacyLevel: updatedTask.privacyLevel,
-        payload: <String, Object?>{
-          'id': updatedTask.id,
-          'status': updatedTask.status.wireValue,
-          'focus_date': updatedTask.focusDate,
-          'revision': updatedTask.revision,
-        },
+        payload: _taskOpPayload(updatedTask, originLineIndex: storedLineIndex),
         createdAtIso: nowIso,
       );
     });
@@ -1359,22 +1384,55 @@ final class SqliteRawRepository implements RawRepository {
     );
     db.execute(
       'INSERT INTO outbox_ops '
-      '(client_op_id, device_id, hlc_ts, entity_layer, entity_type, entity_id, '
-      'op_type, privacy_level, payload_json, status, created_at) '
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+      '(client_op_id, device_id, hlc_ts, base_revision, entity_layer, entity_type, '
+      'entity_id, op_type, op_origin, privacy_level, payload_json, status, created_at) '
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       <Object?>[
         clientOpId,
         deviceId,
         hlcTs,
+        baseRevision,
         entityLayer,
         entityType,
         entityId,
         opType,
+        opOrigin,
         privacyLevel.wireValue,
         payloadJson,
         createdAtIso,
       ],
     );
+  }
+
+  static List<Map<String, Object?>> _serializeEntryTasksInTx(
+    Database db,
+    String entryId,
+  ) {
+    final rows = db.select(
+      'SELECT * FROM raw_tasks WHERE origin_entry_id = ? '
+      'ORDER BY origin_line_index ASC, created_at ASC, id ASC',
+      <Object?>[entryId],
+    );
+    return rows
+        .map(
+          (row) => <String, Object?>{
+            'id': row['id'] as String,
+            'title': row['title'] as String,
+            'status': row['status'] as String,
+            'origin_entry_id': row['origin_entry_id'] as String?,
+            'origin_annotation_id': row['origin_annotation_id'] as String?,
+            'origin_line_index': row['origin_line_index'] as int?,
+            'focus_date': row['focus_date'] as String?,
+            'completed_at': row['completed_at'] as String?,
+            'privacy_level': row['privacy_level'] as String,
+            'revision': row['revision'] as int,
+            'hlc_ts': row['hlc_ts'] as String,
+            'created_at': row['created_at'] as String,
+            'updated_at': row['updated_at'] as String,
+            'deleted_at': row['deleted_at'] as String?,
+          },
+        )
+        .toList(growable: false);
   }
 
   static RawEntry? _fetchEntryByIdInTx(
@@ -1401,22 +1459,45 @@ final class SqliteRawRepository implements RawRepository {
     }
   }
 
-  static Map<String, Object?> _entryOpPayload(RawEntry entry) =>
-      <String, Object?>{
-        'id': entry.id,
-        'entry_kind': entry.entryKind.wireValue,
-        'body_md': entry.bodyMd,
-        'audio_blob_sha256': entry.audioBlobSha256,
-        'image_blob_sha256s': entry.imageBlobSha256s,
-        'source_ref_id': entry.sourceRefId,
-        'capture_origin': entry.captureOrigin.wireValue,
-        'privacy_level': entry.privacyLevel.wireValue,
-        'revision': entry.revision,
-        'hlc_ts': entry.hlcTs,
-        'created_at': entry.createdAtUtc.toUtc().toIso8601String(),
-        'updated_at': entry.updatedAtUtc.toUtc().toIso8601String(),
-        'deleted_at': entry.deletedAtUtc?.toUtc().toIso8601String(),
-      };
+  static Map<String, Object?> _entryOpPayload(
+    RawEntry entry, {
+    List<Map<String, Object?>>? tasks,
+  }) => <String, Object?>{
+    'id': entry.id,
+    'entry_kind': entry.entryKind.wireValue,
+    'body_md': entry.bodyMd,
+    'audio_blob_sha256': entry.audioBlobSha256,
+    'image_blob_sha256s': entry.imageBlobSha256s,
+    'source_ref_id': entry.sourceRefId,
+    'capture_origin': entry.captureOrigin.wireValue,
+    'privacy_level': entry.privacyLevel.wireValue,
+    'revision': entry.revision,
+    'hlc_ts': entry.hlcTs,
+    'created_at': entry.createdAtUtc.toUtc().toIso8601String(),
+    'updated_at': entry.updatedAtUtc.toUtc().toIso8601String(),
+    'deleted_at': entry.deletedAtUtc?.toUtc().toIso8601String(),
+    'tasks': ?tasks,
+  };
+
+  static Map<String, Object?> _taskOpPayload(
+    RawTask task, {
+    int? originLineIndex,
+  }) => <String, Object?>{
+    'id': task.id,
+    'title': task.title,
+    'status': task.status.wireValue,
+    'origin_entry_id': task.originEntryId,
+    'origin_annotation_id': task.originAnnotationId,
+    'origin_line_index': originLineIndex,
+    'focus_date': task.focusDate,
+    'completed_at': task.completedAtUtc?.toUtc().toIso8601String(),
+    'privacy_level': task.privacyLevel.wireValue,
+    'revision': task.revision,
+    'hlc_ts': task.hlcTs,
+    'created_at': task.createdAtUtc.toUtc().toIso8601String(),
+    'updated_at': task.updatedAtUtc.toUtc().toIso8601String(),
+    'deleted_at': task.deletedAtUtc?.toUtc().toIso8601String(),
+  };
 }
 
 /// Converts a SQLite `raw_entries` / `v_normal_entries` row into [RawEntry].
