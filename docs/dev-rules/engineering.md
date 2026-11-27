@@ -53,18 +53,19 @@
 <a id="channels"></a>
 ### 2.1 全小写 `blink` / `blink-dev` 双通道路径隔离
 
-所有机器侧标识符——可执行文件名、CLI 命令与 MCP 键名、安装目录、默认 `<BLINK_VAULT_DIR>` 与 `vault.json` 通道戳、OS 运行态 `ipc.json`、缓存目录、Windows WebView2 `userDataFolder`、包名 / Bundle ID、单实例锁与系统密钥库命名空间——一律采用全小写 **`blink`**（正式版通道）与 **`blink-dev`**（开发版通道），界面展示标题可保留 `BLINK` / `BLINK Dev`。两个通道完全隔离，绝不共享或互相修改便携库、离线队列与凭据（[存储与安全](../design/architecture.md#storage-security)）：
+所有机器侧标识符——可执行文件名、CLI 命令与 MCP 键名、安装目录、默认 `<BLINK_VAULT_DIR>` 与 `vault.json` 通道戳、OS 应用本地状态目录（`settings/`、`run/`、`ipc.json`、缓存、`credentials/`、Windows WebView2 `userDataFolder`）、包名 / Bundle ID、单实例锁与系统密钥库命名空间——一律采用全小写 **`blink`**（正式版通道）与 **`blink-dev`**（开发版通道），界面展示标题可保留 `BLINK` / `BLINK Dev`。桌面端执行**三根存储布局**（[DEC-031](../decisions.md#dec-031)）：应用本地状态留存 OS 应用本地目录，已安装端的默认单文件夹便携库位于系统“文档”目录，源码构建隔离在 Git 忽略的 `.local/blink-dev/` 沙盒中；双通道及测试身份完全隔离，绝不共享或互相修改便携库、离线队列与凭据（[存储与安全](../design/architecture.md#storage-security)）：
 
 | 平台 / 端 | 正式通道（`blink`） | 开发通道（`blink-dev`） |
 | --- | --- | --- |
-| Windows | 安装 `%LOCALAPPDATA%\Programs\blink`；默认便携库 `%LOCALAPPDATA%\blink\vault`；运行态 `%LOCALAPPDATA%\blink\run`；WebView2 `%LOCALAPPDATA%\blink\webview2` | 安装 `%LOCALAPPDATA%\Programs\blink-dev`；默认便携库 `%LOCALAPPDATA%\blink-dev\vault`；运行态 `%LOCALAPPDATA%\blink-dev\run`；WebView2 `%LOCALAPPDATA%\blink-dev\webview2` |
-| macOS | 默认便携库 `~/Library/Application Support/blink/vault`；运行态/缓存 `~/Library/Caches/blink` | 默认便携库 `~/Library/Application Support/blink-dev/vault`；运行态/缓存 `~/Library/Caches/blink-dev` |
-| Linux | 默认便携库 `${XDG_DATA_HOME:-~/.local/share}/blink/vault`；运行态 `$XDG_RUNTIME_DIR/blink`；缓存 `${XDG_CACHE_HOME:-~/.cache}/blink` | 默认便携库 `${XDG_DATA_HOME:-~/.local/share}/blink-dev/vault`；运行态 `$XDG_RUNTIME_DIR/blink-dev`；缓存 `${XDG_CACHE_HOME:-~/.cache}/blink-dev` |
+| Windows（已安装） | 安装 `%LOCALAPPDATA%\Programs\blink`；应用本地态 `%LOCALAPPDATA%\blink`（`settings/`、`run/`、`webview2/`、`credentials/`、`logs/`、`cache/`）；默认便携库 `<Documents>\blink`（经 Win32 `SHGetKnownFolderPath(FOLDERID_Documents)` 解析，回退 `%USERPROFILE%\Documents\blink`、再回退 `<dataRoot>\vault`） | 安装 `%LOCALAPPDATA%\Programs\blink-dev`；应用本地态 `%LOCALAPPDATA%\blink-dev`；默认便携库 `<Documents>\blink-dev` |
+| macOS（已安装） | 应用本地态 `~/Library/Application Support/blink`；运行态/缓存 `~/Library/Caches/blink`；默认便携库 `~/Documents/blink` | 应用本地态 `~/Library/Application Support/blink-dev`；运行态/缓存 `~/Library/Caches/blink-dev`；默认便携库 `~/Documents/blink-dev` |
+| Linux（已安装） | 应用本地态 `${XDG_DATA_HOME:-~/.local/share}/blink`；运行态 `$XDG_RUNTIME_DIR/blink`；缓存 `${XDG_CACHE_HOME:-~/.cache}/blink`；默认便携库 `${XDG_DOCUMENTS_DIR:-~/Documents}/blink` | 应用本地态 `${XDG_DATA_HOME:-~/.local/share}/blink-dev`；运行态 `$XDG_RUNTIME_DIR/blink-dev`；缓存 `${XDG_CACHE_HOME:-~/.cache}/blink-dev`；默认便携库 `${XDG_DOCUMENTS_DIR:-~/Documents}/blink-dev` |
+| 桌面源码构建（无安装身份） | 默认拒绝启动；仅当同时显式设置 `BLINK_ALLOW_SOURCE_PROD=1` 与隔离的 `BLINK_DATA_DIR`（且规范化路径不与真实 `blink` 目录重叠）时放行 | 应用本地态 `<repoRoot>/.local/blink-dev/app`；默认便携库 `<repoRoot>/.local/blink-dev/vault`（仓库外回退 `<systemTemp>/blink-source-dev/{app,vault}`） |
 | Android | Application ID `io.github.chialecode.blink`（私有目录 `<AppFilesDir>/blink`） | Application ID `io.github.chialecode.blink.dev`（私有目录 `<AppFilesDir>/blink-dev`） |
 | iOS | Bundle ID `io.github.chialecode.blink`（沙盒 `<ApplicationSupport>/blink`） | Bundle ID `io.github.chialecode.blink.dev`（沙盒 `<ApplicationSupport>/blink-dev`） |
 | 无头 `blink sync serve` / CLI | `$BLINK_VAULT_DIR`（`vault.json` 通道戳 `blink`）；MCP 服务键 `"blink"` | `$BLINK_VAULT_DIR`（本地默认 `.local/blink-dev/vault`，Git 忽略，通道戳 `blink-dev`）；MCP 服务键 `"blink-dev"` |
 
-Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹；`<BLINK_VAULT_DIR>` 内严禁存放任何明文凭据与 `ipc.json`；所有非数据库状态文件均采用“同目录临时文件 + `flush` + 原子重命名”写入。
+桌面端便携库解析优先级固定为：`BLINK_VAULT_DIR`（锁定设置页切换） > `settings/desktop.json` `customVaultPath` > 显式 `BLINK_DATA_DIR` 下的 `<dataRoot>/vault` > 源码构建 `<repoRoot>/.local/blink-dev/vault` > `<BLINK_DOCUMENTS_DIR 或系统 Documents>/<身份>` > `<dataRoot>/vault`。Windows 端严禁在 `%APPDATA%` 或用户主目录根部散落配置文件夹；`<BLINK_VAULT_DIR>` 内严禁存放任何明文凭据与 `ipc.json`；所有非数据库状态文件均采用“同目录临时文件 + `flush` + 原子重命名”写入。
 
 <a id="packaging"></a>
 <a id="dev-install"></a>

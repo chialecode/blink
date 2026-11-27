@@ -69,7 +69,8 @@ class DesktopSettings {
   /// Optional theme surface override (`null` follows OS light/dark system theme).
   final DesktopSurfacePreference? surfaceMode;
 
-  /// Optional custom `<BLINK_VAULT_DIR>` path (`null` uses default `<dataRoot>/vault`).
+  /// Optional custom `<BLINK_VAULT_DIR>` path (`null` uses the channel's
+  /// default portable vault directory under Documents or the active sandbox).
   final String? customVaultPath;
 
   DesktopSettings copyWith({

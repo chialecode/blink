@@ -110,9 +110,16 @@ class BlinkWorkspaceController extends ChangeNotifier {
     _isLoading = true;
     _safeNotify();
     try {
+      final targetDir = effectiveVaultDir;
+      if (lifecycle.paths.isForbiddenTargetPath(targetDir.path)) {
+        _vaultErrorCode = BlinkErrorCode.channelMismatch;
+        _vaultErrorMessage =
+            '通道隔离保护（channel_mismatch）：所配置的便携库目录与受保护通道目录重叠，已拒绝打开。';
+        return;
+      }
       final opened = await VaultManager.open(
         VaultConfig(
-          vaultDir: effectiveVaultDir,
+          vaultDir: targetDir,
           expectedChannel: expectedChannel,
           enableMirrorExporter: enableMirrorExporter,
         ),
@@ -627,6 +634,12 @@ class BlinkWorkspaceController extends ChangeNotifier {
     }
     if (lifecycle.paths.hasVaultDirOverride) {
       showBanner('当前进程通过 BLINK_VAULT_DIR 环境变量锁定库目录，暂不支持在设置内切换。', isError: true);
+      return false;
+    }
+    if (lifecycle.paths.isForbiddenTargetPath(trimmed)) {
+      _vaultErrorCode = BlinkErrorCode.channelMismatch;
+      _vaultErrorMessage = '通道隔离保护（channel_mismatch）：目标目录与受保护通道目录重叠，已拒绝切换。';
+      showBanner(_vaultErrorMessage!, isError: true);
       return false;
     }
 

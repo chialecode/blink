@@ -203,6 +203,9 @@ void main() {
           find.byKey(const Key('about_data_root')),
         );
         expect(dataRootText.style?.fontFamily, BlinkTypography.monoFontFamily);
+        expect(find.text('便携库目录（用户数据）'), findsOneWidget);
+        expect(find.text('应用本地目录'), findsOneWidget);
+        expect(find.byKey(const Key('vault_onedrive_hint')), findsNothing);
 
         // Default close behavior is hide-to-tray.
         expect(

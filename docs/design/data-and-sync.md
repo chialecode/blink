@@ -7,7 +7,7 @@
 
 ### 1.1 单文件夹便携库布局（`<BLINK_VAULT_DIR>`）与 SQLite 事务纪律
 
-BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 Dart 自包含架构（[DEC-022](../decisions.md#dec-022)）。桌面三端（`Windows / macOS / Linux`）将全部持久化数据收敛于单个用户可控的便携目录 `<BLINK_VAULT_DIR>`（默认位于 `%LOCALAPPDATA%/blink/vault` 或 `$XDG_DATA_HOME/blink/vault` / `~/Library/Application Support/blink/vault`，开发通道为 `blink-dev`），**复制这一个文件夹即可完成 100% 数据备份与跨机/NAS 迁移**；移动端（`Android / iOS`）在应用私有沙盒中运行完全一致的 `packages/blink_core` SQLite 模式并按需 LRU 缓存大体积 `blobs/`（不产出桌面 `mirror/`）：
+BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 Dart 自包含架构（[DEC-022](../decisions.md#dec-022)、[DEC-031](../decisions.md#dec-031)）。桌面三端（`Windows / macOS / Linux`）将全部用户知识资产收敛于单个用户可控的便携目录 `<BLINK_VAULT_DIR>`（已安装端默认位于系统“文档”目录：Windows 经 `SHGetKnownFolderPath(FOLDERID_Documents)` 解析的 `<Documents>\blink`、macOS `~/Documents/blink`、Linux `${XDG_DOCUMENTS_DIR:-~/Documents}/blink`，开发通道为 `blink-dev`；源码构建默认隔离于 `<repoRoot>/.local/blink-dev/vault`），应用本地设置、运行期 `ipc.json`、缓存与凭据独立存放于 OS 应用本地目录（如 `%LOCALAPPDATA%\blink[-dev]`），**复制这一个便携目录即可完成 100% 知识资产备份与跨机/NAS 迁移**；移动端（`Android / iOS`）在应用私有沙盒中运行完全一致的 `packages/blink_core` SQLite 模式并按需 LRU 缓存大体积 `blobs/`（不产出桌面 `mirror/`）：
 
 ```text
 <BLINK_VAULT_DIR>/                               # 复制单个文件夹即可备份与迁移全部知识资产
@@ -25,7 +25,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 
 1. **便携库零明文凭据（`INV-08`）**：设备同步令牌、WebDAV/S3 凭据、E2EE 同步主密钥、`local_with_private` 本地 MCP 令牌及可选内置直连 OpenAI 兼容 API Key **严禁**存入 `<BLINK_VAULT_DIR>`、`vault.json`、`db/blink.db` 或 `mirror/`，全部仅存于各设备 OS 原生安全密钥库；桌面端运行期 loopback IPC 令牌文件 `ipc.json`（`0600` 权限，每次启动轮换）亦存放于 OS 运行期目录（`%LOCALAPPDATA%/blink[-dev]/run/ipc.json`、`$XDG_RUNTIME_DIR/blink[-dev]/ipc.json`、`~/Library/Caches/blink[-dev]/run/ipc.json`），确保热拷贝便携库绝不夹带任何活态会话令牌。
 2. **统一 SQLite Pragmas 与单写者串行**：`packages/blink_core`（`drift 2.35.4` + `sqlite3 3.9.1` Native Assets，经 Dart Build Hooks 自动随五端与 CLI 随包分发原生 SQLite 库）每次建连强制执行：`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=15000; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32000;`。全部写事务采用 `BEGIN IMMEDIATE` 避免读写锁升级死锁；模式迁移与“导出备份”执行 `VACUUM INTO <tmp>` + `flush` + 原子重命名（`INV-07`）；桌面正常退出执行 `PRAGMA wal_checkpoint(TRUNCATE)` 将 `-wal`/`-shm` 折叠回 `blink.db`，保证冷拷贝零损坏。
-3. **禁止将活态 `db/blink.db` 置于外部网盘实时目录**：OneDrive / iCloud / Dropbox 的文件级块同步会撕裂 SQLite WAL 与 `-shm`；多设备实时同步一律走 BLINK 内置 `SyncTransport`（§5），外部云盘仅可备份 `db/backups/` 快照或只读 `mirror/`。
+3. **禁止将活态 `db/blink.db` 置于外部网盘实时目录**：OneDrive / iCloud / Dropbox 的文件级块同步会撕裂 SQLite WAL 与 `-shm`；若系统“文档”目录已被重定向至 OneDrive，设置页展示温和非阻塞提示但不强制改写默认位置，建议多机实时同步一律走 BLINK 内置 `SyncTransport`（§5）或将便携库切至非网盘目录，外部云盘仅可备份 `db/backups/` 快照或只读 `mirror/`。
 4. **双层权限隔离（`INV-01`、`INV-09`）**：
 
 | 维度 | 原文正本层（Raw Layer，`raw_*` / `media_blobs`） | 派生智能层（AI Index Layer，`ai_*` / `index/fts.db`） |

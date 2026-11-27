@@ -140,6 +140,44 @@ class BlinkWin32 {
       .lookupFunction<_ConvertStringSdToSdWNative, ConvertStringSdToSdWDart>(
         'ConvertStringSecurityDescriptorToSecurityDescriptorW',
       );
+
+  /// Queries the current user's Windows Documents Known Folder via
+  /// `SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, null)`.
+  ///
+  /// Respects custom drive redirection and OneDrive folder redirection.
+  /// Returns `null` on non-Windows platforms or if the Win32 call fails.
+  static String? queryKnownFolderDocuments() =>
+      _queryKnownFolderDocumentsImpl();
+}
+
+/// Queries the current user's Windows Documents Known Folder via Win32
+/// `SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, null)`
+/// and frees the returned buffer with `CoTaskMemFree`.
+///
+/// Returns `null` on non-Windows platforms or on any Win32 error.
+String? queryKnownFolderDocuments() => _queryKnownFolderDocumentsImpl();
+
+String? _queryKnownFolderDocumentsImpl() {
+  if (!Platform.isWindows) {
+    return null;
+  }
+  final rfid = FOLDERID_Documents.toNative(allocator: calloc);
+  try {
+    final pwstr = SHGetKnownFolderPath(rfid, KF_FLAG_DONT_VERIFY, null);
+    if (pwstr == nullptr) {
+      return null;
+    }
+    try {
+      final resolved = pwstr.toDartString().trim();
+      return resolved.isEmpty ? null : resolved;
+    } finally {
+      CoTaskMemFree(pwstr);
+    }
+  } catch (_) {
+    return null;
+  } finally {
+    calloc.free(rfid);
+  }
 }
 
 /// Owns a Win32 `SECURITY_ATTRIBUTES` structure whose protected DACL grants

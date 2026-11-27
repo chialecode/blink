@@ -246,7 +246,7 @@ class DesktopLifecycleController extends ChangeNotifier {
   }
 
   /// Persists an optional custom portable vault path (`null` = default channel
-  /// vault under `<dataRoot>/vault`) atomically to `settings/desktop.json`.
+  /// vault under Documents or sandbox) atomically to `settings/desktop.json`.
   void updateCustomVaultPath(String? path) {
     final normalized = path?.trim();
     final effective = (normalized == null || normalized.isEmpty)
