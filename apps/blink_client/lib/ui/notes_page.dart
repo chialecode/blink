@@ -8,6 +8,7 @@ import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/application/wysiwyg_document.dart';
 import 'package:blink_client/ui/desktop_window_chrome.dart';
 import 'package:blink_client/ui/markdown_editor.dart';
+import 'package:blink_client/ui/note_tab_bar.dart';
 
 Future<void> _confirmAndEmptyNoteTrash(
   BuildContext context,
@@ -137,6 +138,9 @@ class BlinkNotesSidebar extends StatelessWidget {
                 key: const Key('new_note_button'),
                 onPressed: workspace.hasOpenVault
                     ? () async {
+                        try {
+                          await workspace.flushPendingDrafts();
+                        } catch (_) {}
                         final created = await workspace.createNote();
                         if (created != null) {
                           onItemSelected?.call();
@@ -285,10 +289,7 @@ class BlinkNotesSidebar extends StatelessWidget {
                         return _NoteListTile(
                           entry: entry,
                           selected: selected,
-                          onTap: () {
-                            workspace.selectNote(entry.id);
-                            onItemSelected?.call();
-                          },
+                          onTap: () => unawaited(_handleSidebarNoteTap(entry)),
                         );
                       },
                     ),
@@ -309,6 +310,21 @@ class BlinkNotesSidebar extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _handleSidebarNoteTap(RawEntry entry) async {
+    if (workspace.selectedNoteId != entry.id) {
+      try {
+        await workspace.flushPendingDrafts();
+      } catch (_) {}
+    }
+    if (workspace.selectedNoteFilter == NoteFilterKind.trash ||
+        entry.isDeleted) {
+      workspace.selectNote(entry.id);
+    } else {
+      workspace.openNoteTab(entry.id);
+    }
+    onItemSelected?.call();
   }
 
   static String _emptySidebarMessage(NoteFilterKind filter) => switch (filter) {
@@ -462,20 +478,35 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
         }
 
         final selected = widget.workspace.selectedNote;
-        if (selected != null) {
-          return BlinkMarkdownEditor(
-            workspace: widget.workspace,
-            entry: selected,
-            isMobile: false,
-            onOpenEntry: (id) => unawaited(widget.workspace.openEntryById(id)),
-            onTagTap: (tag) =>
-                widget.workspace.selectNoteFilter(NoteFilterKind.tag, tag: tag),
-            onExpandSidebar: widget.onExpandSidebar,
-            showExpandSidebarButton: widget.showExpandSidebarButton,
-          );
-        }
-
-        return _buildDesktopEmptyState(context, tokens);
+        return ColoredBox(
+          color: tokens.canvas,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              BlinkNoteTabBar(
+                workspace: widget.workspace,
+                onExpandSidebar: widget.onExpandSidebar,
+                showExpandSidebarButton: widget.showExpandSidebarButton,
+                onBeforeSwitchOrCloseTab: widget.workspace.flushPendingDrafts,
+              ),
+              Expanded(
+                child: selected != null
+                    ? BlinkMarkdownEditor(
+                        workspace: widget.workspace,
+                        entry: selected,
+                        isMobile: false,
+                        onOpenEntry: (id) =>
+                            unawaited(widget.workspace.openEntryById(id)),
+                        onTagTap: (tag) => widget.workspace.selectNoteFilter(
+                          NoteFilterKind.tag,
+                          tag: tag,
+                        ),
+                      )
+                    : _buildDesktopEmptyState(context, tokens),
+              ),
+            ],
+          ),
+        );
       },
     );
   }
@@ -486,128 +517,78 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
   ) {
     final isTrash = widget.workspace.selectedNoteFilter == NoteFilterKind.trash;
     final hasAnyInList = widget.workspace.noteEntries.isNotEmpty;
-    final trailingInset = BlinkWindowChromeScope.trailingInsetOf(context);
 
-    return ColoredBox(
-      color: tokens.canvas,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          SizedBox(
-            height: kBlinkWindowChromeHeaderHeight,
-            child: BlinkWindowDragArea(
-              enabled: !widget.isMobile,
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  12,
-                  0,
-                  trailingInset > 0 ? 8 : 12,
-                  0,
-                ),
-                child: Row(
-                  children: <Widget>[
-                    if (widget.showExpandSidebarButton &&
-                        widget.onExpandSidebar != null)
-                      IconButton(
-                        key: const Key('notes_sidebar_expand_button'),
-                        tooltip: '展开侧边栏 (Ctrl+\\)',
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 32,
-                          minHeight: 32,
-                        ),
-                        onPressed: widget.onExpandSidebar,
-                        icon: Icon(
-                          Icons.menu_open_rounded,
-                          size: 18,
-                          color: tokens.textSecondary,
-                        ),
-                      ),
-                    const Spacer(),
-                    if (trailingInset > 0) SizedBox(width: trailingInset),
-                  ],
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                isTrash ? Icons.delete_outline_rounded : Icons.article_outlined,
+                size: 40,
+                color: tokens.textMuted,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                isTrash
+                    ? (hasAnyInList ? '选择一条已删除的笔记查看或还原' : '回收站为空')
+                    : (hasAnyInList ? '暂无打开的标签页' : '还没有笔记'),
+                textAlign: TextAlign.center,
+                style: BlinkTypography.heroHeading(tokens),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isTrash
+                    ? '回收站中的内容会一直保留，直到你手动还原或彻底删除'
+                    : (hasAnyInList
+                          ? '点击左侧笔记打开，或新建一篇笔记'
+                          : '点击左侧或下方新建笔记，也可以把小记一键转为长笔记'),
+                textAlign: TextAlign.center,
+                style: BlinkTypography.body(
+                  tokens,
+                  color: tokens.textSecondary,
                 ),
               ),
-            ),
-          ),
-          Expanded(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 400),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      Icon(
-                        isTrash
-                            ? Icons.delete_outline_rounded
-                            : Icons.article_outlined,
-                        size: 40,
-                        color: tokens.textMuted,
-                      ),
-                      const SizedBox(height: 14),
-                      Text(
-                        isTrash
-                            ? (hasAnyInList ? '选择一条已删除的笔记查看或还原' : '回收站为空')
-                            : (hasAnyInList ? '选择一篇笔记开始写作' : '还没有笔记'),
-                        textAlign: TextAlign.center,
-                        style: BlinkTypography.heroHeading(tokens),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        isTrash ? '回收站中的内容会一直保留，直到你手动还原或彻底删除' : '也可以把小记一键转为长笔记',
-                        textAlign: TextAlign.center,
-                        style: BlinkTypography.body(
-                          tokens,
-                          color: tokens.textSecondary,
-                        ),
-                      ),
-                      if (isTrash &&
-                          widget.showExpandSidebarButton &&
-                          hasAnyInList) ...<Widget>[
-                        const SizedBox(height: 18),
-                        OutlinedButton.icon(
-                          key: const Key('trash_empty_button'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: tokens.statusErr,
-                            side: BorderSide(color: tokens.statusErr, width: 1),
-                          ),
-                          onPressed: widget.workspace.hasOpenVault
-                              ? () => unawaited(
-                                  _confirmAndEmptyNoteTrash(
-                                    context,
-                                    widget.workspace,
-                                    widget.workspace.trashNoteCount,
-                                  ),
-                                )
-                              : null,
-                          icon: const Icon(
-                            Icons.delete_sweep_outlined,
-                            size: 16,
-                          ),
-                          label: const Text('清空回收站'),
-                        ),
-                      ],
-                      if (!isTrash) ...<Widget>[
-                        const SizedBox(height: 18),
-                        FilledButton.icon(
-                          key: const Key('empty_new_note_button'),
-                          onPressed: widget.workspace.hasOpenVault
-                              ? () => unawaited(widget.workspace.createNote())
-                              : null,
-                          icon: const Icon(Icons.add_rounded, size: 18),
-                          label: Text(hasAnyInList ? '新建笔记' : '新建第一篇笔记'),
-                        ),
-                      ],
-                    ],
+              if (isTrash &&
+                  widget.showExpandSidebarButton &&
+                  hasAnyInList) ...<Widget>[
+                const SizedBox(height: 18),
+                OutlinedButton.icon(
+                  key: const Key('trash_empty_button'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: tokens.statusErr,
+                    side: BorderSide(color: tokens.statusErr, width: 1),
                   ),
+                  onPressed: widget.workspace.hasOpenVault
+                      ? () => unawaited(
+                          _confirmAndEmptyNoteTrash(
+                            context,
+                            widget.workspace,
+                            widget.workspace.trashNoteCount,
+                          ),
+                        )
+                      : null,
+                  icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+                  label: const Text('清空回收站'),
                 ),
-              ),
-            ),
+              ],
+              if (!isTrash) ...<Widget>[
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  key: const Key('empty_new_note_button'),
+                  onPressed: widget.workspace.hasOpenVault
+                      ? () => unawaited(widget.workspace.createNote())
+                      : null,
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: Text(hasAnyInList ? '新建笔记' : '新建第一篇笔记'),
+                ),
+              ],
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

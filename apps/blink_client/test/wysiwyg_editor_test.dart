@@ -528,6 +528,20 @@ void main() {
         expect(find.byKey(const Key('editor_mode_toggle')), findsOneWidget);
         expect(find.byKey(const Key('note_source_input')), findsNothing);
 
+        // Desktop editor toolbar sits cleanly at the bottom below the document canvas.
+        final editorRect = tester.getRect(
+          find.byKey(const Key('blink_markdown_editor')),
+        );
+        final toolbarRect = tester.getRect(
+          find.byKey(const Key('note_editor_toolbar')),
+        );
+        final firstBlockRect = tester.getRect(
+          find.byKey(const Key('wysiwyg_block_0')),
+        );
+        expect(toolbarRect.height, 40.0);
+        expect(toolbarRect.bottom, closeTo(editorRect.bottom, 0.5));
+        expect(toolbarRect.top, greaterThan(firstBlockRect.top));
+
         // Inactive blocks hide raw Markdown markers (`# `, `**`, `==`, `> `).
         expect(find.textContaining('# 我的长笔记'), findsNothing);
         expect(find.textContaining('**加粗**'), findsNothing);
@@ -1215,6 +1229,38 @@ void main() {
           isFalse,
         );
         expect(fixture.workspace.privateNoteCount, 0);
+      },
+    );
+
+    testWidgets(
+      'desktop bottom toolbar condenses cleanly into overflow menu at narrow widths (420px) with zero RenderFlex overflow',
+      (tester) async {
+        final fixture = await createWorkspaceFixture(tester);
+        final note = (await tester.runAsync(
+          () => fixture.workspace.createNote(bodyMd: '# 窄栏底部工具栏测试\n\n正文'),
+        ))!;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: BlinkTheme.day(),
+            home: Scaffold(
+              body: SizedBox(
+                width: 420,
+                height: 500,
+                child: BlinkMarkdownEditor(
+                  workspace: fixture.workspace,
+                  entry: note,
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('note_editor_toolbar')), findsOneWidget);
+        expect(find.byKey(const Key('note_fmt_overflow')), findsOneWidget);
+        expect(find.byKey(const Key('editor_mode_toggle')), findsOneWidget);
       },
     );
   });

@@ -103,6 +103,9 @@ class BlinkWorkspaceController extends ChangeNotifier {
   NoteFilterKind _selectedNoteFilter = NoteFilterKind.all;
   String? _selectedNoteTag;
   String? _selectedNoteId;
+  final List<String> _openNoteTabIds = <String>[];
+  String? _lastActiveNoteTabId;
+  bool _userClosedAllNoteTabs = false;
   String? _pendingMobileNoteOpenId;
 
   String? _selectedEntryId;
@@ -113,6 +116,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
   bool _ownsVault = false;
   bool _metadataRefreshInFlight = false;
   bool _metadataRefreshQueued = false;
+  int _metadataEpoch = 0;
 
   VaultStats? _stats;
   MirrorStatus? _mirrorStatus;
@@ -187,8 +191,33 @@ class BlinkWorkspaceController extends ChangeNotifier {
   NoteFilterKind get selectedNoteFilter => _selectedNoteFilter;
   String? get selectedNoteTag => _selectedNoteTag;
   String? get selectedNoteId => _selectedNoteId;
+  List<String> get openNoteTabIds => List<String>.unmodifiable(_openNoteTabIds);
+  List<RawEntry> get openNoteTabs {
+    final resolved = <RawEntry>[];
+    for (final id in _openNoteTabIds) {
+      final entry = _resolveNoteEntryById(id);
+      if (entry != null) {
+        resolved.add(entry);
+      }
+    }
+    return List<RawEntry>.unmodifiable(resolved);
+  }
+
   String? get pendingMobileNoteOpenId => _pendingMobileNoteOpenId;
   List<RawEntry> get noteEntries => _noteEntries;
+
+  RawEntry? _resolveNoteEntryById(String id) {
+    for (final entry in _noteEntries) {
+      if (entry.id == id) {
+        return entry;
+      }
+    }
+    final cached = _entriesById[id];
+    if (cached != null && isNoteKind(cached.entryKind)) {
+      return cached;
+    }
+    return null;
+  }
 
   /// Consumes and clears the note ID queued for automatic full-screen editor
   /// navigation on mobile (`<600px`) after cross-module jumps (`promoteMemoToNote`,
@@ -215,16 +244,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     if (id == null) {
       return null;
     }
-    for (final entry in _noteEntries) {
-      if (entry.id == id) {
-        return entry;
-      }
-    }
-    final cached = _entriesById[id];
-    if (cached != null && isNoteKind(cached.entryKind)) {
-      return cached;
-    }
-    return null;
+    return _resolveNoteEntryById(id);
   }
 
   String? get selectedEntryId => _selectedEntryId;
@@ -518,6 +538,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     if (activeVault == null || !activeVault.isOpen) {
       return;
     }
+    final epoch = _metadataEpoch;
     try {
       final isNoteTrash = _selectedNoteFilter == NoteFilterKind.trash;
       final results = await Future.wait<Object>(<Future<Object>>[
@@ -529,6 +550,9 @@ class BlinkWorkspaceController extends ChangeNotifier {
           const EntryQuery(includeDeleted: true, limit: _metadataScanLimit),
         ),
       ]);
+      if (_isDisposed || !identical(_vault, activeVault)) {
+        return;
+      }
       _stats = results[0] as VaultStats;
       _memoEntries = List<RawEntry>.unmodifiable(results[1] as List<RawEntry>);
       _noteEntries = _sortNoteEntries(
@@ -536,7 +560,11 @@ class BlinkWorkspaceController extends ChangeNotifier {
         isTrash: isNoteTrash,
       );
       _blobs = List<MediaBlob>.unmodifiable(results[3] as List<MediaBlob>);
-      _applyMetadataSnapshot(results[4] as List<RawEntry>);
+      if (epoch == _metadataEpoch) {
+        _applyMetadataSnapshot(results[4] as List<RawEntry>);
+      } else {
+        _scheduleMetadataRefresh();
+      }
       _mirrorStatus = activeVault.mirror.currentStatus;
       _safeNotify();
     } catch (_) {}
@@ -555,12 +583,20 @@ class BlinkWorkspaceController extends ChangeNotifier {
         if (currentVault == null || !currentVault.isOpen || _isDisposed) {
           break;
         }
+        final epoch = _metadataEpoch;
         final results = await Future.wait<Object>(<Future<Object>>[
           currentVault.blobs.listBlobs(limit: _queryLimit),
           currentVault.raw.listEntries(
             const EntryQuery(includeDeleted: true, limit: _metadataScanLimit),
           ),
         ]);
+        if (_isDisposed || !identical(_vault, currentVault)) {
+          break;
+        }
+        if (epoch != _metadataEpoch) {
+          _metadataRefreshQueued = true;
+          continue;
+        }
         _blobs = List<MediaBlob>.unmodifiable(results[0] as List<MediaBlob>);
         _applyMetadataSnapshot(results[1] as List<RawEntry>);
         _safeNotify();
@@ -587,6 +623,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     var privateNotes = 0;
     var trashNotes = 0;
 
+    final activeNotes = <RawEntry>[];
     for (final entry in allEntries) {
       byId[entry.id] = entry;
       if (entry.audioBlobSha256 != null && entry.audioBlobSha256!.isNotEmpty) {
@@ -610,6 +647,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
 
       if (isNote) {
         totalNotes++;
+        activeNotes.add(entry);
         if (entry.isPrivate) {
           privateNotes++;
         }
@@ -648,6 +686,95 @@ class BlinkWorkspaceController extends ChangeNotifier {
 
     _tagCounts = Map<String, int>.unmodifiable(allTags);
     _blobReferrers = referrers;
+
+    _reconcileNoteTabs(byId: byId, activeNotes: activeNotes);
+  }
+
+  void _reconcileNoteTabs({
+    required Map<String, RawEntry> byId,
+    required List<RawEntry> activeNotes,
+  }) {
+    final staleTabIds = <String>{};
+    for (final id in _openNoteTabIds) {
+      final found = byId[id];
+      if (found == null || !isNoteKind(found.entryKind) || found.isDeleted) {
+        staleTabIds.add(id);
+      }
+    }
+    if (staleTabIds.isNotEmpty) {
+      _removeNoteTabsForDeleted(staleTabIds);
+    }
+
+    if (_openNoteTabIds.isEmpty &&
+        !_userClosedAllNoteTabs &&
+        activeNotes.isNotEmpty) {
+      RawEntry? initial;
+      if (_selectedNoteId != null) {
+        final current = byId[_selectedNoteId!];
+        if (current != null &&
+            isNoteKind(current.entryKind) &&
+            !current.isDeleted) {
+          initial = current;
+        }
+      }
+      if (initial == null && _selectedNoteFilter != NoteFilterKind.trash) {
+        activeNotes.sort((a, b) {
+          final cmp = b.updatedAtUtc.compareTo(a.updatedAtUtc);
+          return cmp != 0 ? cmp : b.id.compareTo(a.id);
+        });
+        initial = activeNotes.first;
+      }
+      if (initial != null) {
+        _openNoteTabIds.add(initial.id);
+        _lastActiveNoteTabId = initial.id;
+        if (_selectedNoteId == null &&
+            _selectedNoteFilter != NoteFilterKind.trash) {
+          _selectedNoteId = initial.id;
+        }
+      }
+    }
+  }
+
+  void _removeNoteTabsForDeleted(Set<String> removedIds) {
+    if (removedIds.isEmpty) {
+      return;
+    }
+    final hadOpenTabs = _openNoteTabIds.isNotEmpty;
+    int? closedActiveIndex;
+    for (var i = 0; i < _openNoteTabIds.length; i++) {
+      if (removedIds.contains(_openNoteTabIds[i]) &&
+          _openNoteTabIds[i] == _selectedNoteId) {
+        closedActiveIndex = i;
+        break;
+      }
+    }
+    _openNoteTabIds.removeWhere(removedIds.contains);
+    if (hadOpenTabs && _openNoteTabIds.isEmpty) {
+      _userClosedAllNoteTabs = true;
+    }
+    if (_lastActiveNoteTabId != null &&
+        removedIds.contains(_lastActiveNoteTabId)) {
+      _lastActiveNoteTabId = _openNoteTabIds.isNotEmpty
+          ? _openNoteTabIds.first
+          : null;
+    }
+    if (_selectedNoteId != null && removedIds.contains(_selectedNoteId)) {
+      if (_openNoteTabIds.isNotEmpty) {
+        final idx = (closedActiveIndex ?? 0).clamp(
+          0,
+          _openNoteTabIds.length - 1,
+        );
+        final nextId = _openNoteTabIds[idx];
+        _selectedNoteId = nextId;
+        _selectedEntryId = nextId;
+        _lastActiveNoteTabId = nextId;
+      } else {
+        _selectedNoteId = null;
+        if (_selectedEntryId != null && removedIds.contains(_selectedEntryId)) {
+          _selectedEntryId = null;
+        }
+      }
+    }
   }
 
   void setDestination(BlinkNavDestination next) {
@@ -742,13 +869,169 @@ class BlinkWorkspaceController extends ChangeNotifier {
     _selectedNoteTag = filter == NoteFilterKind.tag ? tag : null;
     if (filter == NoteFilterKind.trash) {
       _selectedNoteId = null;
+    } else if (_selectedNoteId == null || selectedNote?.isDeleted == true) {
+      if (_openNoteTabIds.isNotEmpty) {
+        final restoredId =
+            (_lastActiveNoteTabId != null &&
+                _openNoteTabIds.contains(_lastActiveNoteTabId))
+            ? _lastActiveNoteTabId!
+            : _openNoteTabIds.first;
+        _selectedNoteId = restoredId;
+        _selectedEntryId = restoredId;
+      } else if (selectedNote?.isDeleted == true) {
+        _selectedNoteId = null;
+      }
     }
     _resubscribeNoteEntries();
     _safeNotify();
     unawaited(refreshAll());
   }
 
+  /// Opens [noteId] in the desktop multi-tab bar without duplicating an
+  /// already-open tab, optionally activating it immediately.
+  void openNoteTab(String noteId, {bool activate = true}) {
+    final entry = _resolveNoteEntryById(noteId);
+    if (entry != null && entry.isDeleted) {
+      if (activate) {
+        selectNote(noteId);
+      }
+      return;
+    }
+    var changed = false;
+    if (_userClosedAllNoteTabs) {
+      _userClosedAllNoteTabs = false;
+      changed = true;
+    }
+    if (!_openNoteTabIds.contains(noteId)) {
+      _openNoteTabIds.add(noteId);
+      changed = true;
+    }
+    if (activate) {
+      if (_selectedNoteId != noteId ||
+          _selectedEntryId != noteId ||
+          _lastActiveNoteTabId != noteId) {
+        _selectedNoteId = noteId;
+        _selectedEntryId = noteId;
+        _lastActiveNoteTabId = noteId;
+        changed = true;
+      }
+    }
+    if (changed) {
+      _safeNotify();
+    }
+  }
+
+  /// Closes [noteId] from the multi-tab bar, activating the adjacent neighbor
+  /// tab (or clearing selection if the last tab was closed).
+  void closeNoteTab(String noteId) {
+    final index = _openNoteTabIds.indexOf(noteId);
+    if (index < 0) {
+      return;
+    }
+    _openNoteTabIds.removeAt(index);
+    if (_openNoteTabIds.isEmpty) {
+      _userClosedAllNoteTabs = true;
+      _lastActiveNoteTabId = null;
+      if (_selectedNoteId == noteId) {
+        _selectedNoteId = null;
+        if (_selectedEntryId == noteId) {
+          _selectedEntryId = null;
+        }
+      }
+    } else if (_selectedNoteId == noteId) {
+      final nextIndex = index < _openNoteTabIds.length
+          ? index
+          : _openNoteTabIds.length - 1;
+      final nextId = _openNoteTabIds[nextIndex];
+      _selectedNoteId = nextId;
+      _selectedEntryId = nextId;
+      _lastActiveNoteTabId = nextId;
+    } else if (_lastActiveNoteTabId == noteId) {
+      final fallbackIndex = index < _openNoteTabIds.length
+          ? index
+          : _openNoteTabIds.length - 1;
+      _lastActiveNoteTabId = _openNoteTabIds[fallbackIndex];
+    }
+    _safeNotify();
+  }
+
+  /// Keeps only [keepNoteId] open in the multi-tab bar and activates it.
+  void closeOtherNoteTabs(String keepNoteId) {
+    if (!_openNoteTabIds.contains(keepNoteId)) {
+      return;
+    }
+    final changed =
+        _openNoteTabIds.length != 1 ||
+        _selectedNoteId != keepNoteId ||
+        _selectedEntryId != keepNoteId;
+    _openNoteTabIds
+      ..clear()
+      ..add(keepNoteId);
+    _userClosedAllNoteTabs = false;
+    _selectedNoteId = keepNoteId;
+    _selectedEntryId = keepNoteId;
+    _lastActiveNoteTabId = keepNoteId;
+    if (changed) {
+      _safeNotify();
+    }
+  }
+
+  /// Closes every tab to the right of [noteId]; activates [noteId] if the
+  /// previously active tab was among those closed.
+  void closeNoteTabsToRight(String noteId) {
+    final index = _openNoteTabIds.indexOf(noteId);
+    if (index < 0 || index >= _openNoteTabIds.length - 1) {
+      return;
+    }
+    final removed = _openNoteTabIds.sublist(index + 1).toSet();
+    _openNoteTabIds.removeRange(index + 1, _openNoteTabIds.length);
+    if (_selectedNoteId != null && removed.contains(_selectedNoteId)) {
+      _selectedNoteId = noteId;
+      _selectedEntryId = noteId;
+      _lastActiveNoteTabId = noteId;
+    } else if (_lastActiveNoteTabId != null &&
+        removed.contains(_lastActiveNoteTabId)) {
+      _lastActiveNoteTabId = noteId;
+    }
+    _safeNotify();
+  }
+
+  /// Cycles the active note tab forward (or backward when [reverse] is true),
+  /// wrapping around cleanly. No-op when fewer than two tabs are open.
+  void cycleNoteTab({bool reverse = false}) {
+    if (_openNoteTabIds.length <= 1) {
+      return;
+    }
+    final currentIdx = _selectedNoteId == null
+        ? -1
+        : _openNoteTabIds.indexOf(_selectedNoteId!);
+    final int nextIdx;
+    if (currentIdx < 0) {
+      nextIdx = reverse ? _openNoteTabIds.length - 1 : 0;
+    } else if (reverse) {
+      nextIdx =
+          (currentIdx - 1 + _openNoteTabIds.length) % _openNoteTabIds.length;
+    } else {
+      nextIdx = (currentIdx + 1) % _openNoteTabIds.length;
+    }
+    final nextId = _openNoteTabIds[nextIdx];
+    _selectedNoteId = nextId;
+    _selectedEntryId = nextId;
+    _lastActiveNoteTabId = nextId;
+    _safeNotify();
+  }
+
   void selectNote(String? id) {
+    if (id != null) {
+      final entry = _resolveNoteEntryById(id);
+      final isTrashed =
+          entry?.isDeleted == true ||
+          _selectedNoteFilter == NoteFilterKind.trash;
+      if (!isTrashed) {
+        openNoteTab(id, activate: true);
+        return;
+      }
+    }
     if (_selectedNoteId == id && _selectedEntryId == id) {
       return;
     }
@@ -773,6 +1056,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
       if (cached != null) {
         if (isNoteKind(cached.entryKind)) {
           _selectedNoteId = entryId;
+          if (!cached.isDeleted) {
+            _userClosedAllNoteTabs = false;
+            if (!_openNoteTabIds.contains(entryId)) {
+              _openNoteTabIds.add(entryId);
+            }
+            _lastActiveNoteTabId = entryId;
+          }
         } else {
           _selectedMemoId = entryId;
         }
@@ -797,6 +1087,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
       return null;
     }
 
+    _metadataEpoch++;
     _entriesById = <String, RawEntry>{..._entriesById, found.id: found};
 
     if (isNoteKind(found.entryKind)) {
@@ -804,12 +1095,19 @@ class BlinkWorkspaceController extends ChangeNotifier {
       if (found.isDeleted) {
         _selectedNoteFilter = NoteFilterKind.trash;
         _selectedNoteTag = null;
-      } else if (_selectedNoteFilter == NoteFilterKind.trash ||
-          (_selectedNoteFilter == NoteFilterKind.privateOnly &&
-              !found.isPrivate) ||
-          _selectedNoteFilter == NoteFilterKind.tag) {
-        _selectedNoteFilter = NoteFilterKind.all;
-        _selectedNoteTag = null;
+      } else {
+        if (_selectedNoteFilter == NoteFilterKind.trash ||
+            (_selectedNoteFilter == NoteFilterKind.privateOnly &&
+                !found.isPrivate) ||
+            _selectedNoteFilter == NoteFilterKind.tag) {
+          _selectedNoteFilter = NoteFilterKind.all;
+          _selectedNoteTag = null;
+        }
+        _userClosedAllNoteTabs = false;
+        if (!_openNoteTabIds.contains(found.id)) {
+          _openNoteTabIds.add(found.id);
+        }
+        _lastActiveNoteTabId = found.id;
       }
       _selectedNoteId = found.id;
       _pendingMobileNoteOpenId = found.id;
@@ -970,6 +1268,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
         privacyLocked: isPrivate,
         imageBlobSha256s: imageBlobSha256s,
       );
+      _metadataEpoch++;
       _entriesById = <String, RawEntry>{..._entriesById, created.id: created};
       if (_selectedNoteFilter == NoteFilterKind.trash ||
           _selectedNoteFilter == NoteFilterKind.tag ||
@@ -979,8 +1278,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
         _selectedNoteTag = null;
         _resubscribeNoteEntries();
       }
+      _userClosedAllNoteTabs = false;
+      if (!_openNoteTabIds.contains(created.id)) {
+        _openNoteTabIds.add(created.id);
+      }
       _selectedNoteId = created.id;
       _selectedEntryId = created.id;
+      _lastActiveNoteTabId = created.id;
       _pendingMobileNoteOpenId = created.id;
       _safeNotify();
       await refreshAll();
@@ -1044,6 +1348,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
         privacyLocked: memo.isPrivate,
         imageBlobSha256s: memo.imageBlobSha256s,
       );
+      _metadataEpoch++;
       _entriesById = <String, RawEntry>{..._entriesById, created.id: created};
       _destination = BlinkNavDestination.notes;
       if (_selectedNoteFilter == NoteFilterKind.trash ||
@@ -1054,8 +1359,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
         _selectedNoteTag = null;
         _resubscribeNoteEntries();
       }
+      _userClosedAllNoteTabs = false;
+      if (!_openNoteTabIds.contains(created.id)) {
+        _openNoteTabIds.add(created.id);
+      }
       _selectedNoteId = created.id;
       _selectedEntryId = created.id;
+      _lastActiveNoteTabId = created.id;
       _pendingMobileNoteOpenId = created.id;
       showBanner('已转为笔记，原小记保留在记录中。');
       await refreshAll();
@@ -1142,14 +1452,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
       return;
     }
     await activeVault.raw.softDeleteEntry(id);
-    if (_selectedEntryId == id) {
-      _selectedEntryId = null;
-    }
+    _metadataEpoch++;
     if (_selectedMemoId == id) {
       _selectedMemoId = null;
     }
-    if (_selectedNoteId == id) {
-      _selectedNoteId = null;
+    _removeNoteTabsForDeleted(<String>{id});
+    if (_selectedEntryId == id) {
+      _selectedEntryId = null;
     }
     if (_pendingMobileNoteOpenId == id) {
       _pendingMobileNoteOpenId = null;
@@ -1164,7 +1473,17 @@ class BlinkWorkspaceController extends ChangeNotifier {
       return;
     }
     final restored = await activeVault.raw.restoreEntry(id);
+    _metadataEpoch++;
     _entriesById = <String, RawEntry>{..._entriesById, restored.id: restored};
+    if (isNoteKind(restored.entryKind)) {
+      _userClosedAllNoteTabs = false;
+      if (!_openNoteTabIds.contains(restored.id)) {
+        _openNoteTabIds.add(restored.id);
+      }
+      if (_selectedNoteId == restored.id) {
+        _lastActiveNoteTabId = restored.id;
+      }
+    }
     showBanner('已从回收站还原。');
     await refreshAll();
   }
@@ -1175,14 +1494,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
       return 0;
     }
     final purged = await activeVault.raw.purgeEntryPermanently(id);
-    if (_selectedEntryId == id) {
-      _selectedEntryId = null;
-    }
+    _metadataEpoch++;
     if (_selectedMemoId == id) {
       _selectedMemoId = null;
     }
-    if (_selectedNoteId == id) {
-      _selectedNoteId = null;
+    _removeNoteTabsForDeleted(<String>{id});
+    if (_selectedEntryId == id) {
+      _selectedEntryId = null;
     }
     if (_pendingMobileNoteOpenId == id) {
       _pendingMobileNoteOpenId = null;
@@ -1208,14 +1526,13 @@ class BlinkWorkspaceController extends ChangeNotifier {
     );
     final purgedIds = <String>{for (final entry in trashedBefore) entry.id};
     final count = await activeVault.raw.emptyTrash(kinds: kinds);
-    if (_selectedEntryId != null && purgedIds.contains(_selectedEntryId)) {
-      _selectedEntryId = null;
-    }
+    _metadataEpoch++;
     if (_selectedMemoId != null && purgedIds.contains(_selectedMemoId)) {
       _selectedMemoId = null;
     }
-    if (_selectedNoteId != null && purgedIds.contains(_selectedNoteId)) {
-      _selectedNoteId = null;
+    _removeNoteTabsForDeleted(purgedIds);
+    if (_selectedEntryId != null && purgedIds.contains(_selectedEntryId)) {
+      _selectedEntryId = null;
     }
     if (_pendingMobileNoteOpenId != null &&
         purgedIds.contains(_pendingMobileNoteOpenId)) {
@@ -1464,12 +1781,16 @@ class BlinkWorkspaceController extends ChangeNotifier {
           await previous.mirror.flushNow();
         } catch (_) {}
       }
+      _metadataEpoch++;
       _vaultErrorCode = null;
       _vaultErrorMessage = null;
       _ownsVault = true;
       _selectedEntryId = null;
       _selectedMemoId = null;
       _selectedNoteId = null;
+      _openNoteTabIds.clear();
+      _lastActiveNoteTabId = null;
+      _userClosedAllNoteTabs = false;
       _pendingMobileNoteOpenId = null;
       _selectedMemoFilter = MemoFilterKind.all;
       _selectedMemoTag = null;

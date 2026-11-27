@@ -152,7 +152,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
 
   void _handleNewShortcut() {
     if (widget.workspace.destination == BlinkNavDestination.notes) {
-      unawaited(widget.workspace.createNote());
+      unawaited(_flushAndCreateNote());
       return;
     }
     widget.workspace.setDestination(BlinkNavDestination.memos);
@@ -165,6 +165,58 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
         _memoComposerFocusNode.requestFocus();
       }
     });
+  }
+
+  Future<void> _flushAndCreateNote() async {
+    try {
+      await widget.workspace.flushPendingDrafts();
+    } catch (_) {}
+    await widget.workspace.createNote();
+  }
+
+  Future<void> _flushAndCloseNoteTab(String noteId) async {
+    try {
+      await widget.workspace.flushPendingDrafts();
+    } catch (_) {}
+    widget.workspace.closeNoteTab(noteId);
+  }
+
+  Future<void> _flushAndCycleNoteTab({required bool reverse}) async {
+    try {
+      await widget.workspace.flushPendingDrafts();
+    } catch (_) {}
+    widget.workspace.cycleNoteTab(reverse: reverse);
+  }
+
+  KeyEventResult _handleShellKeyEvent(FocusNode node, KeyEvent event) {
+    final isCtrlOrMeta =
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (!isCtrlOrMeta ||
+        widget.workspace.destination != BlinkNavDestination.notes) {
+      return KeyEventResult.ignored;
+    }
+
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.keyW) {
+      final activeId = widget.workspace.selectedNoteId;
+      if (activeId != null &&
+          widget.workspace.openNoteTabIds.contains(activeId)) {
+        unawaited(_flushAndCloseNoteTab(activeId));
+        return KeyEventResult.handled;
+      }
+    }
+
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        event.logicalKey == LogicalKeyboardKey.tab) {
+      unawaited(
+        _flushAndCycleNoteTab(
+          reverse: HardwareKeyboard.instance.isShiftPressed,
+        ),
+      );
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
   }
 
   void _handleToggleNoteEditorModeShortcut() {
@@ -222,6 +274,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       },
       child: Focus(
         autofocus: true,
+        onKeyEvent: _handleShellKeyEvent,
         child: ListenableBuilder(
           listenable: Listenable.merge(<Listenable>[
             widget.workspace,

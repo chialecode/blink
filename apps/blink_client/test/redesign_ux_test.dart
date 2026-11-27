@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:blink_core/blink_core.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -13,6 +14,7 @@ import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
 import 'package:blink_client/platform/paths.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 class _NoopWindowAdapter implements DesktopWindowAdapter {
   @override
@@ -520,6 +522,7 @@ void main() {
         await tester.tap(find.byKey(const Key('nav_notes')));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('mobile_notes_header')), findsOneWidget);
+        expect(find.byKey(const Key('note_tab_bar')), findsNothing);
         expect(find.text('移动端长文笔记'), findsOneWidget);
 
         await tester.tap(find.text('移动端长文笔记'));
@@ -529,6 +532,7 @@ void main() {
           find.byKey(const Key('mobile_note_editor_screen')),
           findsOneWidget,
         );
+        expect(find.byKey(const Key('note_tab_bar')), findsNothing);
         expect(find.byKey(const Key('blink_markdown_editor')), findsOneWidget);
         expect(find.byKey(const Key('editor_mode_toggle')), findsOneWidget);
         expect(tester.takeException(), isNull);
@@ -896,11 +900,12 @@ void main() {
           expect(find.textContaining('30 天'), findsNothing);
           expect(find.text('清理已过期'), findsNothing);
 
-          // Notes Editor toolbar with 138px trailing inset:
-          // verify zero overflow, zero sliced format icons, usable drag space, and reachable overflow actions.
+          // Notes Multi-Tab Bar (top 44px) + Bottom Typora Toolbar (40px) with 138px trailing inset:
+          // verify zero overflow, tab bar aligned at y=0..44 clear of caption buttons,
+          // bottom editor toolbar pinned cleanly at window bottom, and usable drag space in top tab bar.
           fixture.workspace.setDestination(BlinkNavDestination.notes);
           fixture.workspace.selectNoteFilter(NoteFilterKind.all);
-          fixture.workspace.selectNote(note.id);
+          fixture.workspace.openNoteTab(note.id);
           await tester.pumpAndSettle();
           expect(
             tester.takeException(),
@@ -908,23 +913,70 @@ void main() {
             reason: 'Notes editor at $size',
           );
 
-          final privRect = tester.getRect(
-            find.byKey(const Key('note_editor_private_toggle')),
+          final tabBarRect = tester.getRect(
+            find.byKey(const Key('note_tab_bar')),
           );
           final captionRect = tester.getRect(
             find.byKey(const Key('window_caption_buttons')),
+          );
+          final newTabBtnRect = tester.getRect(
+            find.byKey(const Key('note_tab_new_button')),
+          );
+          final dragSpaceRect = tester.getRect(
+            find.byKey(const Key('note_tab_bar_drag_space')),
+          );
+          expect(tabBarRect.top, 0.0, reason: 'Tab bar must start at y=0');
+          expect(
+            tabBarRect.height,
+            kBlinkWindowChromeHeaderHeight,
+            reason: 'Tab bar must match 44px chrome height at $size',
+          );
+          expect(
+            newTabBtnRect.right,
+            lessThanOrEqualTo(captionRect.left),
+            reason:
+                'New tab button must stay clear of caption buttons at $size',
+          );
+          expect(
+            dragSpaceRect.width,
+            greaterThanOrEqualTo(32.0),
+            reason: 'Usable blank drag space required in note tab bar at $size',
+          );
+
+          // Bottom editor toolbar sits at the bottom of the window (NOT top),
+          // with zero clipping between format controls and right-side actions.
+          final bottomToolbarRect = tester.getRect(
+            find.byKey(const Key('note_editor_toolbar')),
+          );
+          expect(
+            bottomToolbarRect.top,
+            greaterThan(tabBarRect.bottom),
+            reason: 'Editor toolbar must sit below top tab bar at $size',
+          );
+          expect(
+            bottomToolbarRect.bottom,
+            closeTo(size.height, 0.5),
+            reason: 'Editor toolbar must be pinned at window bottom at $size',
+          );
+          expect(
+            bottomToolbarRect.height,
+            40.0,
+            reason: 'Bottom editor toolbar must be 40px tall at $size',
+          );
+
+          final privRect = tester.getRect(
+            find.byKey(const Key('note_editor_private_toggle')),
           );
           final moreRect = tester.getRect(
             find.byKey(const Key('note_editor_more_button')),
           );
           expect(
             moreRect.right,
-            lessThanOrEqualTo(captionRect.left),
+            lessThanOrEqualTo(size.width),
             reason:
-                'Toolbar right edge must stay clear of caption buttons at $size',
+                'Bottom toolbar right edge must stay within viewport at $size',
           );
 
-          double lastFormatRight = 0;
           for (final fmtKey in const <Key>[
             Key('note_fmt_heading'),
             Key('note_fmt_bold'),
@@ -934,39 +986,28 @@ void main() {
             Key('note_fmt_bullet'),
             Key('note_fmt_quote'),
             Key('note_fmt_code'),
-            Key('note_fmt_overflow'),
           ]) {
-            final finder = find.byKey(fmtKey);
-            if (finder.evaluate().isNotEmpty) {
-              final r = tester.getRect(finder);
-              expect(
-                r.right,
-                lessThanOrEqualTo(privRect.left),
-                reason: '$fmtKey clipped into private toggle at $size',
-              );
-              if (r.right > lastFormatRight) {
-                lastFormatRight = r.right;
-              }
-            }
-          }
-          expect(
-            privRect.left - lastFormatRight,
-            greaterThanOrEqualTo(32.0),
-            reason:
-                'Usable blank drag space required in notes toolbar at $size',
-          );
-          if (size.width <= 960) {
             expect(
-              find.byKey(const Key('note_fmt_overflow')),
+              find.byKey(fmtKey),
               findsOneWidget,
-              reason:
-                  'Tight desktop toolbar should expose format overflow menu at $size',
+              reason: '$fmtKey should stay directly visible at $size',
+            );
+            final r = tester.getRect(find.byKey(fmtKey));
+            expect(
+              r.right,
+              lessThanOrEqualTo(privRect.left),
+              reason: '$fmtKey clipped into right controls at $size',
             );
           }
 
-          // Verify P1 #1 integration on Notes toolbar: rapid double-click on `H`
-          // must NOT trigger window maximize, while blank drag gap DOES trigger drag/maximize!
+          // Verify P1 #1 integration on top tab bar: rapid double-click on a tab
+          // or bottom format button must NOT trigger window maximize, while blank
+          // drag space in the top tab bar DOES trigger window drag!
           final maxBefore = chromeAdapter.toggleMaximizeCalls;
+          await tester.tap(find.byKey(Key('note_tab_${note.id}')));
+          await tester.pump(const Duration(milliseconds: 40));
+          await tester.tap(find.byKey(Key('note_tab_${note.id}')));
+          await tester.pumpAndSettle();
           await tester.tap(find.byKey(const Key('note_fmt_heading')));
           await tester.pump(const Duration(milliseconds: 40));
           await tester.tap(find.byKey(const Key('note_fmt_heading')));
@@ -975,20 +1016,16 @@ void main() {
             chromeAdapter.toggleMaximizeCalls,
             maxBefore,
             reason:
-                'Rapid double-click on note_fmt_heading must not maximize at $size',
+                'Rapid double-click on tab or bottom toolbar button must not maximize at $size',
           );
 
-          final blankMid = Offset(
-            (lastFormatRight + privRect.left) / 2,
-            privRect.center.dy,
-          );
           final dragBefore = chromeAdapter.startDragCalls;
-          await tester.dragFrom(blankMid, const Offset(24, 0));
+          await tester.dragFrom(dragSpaceRect.center, const Offset(24, 0));
           await tester.pumpAndSettle();
           expect(
             chromeAdapter.startDragCalls,
             greaterThan(dragBefore),
-            reason: 'Blank toolbar drag space must start window drag at $size',
+            reason: 'Blank tab bar drag space must start window drag at $size',
           );
 
           // Notes Empty/Trash view with 138px trailing inset.
@@ -999,9 +1036,481 @@ void main() {
             isNull,
             reason: 'Notes trash at $size',
           );
+          expect(find.byKey(const Key('note_tab_bar')), findsOneWidget);
           expect(find.textContaining('30 天'), findsNothing);
           expect(find.text('清理已过期'), findsNothing);
         }
+      },
+    );
+
+    testWidgets(
+      'Multi-Tab Notes workspace: deduplicated tabs, +/x/Ctrl+W/middle-click/context-menu, Ctrl+Tab cycling, empty canvas, draft flush on switch & close, and trash preservation',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.notes,
+        );
+        late RawEntry noteA;
+        late RawEntry noteB;
+        late RawEntry noteC;
+        late RawEntry trashedNote;
+        await tester.runAsync(() async {
+          noteA = (await fixture.workspace.createNote(
+            bodyMd: '# 笔记甲\n\n初始正文甲',
+          ))!;
+          noteB = (await fixture.workspace.createNote(
+            bodyMd: '# 笔记乙\n\n初始正文乙',
+          ))!;
+          noteC = (await fixture.workspace.createNote(
+            bodyMd: '# 笔记丙\n\n初始正文丙',
+          ))!;
+          trashedNote = (await fixture.workspace.createNote(
+            bodyMd: '# 回收站笔记\n\n待还原内容',
+          ))!;
+          await fixture.workspace.softDeleteEntry(trashedNote.id);
+        });
+        fixture.workspace.clearBanner();
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. Three distinct active note tabs open in order; re-clicking Note A focuses without duplicating.
+        expect(fixture.workspace.openNoteTabIds, <String>[
+          noteA.id,
+          noteB.id,
+          noteC.id,
+        ]);
+        expect(find.byKey(Key('note_tab_${noteA.id}')), findsOneWidget);
+        expect(find.byKey(Key('note_tab_${noteB.id}')), findsOneWidget);
+        expect(find.byKey(Key('note_tab_${noteC.id}')), findsOneWidget);
+
+        await tester.tap(find.byKey(Key('note_list_item_${noteA.id}')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.selectedNoteId, noteA.id);
+        expect(fixture.workspace.openNoteTabIds, <String>[
+          noteA.id,
+          noteB.id,
+          noteC.id,
+        ]);
+
+        // 2. Unsaved edit in Tab A (<600ms debounce) flushes cleanly before switching to Tab B.
+        await tester.tap(find.byKey(const Key('editor_mode_toggle')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('note_source_input')),
+          '# 笔记甲已更新\n\n切换标签前自动落盘',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(Key('note_tab_${noteB.id}')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 80)),
+        );
+        await tester.pumpAndSettle();
+
+        expect(fixture.workspace.selectedNoteId, noteB.id);
+        final savedA = await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(noteA.id),
+        );
+        expect(savedA?.bodyMd, '# 笔记甲已更新\n\n切换标签前自动落盘');
+
+        // 3. Ctrl+Tab cycles forward (B -> C -> A) and Ctrl+Shift+Tab cycles backward (A -> C).
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.selectedNoteId, noteC.id);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.selectedNoteId, noteA.id);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.selectedNoteId, noteC.id);
+
+        // 4. Clicking `+` opens a new tab; middle-clicking closes it cleanly.
+        await tester.tap(find.byKey(const Key('note_tab_new_button')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 60)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, hasLength(4));
+        final createdTabId = fixture.workspace.openNoteTabIds.last;
+        expect(fixture.workspace.selectedNoteId, createdTabId);
+
+        final createdTabCenter = tester.getCenter(
+          find.byKey(Key('note_tab_$createdTabId')),
+        );
+        final middleClick = await tester.startGesture(
+          createdTabCenter,
+          kind: PointerDeviceKind.mouse,
+          buttons: kMiddleMouseButton,
+        );
+        await middleClick.up();
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 60)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[
+          noteA.id,
+          noteB.id,
+          noteC.id,
+        ]);
+        expect(fixture.workspace.selectedNoteId, noteC.id);
+
+        // 5. Right-click context menu: `关闭右侧标签页` on Tab A closes B & C, activates A.
+        await tester.tap(
+          find.byKey(Key('note_tab_${noteA.id}')),
+          buttons: kSecondaryMouseButton,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('note_tab_menu_close_right')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 60)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[noteA.id]);
+        expect(fixture.workspace.selectedNoteId, noteA.id);
+
+        // Re-open B & C, then test right-click `关闭其他标签页` on B.
+        fixture.workspace.openNoteTab(noteB.id);
+        fixture.workspace.openNoteTab(noteC.id);
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[
+          noteA.id,
+          noteB.id,
+          noteC.id,
+        ]);
+        await tester.tap(
+          find.byKey(Key('note_tab_${noteB.id}')),
+          buttons: kSecondaryMouseButton,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('note_tab_menu_close_others')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 60)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[noteB.id]);
+        expect(fixture.workspace.selectedNoteId, noteB.id);
+
+        // 6. Unsaved edit in Tab B flushes before closing via Ctrl+W; closing last tab shows empty canvas (NOT auto-reopened).
+        await tester.enterText(
+          find.byKey(const Key('note_source_input')),
+          '# 笔记乙关闭前保存\n\nCtrl+W 自动落盘验证',
+        );
+        await tester.pump();
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyW);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 80)),
+        );
+        await tester.pumpAndSettle();
+
+        expect(fixture.workspace.openNoteTabIds, isEmpty);
+        expect(fixture.workspace.selectedNoteId, isNull);
+        expect(find.text('暂无打开的标签页'), findsOneWidget);
+        expect(find.byKey(const Key('empty_new_note_button')), findsOneWidget);
+        final savedB = await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(noteB.id),
+        );
+        expect(savedB?.bodyMd, '# 笔记乙关闭前保存\n\nCtrl+W 自动落盘验证');
+
+        // Refreshing vault does NOT force-reopen a tab after user explicitly closed all tabs.
+        await tester.runAsync(() => fixture.workspace.refreshAll());
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, isEmpty);
+        expect(fixture.workspace.selectedNoteId, isNull);
+
+        // 7. Re-open A & B, switch to Trash, preview trashed note without losing active tabs, then close via `×`.
+        fixture.workspace.openNoteTab(noteA.id);
+        fixture.workspace.openNoteTab(noteB.id);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('notes_filter_trash')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('note_list_item_${trashedNote.id}')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('note_trash_banner')), findsOneWidget);
+        expect(fixture.workspace.openNoteTabIds, <String>[
+          noteA.id,
+          noteB.id,
+        ], reason: 'Previewing a trashed note must preserve open active tabs');
+
+        // Click active tab close `×` on Tab B -> activates Tab A cleanly.
+        await tester.tap(find.byKey(const Key('notes_filter_all')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.selectedNoteId, noteB.id);
+        await tester.tap(find.byKey(Key('note_tab_close_${noteB.id}')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[noteA.id]);
+        expect(fixture.workspace.selectedNoteId, noteA.id);
+      },
+    );
+
+    testWidgets(
+      'Vault load automatically seeds initial note tab when active notes already exist',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final paths = BlinkPaths(dataRoot: tempDir);
+        final seededVault = (await tester.runAsync(
+          () => VaultManager.open(
+            VaultConfig(
+              vaultDir: paths.vaultDir,
+              expectedChannel: BlinkChannel.blinkDev,
+              enableMirrorExporter: false,
+            ),
+          ),
+        ))!;
+        final existingNote = (await tester.runAsync(
+          () => seededVault.raw.createEntry(
+            bodyMd: '# 已存在的笔记\n\n重新打开应用应自动显示为首个标签页',
+            entryKind: EntryKind.diary,
+          ),
+        ))!;
+        await tester.runAsync(() => seededVault.checkpointAndClose());
+
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.notes,
+        );
+        expect(fixture.workspace.openNoteTabIds, <String>[existingNote.id]);
+        expect(fixture.workspace.selectedNoteId, existingNote.id);
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(Key('note_tab_${existingNote.id}')), findsOneWidget);
+        expect(find.byKey(const Key('blink_markdown_editor')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'Overflowing tab strip (8 tabs) auto-scrolls active tab into view at 1280x800 & 760x560, supports Ctrl+Tab wrap-back & vertical mouse-wheel scrolling, and ignores hidden inactive close hits',
+      (tester) async {
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final chromeAdapter = _FakeImmersiveWindowAdapter();
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.notes,
+          windowAdapter: chromeAdapter,
+        );
+
+        final createdNotes = <RawEntry>[];
+        await tester.runAsync(() async {
+          for (var i = 1; i <= 8; i++) {
+            final note = (await fixture.workspace.createNote(
+              bodyMd: '# 多标签滚动测试笔记 $i\n\n第 $i 篇正文内容',
+            ))!;
+            createdNotes.add(note);
+          }
+        });
+        fixture.workspace.clearBanner();
+
+        // Part 1: Verify auto-scroll active tab into view & Ctrl+Tab wrap-back at 1280x800 and 760x560.
+        for (final size in const <Size>[Size(1280, 800), Size(760, 560)]) {
+          tester.view.physicalSize = size;
+          fixture.workspace.openNoteTab(createdNotes.last.id);
+          await tester.pumpWidget(
+            BlinkApp(
+              controller: fixture.lifecycle,
+              workspaceController: fixture.workspace,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull, reason: '8 tabs at $size');
+
+          final tabBarRect = tester.getRect(
+            find.byKey(const Key('note_tab_bar')),
+          );
+          final newBtnRect = tester.getRect(
+            find.byKey(const Key('note_tab_new_button')),
+          );
+          final tab8Rect = tester.getRect(
+            find.byKey(Key('note_tab_${createdNotes.last.id}')),
+          );
+          expect(
+            tab8Rect.left,
+            greaterThanOrEqualTo(tabBarRect.left - 0.5),
+            reason: 'Active Tab 8 left edge must be visible at $size',
+          );
+          expect(
+            tab8Rect.right,
+            lessThanOrEqualTo(newBtnRect.left + 0.5),
+            reason: 'Active Tab 8 right edge must not clip past + at $size',
+          );
+
+          // Ctrl+Tab wraps from Tab 8 -> Tab 1 and auto-scrolls Tab 1 back into view.
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 40)),
+          );
+          await tester.pumpAndSettle();
+
+          expect(fixture.workspace.selectedNoteId, createdNotes.first.id);
+          final tab1Rect = tester.getRect(
+            find.byKey(Key('note_tab_${createdNotes.first.id}')),
+          );
+          expect(
+            tab1Rect.left,
+            greaterThanOrEqualTo(tabBarRect.left - 0.5),
+            reason: 'Wrapped Tab 1 left edge must be visible at $size',
+          );
+          expect(
+            tab1Rect.right,
+            lessThanOrEqualTo(newBtnRect.left + 0.5),
+            reason: 'Wrapped Tab 1 right edge must be visible at $size',
+          );
+
+          // Vertical mouse-wheel scroll over the tab strip scrolls horizontally.
+          final stripScroll = tester.widget<SingleChildScrollView>(
+            find.descendant(
+              of: find.byKey(const Key('note_tab_strip_scroll_listener')),
+              matching: find.byType(SingleChildScrollView),
+            ),
+          );
+          final scrollCtrl = stripScroll.controller!;
+          expect(scrollCtrl.offset, 0.0);
+          expect(scrollCtrl.position.maxScrollExtent, greaterThan(0.0));
+
+          final stripCenter = tester.getCenter(
+            find.byKey(const Key('note_tab_strip_scroll_listener')),
+          );
+          final wheelPointer = TestPointer(99, PointerDeviceKind.mouse);
+          tester.binding.handlePointerEvent(
+            wheelPointer.addPointer(location: stripCenter),
+          );
+          tester.binding.handlePointerEvent(
+            wheelPointer.scroll(const Offset(0, 140)),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            scrollCtrl.offset,
+            greaterThan(0.0),
+            reason: 'Vertical mouse wheel must scroll tab strip right at $size',
+          );
+
+          tester.binding.handlePointerEvent(
+            wheelPointer.scroll(const Offset(0, -140)),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            scrollCtrl.offset,
+            0.0,
+            reason:
+                'Upward vertical mouse wheel must scroll back left at $size',
+          );
+          tester.binding.handlePointerEvent(wheelPointer.removePointer());
+        }
+
+        // Part 2 (P2): Tapping the hidden close region on an unhovered inactive tab
+        // selects that tab instead of closing it; hovering reveals `x` so clicking closes it.
+        tester.view.physicalSize = const Size(1280, 800);
+        fixture.workspace.closeOtherNoteTabs(createdNotes[0].id);
+        fixture.workspace.openNoteTab(createdNotes[1].id, activate: false);
+        await tester.pumpAndSettle();
+
+        final tabA = createdNotes[0];
+        final tabB = createdNotes[1];
+        expect(fixture.workspace.openNoteTabIds, <String>[tabA.id, tabB.id]);
+        expect(fixture.workspace.selectedNoteId, tabA.id);
+
+        // Tap directly on inactive Tab B's hidden `x` coordinates (no hover first).
+        final hiddenCloseCenter = tester.getCenter(
+          find.byKey(Key('note_tab_close_${tabB.id}')),
+        );
+        await tester.tapAt(hiddenCloseCenter);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          fixture.workspace.openNoteTabIds,
+          <String>[tabA.id, tabB.id],
+          reason:
+              'Tapping hidden x on unhovered inactive tab must NOT close it',
+        );
+        expect(
+          fixture.workspace.selectedNoteId,
+          tabB.id,
+          reason:
+              'Tapping unhovered inactive tab right edge should activate it',
+        );
+
+        // Switch back to Tab A, hover Tab B with mouse to reveal `x`, then click `x` -> closes Tab B!
+        fixture.workspace.openNoteTab(tabA.id, activate: true);
+        await tester.pumpAndSettle();
+        final hoverGesture = await tester.createGesture(
+          kind: PointerDeviceKind.mouse,
+        );
+        addTearDown(hoverGesture.removePointer);
+        await hoverGesture.addPointer(location: Offset.zero);
+        await tester.pump();
+        await hoverGesture.moveTo(
+          tester.getCenter(find.byKey(Key('note_tab_${tabB.id}'))),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(Key('note_tab_close_${tabB.id}')));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.openNoteTabIds, <String>[tabA.id]);
+        expect(fixture.workspace.selectedNoteId, tabA.id);
       },
     );
   });
