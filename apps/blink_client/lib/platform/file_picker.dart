@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:win32/win32.dart';
 
+import 'package:blink_client/platform/android/android_platform.dart';
+
 /// Testable file and folder picker interface (`INV-02`, quiet-test safe).
 abstract interface class BlinkFilePicker {
   Future<String?> pickFileToOpen({String? title});
@@ -18,13 +20,25 @@ abstract interface class BlinkFilePicker {
 ///
 /// When `BLINK_QUIET=1` is set (automated smoke/tests), returns a no-op picker
 /// that never spawns native OS dialogs.
-BlinkFilePicker createDefaultBlinkFilePicker({bool? quietOverride}) {
+BlinkFilePicker createDefaultBlinkFilePicker({
+  bool? quietOverride,
+  bool? isWindowsOverride,
+  bool? isAndroidOverride,
+}) {
   final isQuiet =
       quietOverride ?? (Platform.environment['BLINK_QUIET']?.trim() == '1');
-  if (isQuiet || !Platform.isWindows) {
+  if (isQuiet) {
     return const NoopBlinkFilePicker();
   }
-  return const Win32BlinkFilePicker();
+  final isAndroid = isAndroidOverride ?? Platform.isAndroid;
+  if (isAndroid) {
+    return const AndroidBlinkFilePicker();
+  }
+  final isWindows = isWindowsOverride ?? Platform.isWindows;
+  if (isWindows) {
+    return const Win32BlinkFilePicker();
+  }
+  return const NoopBlinkFilePicker();
 }
 
 /// Safe no-op picker used in quiet runs and non-Windows fallback until M4/M5.

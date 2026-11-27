@@ -29,7 +29,8 @@ class BlinkWorkspaceShell extends StatefulWidget {
   State<BlinkWorkspaceShell> createState() => _BlinkWorkspaceShellState();
 }
 
-class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
+class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
+    with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final FocusNode _editorFocusNode = FocusNode();
 
@@ -49,6 +50,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.workspace.registerDraftFlushHook(_editorController.flushDraftNow);
     widget.workspace.addListener(_onWorkspaceChanged);
     _syncVaultBinding();
@@ -56,6 +58,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.workspace.removeListener(_onWorkspaceChanged);
     widget.workspace.registerDraftFlushHook(null);
     _editorFocusNode.dispose();
@@ -63,6 +66,15 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
     _searchController.dispose();
     _tasksController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(_editorController.flushDraftNow());
+    }
   }
 
   void _onWorkspaceChanged() {
@@ -248,7 +260,8 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell> {
                           ),
                         )
                       : null,
-                  bottomNavigationBar: isMobile
+                  bottomNavigationBar:
+                      isMobile && MediaQuery.viewInsetsOf(context).bottom == 0
                       ? _buildMobileBottomBar(tokens)
                       : null,
                   body: SafeArea(

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_brand_mark.dart';
@@ -8,16 +10,25 @@ import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/paths.dart';
 
 /// Flat hairline Settings page (`docs/ui.md` §4.4):
-/// 1. Single-Folder Portable Vault & Open Mirror controls (including honest
-///    `channel_mismatch` diagnostics, `VACUUM INTO` hot backup, FTS5 rebuild,
-///    and immediate `.md` mirror export).
-/// 2. Theme surface switcher (Day / Sepia / Dark / System) & close-button policy
-///    preserving `Key('close_behavior_toggle')` and `Key('corrupt_settings_notice')`.
+/// 1. Single-Folder Portable Vault & Open Mirror controls (desktop) or
+///    private sandbox storage status (mobile), including honest
+///    `channel_mismatch` diagnostics, `VACUUM INTO` hot backup, and FTS5 rebuild.
+/// 2. Theme surface switcher (Day / Sepia / Dark / System) & desktop-only
+///    close-button policy preserving `Key('close_behavior_toggle')` and
+///    `Key('corrupt_settings_notice')`.
 /// 3. About metadata card preserving `Key('about_*')`.
 class BlinkSettingsPage extends StatefulWidget {
-  const BlinkSettingsPage({required this.workspace, super.key});
+  const BlinkSettingsPage({
+    required this.workspace,
+    this.isMobilePlatform,
+    super.key,
+  });
 
   final BlinkWorkspaceController workspace;
+
+  /// Optional override for mobile-platform guards (defaults to
+  /// `Platform.isAndroid || Platform.isIOS`).
+  final bool? isMobilePlatform;
 
   @override
   State<BlinkSettingsPage> createState() => _BlinkSettingsPageState();
@@ -43,6 +54,10 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final tokens = BlinkColorTokens.of(context);
+    final isMobilePlatform =
+        widget.isMobilePlatform ?? (Platform.isAndroid || Platform.isIOS);
+    final isCompactWidth = MediaQuery.sizeOf(context).width < 600;
+    final labelWidth = isCompactWidth ? 104.0 : 140.0;
 
     return ListenableBuilder(
       listenable: Listenable.merge(<Listenable>[
@@ -65,7 +80,7 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
         };
 
         return SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          padding: EdgeInsets.all(isCompactWidth ? 14 : 20),
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 860),
@@ -75,7 +90,7 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                   Card(
                     key: const Key('settings_section'),
                     child: Padding(
-                      padding: const EdgeInsets.all(20),
+                      padding: EdgeInsets.all(isCompactWidth ? 16 : 20),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
@@ -130,39 +145,41 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                               },
                             ),
                           ),
-                          const SizedBox(height: 18),
-                          Divider(height: 1, color: tokens.borderHairline),
-                          const SizedBox(height: 16),
-                          Text(
-                            '点击窗口关闭按钮时',
-                            style: BlinkTypography.controlLabel(tokens),
-                          ),
-                          const SizedBox(height: 10),
-                          SegmentedButton<CloseButtonBehavior>(
-                            key: const Key('close_behavior_toggle'),
-                            showSelectedIcon: false,
-                            segments:
-                                const <ButtonSegment<CloseButtonBehavior>>[
-                                  ButtonSegment<CloseButtonBehavior>(
-                                    value: CloseButtonBehavior.hideToTray,
-                                    label: Text('隐藏到托盘'),
-                                  ),
-                                  ButtonSegment<CloseButtonBehavior>(
-                                    value: CloseButtonBehavior.exitApp,
-                                    label: Text('直接退出'),
-                                  ),
-                                ],
-                            selected: <CloseButtonBehavior>{
-                              settings.closeButtonBehavior,
-                            },
-                            onSelectionChanged: (selection) {
-                              if (selection.isNotEmpty) {
-                                lifecycle.updateCloseButtonBehavior(
-                                  selection.first,
-                                );
-                              }
-                            },
-                          ),
+                          if (!isMobilePlatform) ...<Widget>[
+                            const SizedBox(height: 18),
+                            Divider(height: 1, color: tokens.borderHairline),
+                            const SizedBox(height: 16),
+                            Text(
+                              '点击窗口关闭按钮时',
+                              style: BlinkTypography.controlLabel(tokens),
+                            ),
+                            const SizedBox(height: 10),
+                            SegmentedButton<CloseButtonBehavior>(
+                              key: const Key('close_behavior_toggle'),
+                              showSelectedIcon: false,
+                              segments:
+                                  const <ButtonSegment<CloseButtonBehavior>>[
+                                    ButtonSegment<CloseButtonBehavior>(
+                                      value: CloseButtonBehavior.hideToTray,
+                                      label: Text('隐藏到托盘'),
+                                    ),
+                                    ButtonSegment<CloseButtonBehavior>(
+                                      value: CloseButtonBehavior.exitApp,
+                                      label: Text('直接退出'),
+                                    ),
+                                  ],
+                              selected: <CloseButtonBehavior>{
+                                settings.closeButtonBehavior,
+                              },
+                              onSelectionChanged: (selection) {
+                                if (selection.isNotEmpty) {
+                                  lifecycle.updateCloseButtonBehavior(
+                                    selection.first,
+                                  );
+                                }
+                              },
+                            ),
+                          ],
                           if (lifecycle.recoveredCorruptSettings) ...<Widget>[
                             const SizedBox(height: 12),
                             Text(
@@ -182,12 +199,12 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                   Card(
                     key: const Key('vault_settings_section'),
                     child: Padding(
-                      padding: const EdgeInsets.all(20),
+                      padding: EdgeInsets.all(isCompactWidth ? 16 : 20),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
                           Text(
-                            '单文件夹便携库与开放镜像',
+                            isMobilePlatform ? '本地私密沙盒库' : '单文件夹便携库与开放镜像',
                             style: BlinkTypography.sectionHeading(tokens),
                           ),
                           const SizedBox(height: 10),
@@ -226,10 +243,11 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                             const SizedBox(height: 12),
                           ],
                           _InfoRow(
-                            label: '便携库目录（用户数据）',
+                            label: isMobilePlatform ? '沙盒库目录' : '便携库目录（用户数据）',
                             value: widget.workspace.effectiveVaultDir.path,
                             valueKey: const Key('vault_path_value'),
                             valueStyle: BlinkTypography.monoValue(tokens),
+                            labelWidth: labelWidth,
                           ),
                           _InfoRow(
                             label: '通道锁',
@@ -241,6 +259,7 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                               tokens,
                               tabular: true,
                             ),
+                            labelWidth: labelWidth,
                           ),
                           if (stats != null)
                             _InfoRow(
@@ -254,68 +273,76 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                                 tokens,
                                 tabular: true,
                               ),
+                              labelWidth: labelWidth,
                             ),
-                          _InfoRow(
-                            label: '开放镜像',
-                            value: mirrorStatus == null
-                                ? '尚未导出'
-                                : mirrorStatus.lastExportedAtUtc == null
-                                ? '已就绪 · 水位线 seq ${mirrorStatus.lastExportedSeq}'
-                                : 'seq ${mirrorStatus.lastExportedSeq} · '
-                                      '${mirrorStatus.lastExportedAtUtc!.toLocal().toIso8601String().substring(0, 19)}',
-                            valueKey: const Key('vault_mirror_status'),
-                            valueStyle: BlinkTypography.metaValue(
-                              tokens,
-                              tabular: true,
+                          if (!isMobilePlatform) ...<Widget>[
+                            _InfoRow(
+                              label: '开放镜像',
+                              value: mirrorStatus == null
+                                  ? '尚未导出'
+                                  : mirrorStatus.lastExportedAtUtc == null
+                                  ? '已就绪 · 水位线 seq ${mirrorStatus.lastExportedSeq}'
+                                  : 'seq ${mirrorStatus.lastExportedSeq} · '
+                                        '${mirrorStatus.lastExportedAtUtc!.toLocal().toIso8601String().substring(0, 19)}',
+                              valueKey: const Key('vault_mirror_status'),
+                              valueStyle: BlinkTypography.metaValue(
+                                tokens,
+                                tabular: true,
+                              ),
+                              labelWidth: labelWidth,
                             ),
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: <Widget>[
-                              Expanded(
-                                child: TextField(
-                                  key: const Key('vault_path_input'),
-                                  controller: _vaultPathController,
-                                  style: BlinkTypography.monoValue(tokens),
-                                  decoration: InputDecoration(
-                                    labelText: '切换便携库路径',
-                                    isDense: true,
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(8),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: <Widget>[
+                                Expanded(
+                                  child: TextField(
+                                    key: const Key('vault_path_input'),
+                                    controller: _vaultPathController,
+                                    style: BlinkTypography.monoValue(tokens),
+                                    decoration: InputDecoration(
+                                      labelText: '切换便携库路径',
+                                      isDense: true,
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              OutlinedButton(
-                                key: const Key('vault_pick_button'),
-                                onPressed: () async {
-                                  final ok = await widget.workspace
-                                      .pickAndSwitchVaultDirectory();
-                                  if (ok && mounted) {
-                                    _vaultPathController.text =
-                                        widget.workspace.effectiveVaultDir.path;
-                                  }
-                                },
-                                child: const Text('选择目录'),
-                              ),
-                              const SizedBox(width: 8),
-                              FilledButton(
-                                key: const Key('vault_switch_button'),
-                                onPressed: () async {
-                                  final ok = await widget.workspace
-                                      .switchVaultDirectory(
-                                        _vaultPathController.text,
-                                      );
-                                  if (ok && mounted) {
-                                    _vaultPathController.text =
-                                        widget.workspace.effectiveVaultDir.path;
-                                  }
-                                },
-                                child: const Text('切换'),
-                              ),
-                            ],
-                          ),
+                                const SizedBox(width: 8),
+                                OutlinedButton(
+                                  key: const Key('vault_pick_button'),
+                                  onPressed: () async {
+                                    final ok = await widget.workspace
+                                        .pickAndSwitchVaultDirectory();
+                                    if (ok && mounted) {
+                                      _vaultPathController.text = widget
+                                          .workspace
+                                          .effectiveVaultDir
+                                          .path;
+                                    }
+                                  },
+                                  child: const Text('选择目录'),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton(
+                                  key: const Key('vault_switch_button'),
+                                  onPressed: () async {
+                                    final ok = await widget.workspace
+                                        .switchVaultDirectory(
+                                          _vaultPathController.text,
+                                        );
+                                    if (ok && mounted) {
+                                      _vaultPathController.text = widget
+                                          .workspace
+                                          .effectiveVaultDir
+                                          .path;
+                                    }
+                                  },
+                                  child: const Text('切换'),
+                                ),
+                              ],
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           Wrap(
                             spacing: 8,
@@ -344,18 +371,20 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                                 ),
                                 label: const Text('重建 FTS5 索引'),
                               ),
-                              OutlinedButton.icon(
-                                key: const Key('vault_mirror_button'),
-                                onPressed: widget.workspace.hasOpenVault
-                                    ? () => widget.workspace.flushMirrorNow()
-                                    : null,
-                                icon: const Icon(
-                                  Icons.drive_file_move_outlined,
-                                  size: 16,
+                              if (!isMobilePlatform)
+                                OutlinedButton.icon(
+                                  key: const Key('vault_mirror_button'),
+                                  onPressed: widget.workspace.hasOpenVault
+                                      ? () => widget.workspace.flushMirrorNow()
+                                      : null,
+                                  icon: const Icon(
+                                    Icons.drive_file_move_outlined,
+                                    size: 16,
+                                  ),
+                                  label: const Text('立即导出 .md 镜像'),
                                 ),
-                                label: const Text('立即导出 .md 镜像'),
-                              ),
-                              if (settings.customVaultPath != null)
+                              if (!isMobilePlatform &&
+                                  settings.customVaultPath != null)
                                 TextButton(
                                   key: const Key('vault_reset_button'),
                                   onPressed: () async {
@@ -373,47 +402,58 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                             ],
                           ),
                           const SizedBox(height: 10),
-                          Text(
-                            '提示：请勿将运行中的 db/ 目录放入第三方网盘同步盘；网盘归档请使用 db/backups/ 热快照或 mirror/ 开放镜像。',
-                            style: BlinkTypography.metaLabel(
-                              tokens,
-                              color: tokens.textMuted,
-                            ),
-                          ),
-                          if (BlinkPaths.isOneDrivePath(
-                            widget.workspace.effectiveVaultDir.path,
-                          )) ...<Widget>[
-                            const SizedBox(height: 8),
-                            Container(
-                              key: const Key('vault_onedrive_hint'),
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: tokens.statusWarnSubtle,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: tokens.statusWarn),
+                          if (isMobilePlatform)
+                            Text(
+                              '移动端数据存储于应用私有沙盒目录，已禁用系统自动云备份（allowBackup=false），保障离线数据与 #private 隔离安全。',
+                              key: const Key('mobile_sandbox_notice'),
+                              style: BlinkTypography.metaLabel(
+                                tokens,
+                                color: tokens.textMuted,
                               ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: <Widget>[
-                                  Icon(
-                                    Icons.info_outline_rounded,
-                                    size: 16,
-                                    color: tokens.statusWarn,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      '检测到当前便携库位于 OneDrive 目录内：若开启多设备 OneDrive 文件同步，请避免多台设备同时读写活态 db/blink.db（SQLite WAL 易冲突）；跨设备同步建议使用 BLINK 内置同步或在上方切换至非网盘目录。',
-                                      style: BlinkTypography.metaLabel(
-                                        tokens,
-                                        color: tokens.statusWarn,
+                            )
+                          else ...<Widget>[
+                            Text(
+                              '提示：请勿将运行中的 db/ 目录放入第三方网盘同步盘；网盘归档请使用 db/backups/ 热快照或 mirror/ 开放镜像。',
+                              style: BlinkTypography.metaLabel(
+                                tokens,
+                                color: tokens.textMuted,
+                              ),
+                            ),
+                            if (BlinkPaths.isOneDrivePath(
+                              widget.workspace.effectiveVaultDir.path,
+                            )) ...<Widget>[
+                              const SizedBox(height: 8),
+                              Container(
+                                key: const Key('vault_onedrive_hint'),
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: tokens.statusWarnSubtle,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: tokens.statusWarn),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    Icon(
+                                      Icons.info_outline_rounded,
+                                      size: 16,
+                                      color: tokens.statusWarn,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        '检测到当前便携库位于 OneDrive 目录内：若开启多设备 OneDrive 文件同步，请避免多台设备同时读写活态 db/blink.db（SQLite WAL 易冲突）；跨设备同步建议使用 BLINK 内置同步或在上方切换至非网盘目录。',
+                                        style: BlinkTypography.metaLabel(
+                                          tokens,
+                                          color: tokens.statusWarn,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
+                            ],
                           ],
                         ],
                       ),
@@ -423,6 +463,8 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                   _AboutCard(
                     buildInfo: buildInfo,
                     dataRootPath: lifecycle.paths.dataRoot.path,
+                    labelWidth: labelWidth,
+                    compactPadding: isCompactWidth,
                   ),
                 ],
               ),
@@ -435,10 +477,17 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
 }
 
 class _AboutCard extends StatelessWidget {
-  const _AboutCard({required this.buildInfo, required this.dataRootPath});
+  const _AboutCard({
+    required this.buildInfo,
+    required this.dataRootPath,
+    required this.labelWidth,
+    required this.compactPadding,
+  });
 
   final BlinkBuildInfo buildInfo;
   final String dataRootPath;
+  final double labelWidth;
+  final bool compactPadding;
 
   @override
   Widget build(BuildContext context) {
@@ -447,7 +496,7 @@ class _AboutCard extends StatelessWidget {
     return Card(
       key: const Key('about_section'),
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.all(compactPadding ? 16 : 20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -477,30 +526,35 @@ class _AboutCard extends StatelessWidget {
               value: buildInfo.version,
               valueKey: const Key('about_version'),
               valueStyle: BlinkTypography.metaValue(tokens, tabular: true),
+              labelWidth: labelWidth,
             ),
             _InfoRow(
               label: '通道',
               value: buildInfo.channel,
               valueKey: const Key('about_channel'),
               valueStyle: BlinkTypography.metaValue(tokens),
+              labelWidth: labelWidth,
             ),
             _InfoRow(
               label: '安装身份',
               value: buildInfo.displayIdentity,
               valueKey: const Key('about_identity'),
               valueStyle: BlinkTypography.metaValue(tokens),
+              labelWidth: labelWidth,
             ),
             _InfoRow(
               label: '提交',
               value: buildInfo.shortGitSha,
               valueKey: const Key('about_git_sha'),
               valueStyle: BlinkTypography.monoValue(tokens, tabular: true),
+              labelWidth: labelWidth,
             ),
             _InfoRow(
               label: '应用本地目录',
               value: dataRootPath,
               valueKey: const Key('about_data_root'),
               valueStyle: BlinkTypography.monoValue(tokens),
+              labelWidth: labelWidth,
             ),
           ],
         ),
@@ -541,12 +595,14 @@ class _InfoRow extends StatelessWidget {
     required this.value,
     required this.valueKey,
     required this.valueStyle,
+    this.labelWidth = 140,
   });
 
   final String label;
   final String value;
   final Key valueKey;
   final TextStyle valueStyle;
+  final double labelWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -558,7 +614,7 @@ class _InfoRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           SizedBox(
-            width: 140,
+            width: labelWidth,
             child: Text(label, style: BlinkTypography.metaLabel(tokens)),
           ),
           Expanded(
