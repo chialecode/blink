@@ -144,8 +144,8 @@
 
 1. **单文件夹便携库与开放镜像**：清晰展示通道（`BLINK` 或 `BLINK Dev`）、`便携库目录（用户数据）`（`<BLINK_VAULT_DIR>`，已安装桌面端默认位于系统“文档”目录 `<Documents>\blink[-dev]`，源码构建默认位于 `.local/blink-dev/vault`；桌面端支持选择目录、切换、恢复默认目录与“导出一致性快照（`VACUUM INTO`）”，附“请勿将活态 `db/` 放入第三方网盘同步目录”提示，且当便携库位于 `OneDrive` 路径内时展示温和非阻塞提示而不强制重定向）、移动端已缓存 PDF/EPUB 体积明细与一键释放按钮，以及桌面端实时镜像（`.md` + `insights/*.html`）最近导出时间与“立即全量校对镜像”。
 2. **多端同步（直连与异步中继）**：
-   - **直连模式**：桌面端内嵌 `shelf` 同步开关、局域网 `bonsoir` 发现状态、Tailscale 地址、一次性配对码与已配对设备吊销列表（支持接入无头 `blink sync serve` 节点）；
-   - **WebDAV / S3 端到端加密中继**：端点配置、主密钥二维码/恢复码导出（密钥仅存 OS 安全密钥库）、同步进度与**“禁止通过 WebDAV/S3 中继 `#private`”**独立开关。
+   - **直连模式**：桌面端内嵌 `shelf` 同步开关、局域网 `mdns_dart` 发现状态、Tailscale 地址、一次性配对码与已配对设备吊销列表（支持接入无头 `blink sync serve` 节点）；
+   - **WebDAV / S3 端到端加密中继**：端点配置、主密钥恢复码导出/导入（密钥仅存 OS 安全密钥库）、同步进度与默认开启的**“禁止通过 WebDAV/S3 中继 `#private`”**独立开关。
 3. **外置 AI 扩展（CLI / MCP Server / Skills）**：显示内置 `blink` CLI 路径与桌面 loopback IPC 在线状态；提供一键复制或非破坏式写入 MCP 客户端配置（Claude Desktop / Claude Code / Cursor / Antigravity / Codex，默认硬锁 `--scope normal_only`）、一键安装/核验 5 套 `agentskills.io` `SKILL.md` 技能，以及三门限 `local_with_private` 本地令牌与 `--allow-capture` 收件箱开关（默认关闭）。
 4. **可选直连 AI 接口（OpenAI 兼容，默认关闭）**：独立配置常规模型端点（`normal`）与私密本地端点（`private_local`，仅接受本机回环/局域网/Tailscale 地址），API Key 仅加密存入系统安全密钥库、永不落入便携库或回显明文；另含“清空并重算全部 AI 派生索引与 `index/fts.db`”二次确认维护按钮。
 5. **阅读、BFM 编辑偏好与版本关于**：阅读字体/主题、BFM 自动补全与分栏预览默认行为、版本号、通道、安装身份、Git 短哈希、`应用本地目录`（`%LOCALAPPDATA%\<身份>` 等运行态/设置目录，与“便携库目录（用户数据）”清晰区分）与第三方开源许可清单（含 `DEC-026` Linux 动态系统库声明）。

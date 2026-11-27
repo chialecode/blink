@@ -13,6 +13,8 @@ import 'package:blink_client/ui/files_page.dart';
 import 'package:blink_client/ui/search_modal.dart';
 import 'package:blink_client/ui/settings_page.dart';
 import 'package:blink_client/ui/stream_page.dart';
+import 'package:blink_client/ui/sync_conflict_dialog.dart';
+import 'package:blink_client/ui/sync_status_capsule.dart';
 import 'package:blink_client/ui/tasks_page.dart';
 
 /// Adaptive 4-breakpoint M3 Desktop/Five-Platform Workspace Shell (`docs/ui.md` §1):
@@ -74,7 +76,20 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       unawaited(_editorController.flushDraftNow());
+    } else if (state == AppLifecycleState.resumed) {
+      widget.workspace.sync.onAppResumed();
     }
+  }
+
+  Future<void> _openSyncConflictDialog() async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => BlinkSyncConflictDialog(sync: widget.workspace.sync),
+    );
   }
 
   void _onWorkspaceChanged() {
@@ -222,6 +237,15 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                 final workspaceContent = Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
+                    BlinkSyncStatusCapsule(
+                      sync: widget.workspace.sync,
+                      compact: isMobile,
+                      onOpenConflicts: () =>
+                          unawaited(_openSyncConflictDialog()),
+                      onOpenSyncSettings: () => widget.workspace.setDestination(
+                        BlinkNavDestination.settings,
+                      ),
+                    ),
                     if (widget.workspace.bannerMessage != null)
                       _StatusBanner(
                         message: widget.workspace.bannerMessage!,
@@ -412,6 +436,16 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
             icon: Icons.search_rounded,
             tooltip: '全局搜索 (Ctrl+K)',
             onTap: () => unawaited(_openSearchModal()),
+          ),
+          BlinkSyncRailDot(
+            sync: widget.workspace.sync,
+            onTap: () {
+              if (widget.workspace.sync.openConflictCount > 0) {
+                unawaited(_openSyncConflictDialog());
+              } else {
+                widget.workspace.setDestination(BlinkNavDestination.settings);
+              }
+            },
           ),
           railDestination(
             itemKey: const Key('nav_settings'),

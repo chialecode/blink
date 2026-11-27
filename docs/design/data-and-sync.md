@@ -219,27 +219,28 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 无论写入来自端侧 UI、桌面端内嵌同步服务，还是外置 CLI/MCP 写入 `ai_*`（桌面在线走 loopback IPC，桌面离线退回 `BEGIN IMMEDIATE` WAL），均落入同一张 `sync_oplog` 表并携带统一的因果操作信封 `(device_id, client_op_id, hlc_ts, base_revision, entity_layer, op_origin, payload_json)`：
 
 - 端侧操作 `< 16 ms` 在本地 SQLite 单事务同时写入业务表与 `outbox_ops`（`INV-04`）；
-- M4 在同一 `SyncTransport` 抽象下统一落地两种互补通道（[DEC-023](../decisions.md#dec-023)），用户可按场景单选或混用：
+- M4 在同一 `SyncTransport` 抽象下统一落地两种互补通道（[DEC-023](../decisions.md#dec-023)、[DEC-032](../decisions.md#dec-032)），用户可按场景单选或混用：
 
 ```text
-[五端本地写操作 (raw_* / ai_*)] ──> 本地 drift SQLite 单事务 (< 16ms) + outbox_ops (UUIDv7 client_op_id + hlc_ts)
+[五端本地写操作 (raw_* / ai_*)] ──> 本地 SQLite 单事务 (< 16ms) + outbox_ops (UUIDv7 client_op_id + hlc_ts)
                                               │
                      ┌────────────────────────┴────────────────────────┐
                      ▼                                                 ▼
       [通道 A：直连纯 Dart shelf 同步]                 [通道 B：端到端加密 WebDAV / S3 异步中继]
-  - 桌面端托盘后台 Isolate 内嵌 shelf 1.4.3         - 面向主力电脑休眠时的手机异步同步
-  - 局域网 bonsoir (MIT) 800ms 探测 → Tailscale    - 永不上传活态 blink.db！仅按设备前缀追加不可变密文分段：
+  - 桌面端内嵌 shelf 1.4.3 + shelf_router 1.1.5     - 面向主力电脑休眠时的手机异步同步
+  - 局域网 mdns_dart (MIT) 800ms 探测 → Tailscale   - 永不上传活态 blink.db！仅按设备前缀追加不可变密文分段：
   - 同源 dart build cli 无头 blink sync serve         oplogs/<device_id>/<batch_uuidv7>.enc
   - 强幂等 sync/push + 单调 seq_id sync/pull          blobs/<hmac_id>.enc
   - Range 断点大文件流 + SSE 实时唤醒               - cryptography 2.9.0 XChaCha20-Poly1305 AEAD + HKDF
+                                                    - 纯 Dart WebDAV / S3 SigV4 (dart:io + xml 7.1.0)
                                                     - 按 (hlc_ts, device_id, client_op_id) 确定性因果重放
-                                                    - 可选“禁止通过 WebDAV/S3 中继 #private”物理过滤开关
+                                                    - 默认开启“禁止通过 WebDAV/S3 中继 #private”物理过滤开关
 ```
 
 **端到端加密（E2EE）与 `#private` 边界（通道 B）**：
 
-- 主同步密钥（Vault Sync Master Key）仅保存于各设备 OS 原生安全密钥库（`INV-08`），通过本地扫码配对或可打印恢复码在设备间安全导入，WebDAV/S3 服务商全程见到 `0` 字节明文；
-- 启用“禁止通过 WebDAV/S3 中继 `#private`”后，所有 `privacy_level = 'private'` 的操作与附件被物理排除出中继上传队列，仅经局域网或 Tailscale 直连通道 A 同步（`INV-03`）。
+- 主同步密钥（Vault Sync Master Key）与设备同步令牌、WebDAV/S3 凭据全部仅保存于各设备 OS 原生安全密钥库（Windows DPAPI `<dataRoot>/credentials/*.dpapi`、Android Keystore AES-256-GCM `<noBackupFilesDir>/blink[-dev]/credentials/*.enc`，`INV-08`），通过本地配对或可打印恢复码在设备间安全导入，WebDAV/S3 服务商全程见到 `0` 字节明文；
+- 默认开启“禁止通过 WebDAV/S3 中继 `#private`”后，所有 `privacy_level = 'private'` 的操作与附件被物理排除出中继上传队列，仅经局域网或 Tailscale 直连通道 A 同步（`INV-03`）。
 
 ### 5.2 确定性并发冲突保护策略
 

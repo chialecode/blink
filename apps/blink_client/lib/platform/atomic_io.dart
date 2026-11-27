@@ -28,20 +28,44 @@ String formatUtcFileTimestamp(DateTime utc) {
   return '$year$month${day}T$hour$minute${second}Z';
 }
 
-/// Writes UTF-8 [content] to [target] using a same-directory `.blink-tmp`
-/// file, explicit `flush()`, and atomic rename (`INV-07`).
-void writeStringAtomicallySync(File target, String content) {
+/// Writes raw [bytes] to [target] using a same-directory `.blink-tmp`
+/// file, explicit `flushSync()`, and atomic rename (`INV-07`).
+void writeBytesAtomicallySync(File target, List<int> bytes) {
   target.parent.createSync(recursive: true);
-  final tempFile = File('${target.path}.blink-tmp');
-  final bytes = utf8.encode(content);
+  final uniqueTag = DateTime.now().microsecondsSinceEpoch;
+  final tempFile = File('${target.path}.$uniqueTag.blink-tmp');
   final raf = tempFile.openSync(mode: FileMode.writeOnly);
   try {
     raf.writeFromSync(bytes);
     raf.flushSync();
-  } finally {
-    raf.closeSync();
+  } catch (_) {
+    try {
+      raf.closeSync();
+    } catch (_) {}
+    try {
+      if (tempFile.existsSync()) {
+        tempFile.deleteSync();
+      }
+    } catch (_) {}
+    rethrow;
   }
-  tempFile.renameSync(target.path);
+  raf.closeSync();
+  try {
+    tempFile.renameSync(target.path);
+  } catch (_) {
+    try {
+      if (tempFile.existsSync()) {
+        tempFile.deleteSync();
+      }
+    } catch (_) {}
+    rethrow;
+  }
+}
+
+/// Writes UTF-8 [content] to [target] using a same-directory `.blink-tmp`
+/// file, explicit `flush()`, and atomic rename (`INV-07`).
+void writeStringAtomicallySync(File target, String content) {
+  writeBytesAtomicallySync(target, utf8.encode(content));
 }
 
 /// Preserves a corrupt file by renaming it to `<file>.corrupt-<utc>` in place
