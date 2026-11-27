@@ -26,6 +26,8 @@ EXCLUDED = {
     "dist",
     "build",
     ".dart_tool",
+    ".gradle",
+    ".cxx",
     "vendor",
     "third-party",
     "__pycache__",

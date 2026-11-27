@@ -7,7 +7,7 @@ import 'package:flutter/widgets.dart';
 import 'package:blink_client/app/blink_theme.dart';
 
 /// Active autocomplete trigger kind (`docs/ui.md` §2.2 Rule 4).
-enum AutocompleteTriggerKind { wikiLink, tag, slash }
+enum AutocompleteTriggerKind { wikiLink, tag, contextBind, slash }
 
 /// Immutable trigger span parsed at the collapsed cursor position.
 @immutable
@@ -210,7 +210,23 @@ class BlinkSyntaxTextController extends TextEditingController {
       }
     }
 
-    // 3. `/` BFM snippet trigger at line start or after whitespace.
+    // 3. `@` book/time binding trigger at line start or after whitespace.
+    final atIndex = prefix.lastIndexOf('@');
+    if (atIndex >= 0) {
+      final beforeAt = atIndex == 0 ? '' : prefix[atIndex - 1];
+      final afterAt = prefix.substring(atIndex + 1);
+      final validBoundary = atIndex == 0 || beforeAt.trim().isEmpty;
+      if (validBoundary && !afterAt.contains(' ') && !afterAt.contains('\t')) {
+        return AutocompleteTrigger(
+          kind: AutocompleteTriggerKind.contextBind,
+          triggerStart: segmentStart + atIndex,
+          triggerEnd: cursor,
+          query: afterAt,
+        );
+      }
+    }
+
+    // 4. `/` BFM snippet trigger at line start or after whitespace.
     final slashIndex = prefix.lastIndexOf('/');
     if (slashIndex >= 0) {
       final beforeSlash = slashIndex == 0 ? '' : prefix[slashIndex - 1];
@@ -544,6 +560,20 @@ class BlinkEditorController extends ChangeNotifier {
           label: '/mark',
           subtitle: '插入 ==高亮== 片段',
           insertText: '==高亮内容==',
+        ),
+      ];
+
+  static const List<AutocompleteCandidate> _atSnippets =
+      <AutocompleteCandidate>[
+        AutocompleteCandidate(
+          label: '@t[00:00]',
+          subtitle: '插入音频时间戳定位 @t[mm:ss]',
+          insertText: '@t[00:00] ',
+        ),
+        AutocompleteCandidate(
+          label: '@book:',
+          subtitle: '绑定书目上下文 @book:<id>|《书名》',
+          insertText: '@book:',
         ),
       ];
 
@@ -944,6 +974,14 @@ class BlinkEditorController extends ChangeNotifier {
     final queryLower = trigger.query.trim().toLowerCase();
 
     switch (trigger.kind) {
+      case AutocompleteTriggerKind.contextBind:
+        for (final item in _atSnippets) {
+          if (queryLower.isEmpty ||
+              item.label.toLowerCase().contains(queryLower) ||
+              item.subtitle.toLowerCase().contains(queryLower)) {
+            nextCandidates.add(item);
+          }
+        }
       case AutocompleteTriggerKind.slash:
         for (final item in _slashSnippets) {
           if (queryLower.isEmpty ||

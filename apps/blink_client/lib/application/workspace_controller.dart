@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:blink_core/blink_core.dart';
 import 'package:flutter/foundation.dart';
 
+import 'package:blink_client/platform/android/android_platform.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
@@ -541,6 +542,28 @@ class BlinkWorkspaceController extends ChangeNotifier {
     );
     if (destPath == null || destPath.trim().isEmpty) {
       return null;
+    }
+    if (destPath.startsWith('content://') &&
+        filePicker is AndroidBlinkFilePicker) {
+      final activeVault = _vault;
+      if (activeVault == null || !activeVault.isOpen) {
+        return null;
+      }
+      final bytes = await activeVault.blobs.readBytes(blob.sha256);
+      if (bytes == null) {
+        showBanner('附件原件缺失，无法导出。', isError: true);
+        return null;
+      }
+      final ok = await (filePicker as AndroidBlinkFilePicker).writeBytesToUri(
+        destPath,
+        bytes,
+      );
+      if (!ok) {
+        showBanner('导出附件失败：无法写入所选文档位置。', isError: true);
+        return null;
+      }
+      showBanner('已导出附件副本。');
+      return File(destPath);
     }
     return exportBlobToFile(blob, File(destPath));
   }
