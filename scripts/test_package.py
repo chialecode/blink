@@ -298,6 +298,10 @@ class VersionCalculationTests(unittest.TestCase):
         self.assertEqual(package.IDENTITY_SPECS["blink-dev"].pipe_name, r"\\.\pipe\blink-dev-control")
         self.assertEqual(package.IDENTITY_SPECS["blink"].icon_file, "blink.ico")
         self.assertEqual(package.IDENTITY_SPECS["blink-dev"].icon_file, "blink-dev.ico")
+        self.assertFalse(package.IDENTITY_SPECS["blink"].desktop_on_update)
+        self.assertFalse(package.IDENTITY_SPECS["blink-test"].desktop_on_update)
+        self.assertTrue(package.IDENTITY_SPECS["blink-dev"].desktop_on_update)
+        self.assertTrue(package.IDENTITY_SPECS["blink-dev-test"].desktop_on_update)
 
 
 class PackagingRetentionAndNsisTests(unittest.TestCase):
@@ -459,6 +463,8 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
             "!define MUI_PAGE_CUSTOMFUNCTION_PRE BlinkDirectoryPre",
             "!define BLINK_EXIT_FOLDER_TAKEN 7",
             "!define BLINK_EXIT_FILES_NOT_WRITTEN 8",
+            "!insertmacro BLINK_REQUIRE BLINK_DESKTOP_ON_UPDATE",
+            '!error "BLINK_DESKTOP_ON_UPDATE must be 0 or 1, not ${BLINK_DESKTOP_ON_UPDATE}"',
         ):
             self.assertIn(needle, text)
         # After the mutex is gone, wait (same 30 s) until the installed exe can be opened for writing (#31).
@@ -499,6 +505,33 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
         self.assertIsNotNone(check, "File /r must be followed by the exit-8 check, then WriteUninstaller")
         for later in ('WriteRegStr HKCU "${BLINK_UNINSTALL_KEY}"', 'CreateShortCut "$SMPROGRAMS'):
             self.assertGreater(text.index(later), check.start(), f"{later} must come after the exit-8 check")
+        # Start Menu shortcut is created ONLY on first install (or /D= move); over-installs leave it untouched.
+        sm_guard = re.search(
+            r'\$\{If\} \$FirstInstall == "1"\n\s*CreateShortCut "\$SMPROGRAMS\\\$\{BLINK_PRODUCT_NAME\}\.lnk" "\$INSTDIR\\\$\{BLINK_EXE\}"\n\s*\$\{EndIf\}',
+            install,
+        )
+        self.assertIsNotNone(sm_guard, "Start Menu shortcut must be gated by $FirstInstall == 1")
+        self.assertEqual(
+            install.count('CreateShortCut "$SMPROGRAMS'),
+            1,
+            "Start Menu shortcut must only be created in the first-install block",
+        )
+        # Silent desktop shortcut: created on first install OR when BLINK_DESKTOP_ON_UPDATE == 1, unless /NODESKTOP.
+        desktop_guard = re.search(
+            r'\$\{If\} \$\{Silent\}\n'
+            r'\s*\$\{If\} \$FirstInstall == "1"\n'
+            r'\s*\$\{OrIf\} "\$\{BLINK_DESKTOP_ON_UPDATE\}" == "1"\n'
+            r'\s*\$\{GetParameters\} \$0\n'
+            r'\s*ClearErrors\n'
+            r'\s*\$\{GetOptions\} \$0 "/NODESKTOP" \$1\n'
+            r'\s*\$\{If\} \$\{Errors\}\n'
+            r'\s*Call CreateDesktopShortcut\n',
+            install,
+        )
+        self.assertIsNotNone(
+            desktop_guard,
+            "Silent desktop shortcut must respect $FirstInstall, BLINK_DESKTOP_ON_UPDATE, and /NODESKTOP",
+        )
         # Every exit code the script defines is explained in the install-dev receipt.
         codes = {int(code) for code in re.findall(r"(?m)^!define BLINK_EXIT_\w+ (\d+)", text)}
         self.assertEqual(codes, {3, 4, 5, 7, 8})
@@ -527,25 +560,65 @@ class PackagingRetentionAndNsisTests(unittest.TestCase):
         except package.PackageError:
             self.skipTest("NSIS 3.13 not fetched on this host (run scripts/package.py once)")
 
-        spec = package.IDENTITY_SPECS["blink-dev-test"]
-        with tempfile.TemporaryDirectory() as tmp:
-            td = Path(tmp)
-            app = td / "app"
-            app.mkdir()
-            (app / spec.exe_name).write_bytes(b"MZ")
-            out = td / f"{spec.identity}-setup-0.1.0-dev.202611240000.exe"
-            package.compile_nsis_installer(
-                makensis,
-                nsi_path,
-                spec=spec,
-                version="0.1.0-dev.202611240000",
-                file_version="0.1.0.0",
-                app_dir=app,
-                icon_path=package.RESOURCES_DIR / spec.icon_file,
-                out_file=out,
-                work_dir=td,
-            )
-            self.assertGreater(out.stat().st_size, 0)
+        for ident, ver in (
+            ("blink-dev-test", "0.1.0-dev.202611240000"),
+            ("blink-test", "0.1.0"),
+        ):
+            with self.subTest(identity=ident):
+                spec = package.IDENTITY_SPECS[ident]
+                with tempfile.TemporaryDirectory() as tmp:
+                    td = Path(tmp)
+                    app = td / "app"
+                    app.mkdir()
+                    (app / spec.exe_name).write_bytes(b"MZ")
+                    out = td / f"{spec.identity}-setup-{ver}.exe"
+                    package.compile_nsis_installer(
+                        makensis,
+                        nsi_path,
+                        spec=spec,
+                        version=ver,
+                        file_version="0.1.0.0",
+                        app_dir=app,
+                        icon_path=package.RESOURCES_DIR / spec.icon_file,
+                        out_file=out,
+                        work_dir=td,
+                    )
+                    self.assertGreater(out.stat().st_size, 0)
+
+    def test_compile_nsis_passes_desktop_on_update_define_per_identity(self) -> None:
+        for ident, expected_flag in (
+            ("blink", "-DBLINK_DESKTOP_ON_UPDATE=0"),
+            ("blink-test", "-DBLINK_DESKTOP_ON_UPDATE=0"),
+            ("blink-dev", "-DBLINK_DESKTOP_ON_UPDATE=1"),
+            ("blink-dev-test", "-DBLINK_DESKTOP_ON_UPDATE=1"),
+        ):
+            with self.subTest(identity=ident):
+                spec = package.IDENTITY_SPECS[ident]
+                with tempfile.TemporaryDirectory() as tmp:
+                    td = Path(tmp)
+                    app = td / "app"
+                    app.mkdir()
+                    (app / spec.exe_name).write_bytes(b"MZ")
+                    out = td / f"{spec.identity}-setup.exe"
+
+                    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                        out.write_bytes(b"stub-installer")
+                        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+                    with mock.patch.object(package.subprocess, "run", side_effect=fake_run) as run_mock:
+                        package.compile_nsis_installer(
+                            Path("makensis.exe"),
+                            package.NSI_PATH,
+                            spec=spec,
+                            version="0.1.0",
+                            file_version="0.1.0.0",
+                            app_dir=app,
+                            icon_path=package.RESOURCES_DIR / spec.icon_file,
+                            out_file=out,
+                            work_dir=td,
+                        )
+                    cmd = run_mock.call_args.args[0]
+                    self.assertIn(expected_flag, cmd)
 
     def test_snapshot_diff_detects_registry_and_start_menu_changes(self) -> None:
         base = {
@@ -655,6 +728,8 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
         env: dict[str, str] | None = None,
         platform_name: str = "win32",
         defer_timeout_s: float = package.WINDOW_DEFER_TIMEOUT_SECONDS,
+        branch: str | None = None,
+        git_sha: str | None = None,
     ) -> tuple[int, dict[str, object]]:
         with tempfile.TemporaryDirectory() as tmp:
             td = Path(tmp)
@@ -675,6 +750,8 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
                 repo_root=td,
                 platform_name=platform_name,
                 defer_timeout_s=defer_timeout_s,
+                branch=branch,
+                git_sha=git_sha,
             )
             self.assertTrue(receipt_path.is_file(), "install-dev.json receipt must be written")
             persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -710,6 +787,8 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
             "firstInstall",
             "oldVersion",
             "newVersion",
+            "branch",
+            "gitSha",
             "installLocation",
             "wasRunning",
             "windowOpen",
@@ -736,6 +815,22 @@ class DevAutoInstallDecisionTests(unittest.TestCase):
         self.assertFalse(receipt["wasRunning"])
         self.assertEqual(harness.quit_calls, [])
         self.assertEqual(harness.direct_calls[0][1], ["--background"])
+
+    def test_pr_branch_install_succeeds_and_records_branch_and_sha(self) -> None:
+        harness = FakeInstallHarness(
+            dev_entry=self._entry(), post_install_reg_version=self.NEW, post_install_exe_version=self.NEW
+        )
+        rc, receipt = self._run_case(
+            harness,
+            branch="fix/47-skip-start-menu-on-dev-reinstall",
+            git_sha="abc1234",
+            dirty=False,
+        )
+
+        self._assert_installed(rc, receipt, harness)
+        self.assertEqual(receipt["branch"], "fix/47-skip-start-menu-on-dev-reinstall")
+        self.assertEqual(receipt["gitSha"], "abc1234")
+        self.assertFalse(receipt["dirty"])
 
     def test_not_running_installs_verifies_and_launches_background_tray(self) -> None:
         harness = FakeInstallHarness(
@@ -1246,6 +1341,31 @@ class CliAndHelperTests(unittest.TestCase):
         pv = package.read_exe_product_version(Path(sys.executable))
         self.assertTrue(pv)
         self.assertTrue(pv[0].isdigit())
+
+    def test_read_git_state_reports_branch_and_detached_head(self) -> None:
+        with mock.patch.object(
+            package.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess(["git"], 0, stdout="1234abc\n", stderr=""),
+                subprocess.CompletedProcess(["git"], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess(["git"], 0, stdout="fix/47-skip-start-menu\n", stderr=""),
+            ],
+        ):
+            state = package.read_git_state()
+        self.assertEqual(state, package.GitState(sha="1234abc", dirty=False, branch="fix/47-skip-start-menu"))
+
+        with mock.patch.object(
+            package.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess(["git"], 0, stdout="1234abc\n", stderr=""),
+                subprocess.CompletedProcess(["git"], 0, stdout=" M scripts/package.py\n", stderr=""),
+                subprocess.CompletedProcess(["git"], 1, stdout="", stderr=""),
+            ],
+        ):
+            detached = package.read_git_state()
+        self.assertEqual(detached, package.GitState(sha="1234abc", dirty=True, branch=None))
 
 
 class SubprocessDecodingTests(unittest.TestCase):

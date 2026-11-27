@@ -34,8 +34,8 @@
 4. **提交**：Conventional Commits（`feat: …`、`fix(tray): …`），每个提交 `git commit -s`。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
 5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
 6. **审查**：CI `repository-quality` 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
-7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
-8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](engineering.md#dev-install)；在 issue 或对话里报告结果与一个首选下一步。
+7. **PR 审核前预装与合并**：低风险 PR 由 Agent 在 CI 与独立审查通过后用 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；凡需用户审核或实机测试的 PR（包括 `risk:high` 与界面/行为改动），在请用户审核前先从 PR 分支运行 `python -B scripts/package.py --install` 更新本机开发版，并在 PR 正文或评论记录回执，保持 PR 打开待用户测试通过后再合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](engineering.md#dev-install)保持本机与 `main` 同步；在 issue 或对话里报告结果与一个首选下一步。
 
 <a id="high-risk"></a>
 ### 2.1 高风险清单
