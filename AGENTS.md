@@ -16,7 +16,7 @@
 完整规则见[开发流程](docs/dev-rules/workflow.md#change-loop)，要点：
 
 - **一个 issue 一个小 PR**：分支 `<type>/<issue号>-<简短描述>`（如 `fix/42-tray-restore`），Conventional Commits + DCO（`git commit -s`）。
-- **自己完成到底**：实现 → 快速门禁 → push → 建 PR（按 PR 模板写验证证据）→ CI `repository-quality` 通过 → 独立审查（干净上下文的子代理或另一个 Agent，按 [REVIEW](REVIEW.md)）→ 合并 → 拉取 `main` 后[自动安装开发版](docs/dev-rules/engineering.md#dev-install)。push 与建 PR 长期授权。
+- **自己完成到底**：实现 → 快速门禁 → push → 建 PR（按 PR 模板写验证证据）→ CI `repository-quality` 通过 → 独立审查（干净上下文的子代理或另一个 Agent，按 [REVIEW](REVIEW.md)）→ 需用户审核或实机测试的 PR 先从 PR 分支运行[开发版自动安装](docs/dev-rules/engineering.md#dev-install)并在 PR 里记录回执，再请用户测试审核 → 合并 → 拉取 `main` 后同步本机开发版。push 与建 PR 长期授权。
 - **合并**：低风险 PR 审查通过后由 Agent 直接 squash 合并；碰到[高风险清单](docs/dev-rules/workflow.md#high-risk)的 PR 加 `risk:high` 标签，等用户合并。
 - **需要用户时**：只有会改变数据含义、隐私授权范围或造成不可逆结果的决定，以及必须真人判断的实机检查，才建 `needs-user` issue；其余按推荐的可逆默认值继续做，并在 PR 里写明。
 - **收尾**：如实说明结果、验证证据（命令 / 结果 / 未运行项）、限制与一个首选下一步；新教训写进 [LESSONS](LESSONS.md)。
@@ -42,5 +42,5 @@
 - 原文层不可篡改与隐私边界（[隐私与公开卫生](docs/dev-rules/sources-and-safety.md#privacy-hygiene)）：用户录入的笔记、日记、书摘批注与原始书稿是只读保护的原文层；外置 AI 与可选直连 AI 的一切衍生输出只能写入可重建的 `ai_*` 派生层；`#private` 内容在 MCP、直连 AI、双表面 HTML 与异步中继四层零云端出境。
 - 公开内容卫生：严禁提交 API 密钥、同步令牌、签名私钥、`.env`、`.sqlite`/`.db`、真实私人笔记样本、本机绝对路径、本机参考项目名或同级仓库名；测试只用合成样本。
 - 安静有界验证（[门禁规则](docs/dev-rules/engineering.md#gates)）：日常用快速门禁（约 5～10 分钟）；发布前以及改到打包、安装、更新、签名或发布链路时跑完整门禁；测试、截图与冒烟一律安静运行（无弹窗、不抢焦点、不出声、只监听 `127.0.0.1`、用隔离临时目录）。缺运行环境如实记 `not-run`，不靠删除或弱化测试制造通过。
-- 开发版自动安装：每次合并进 `main` 后在本机拉取并运行 `python -B scripts/package.py --install`（未安装时自动完成首次安装，窗口开着时推迟；`BLINK_DEV_AUTO_INSTALL=0` 关闭）；只碰 `blink-dev`，从不触碰正式版 `blink`。
+- 开发版自动安装：凡需用户审核或实机测试的 PR（尤其是高风险或界面/行为改动），在请用户审核前先从 PR 分支运行 `python -B scripts/package.py --install` 并在 PR 里记录回执；每次合并进 `main` 后在本机拉取 `main` 同步安装（未安装时自动完成首次安装，窗口开着时推迟；`BLINK_DEV_AUTO_INSTALL=0` 关闭）；只碰 `blink-dev`，从不触碰正式版 `blink`。
 - 远端：push 与建 PR 长期授权；合并按上面的规则；改远端设置、规则集、签名密钥、发布正式版与改写远端历史需要用户对具体动作授权。

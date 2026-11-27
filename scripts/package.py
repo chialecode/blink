@@ -96,6 +96,7 @@ class IdentitySpec:
     product_name: str
     file_description: str
     icon_file: str
+    desktop_on_update: bool = False
 
     @property
     def exe_name(self) -> str:
@@ -126,6 +127,7 @@ IDENTITY_SPECS: dict[str, IdentitySpec] = {
         product_name="BLINK",
         file_description="BLINK Desktop Client",
         icon_file="blink.ico",
+        desktop_on_update=False,
     ),
     "blink-dev": IdentitySpec(
         identity="blink-dev",
@@ -134,6 +136,7 @@ IDENTITY_SPECS: dict[str, IdentitySpec] = {
         product_name="BLINK Dev",
         file_description="BLINK Desktop Client (Dev)",
         icon_file="blink-dev.ico",
+        desktop_on_update=True,
     ),
     "blink-test": IdentitySpec(
         identity="blink-test",
@@ -142,6 +145,7 @@ IDENTITY_SPECS: dict[str, IdentitySpec] = {
         product_name="BLINK Test",
         file_description="BLINK Desktop Client (Test)",
         icon_file="blink.ico",
+        desktop_on_update=False,
     ),
     "blink-dev-test": IdentitySpec(
         identity="blink-dev-test",
@@ -150,6 +154,7 @@ IDENTITY_SPECS: dict[str, IdentitySpec] = {
         product_name="BLINK Dev Test",
         file_description="BLINK Desktop Client (Dev Test)",
         icon_file="blink-dev.ico",
+        desktop_on_update=True,
     ),
 }
 
@@ -167,6 +172,7 @@ class VersionInfo:
 class GitState:
     sha: str
     dirty: bool
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -548,7 +554,18 @@ def read_git_state(repo_root: Path = REPO_ROOT) -> GitState:
     if status_proc.returncode != 0:
         raise PackageError(f"Failed to read git status: {status_proc.stderr.strip()}")
     dirty = bool(status_proc.stdout.strip())
-    return GitState(sha=sha, dirty=dirty)
+
+    branch_proc = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=_subprocess_flags(),
+    )
+    branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 and branch_proc.stdout.strip() else None
+    return GitState(sha=sha, dirty=dirty, branch=branch)
 
 
 def read_flutter_version(flutter_exe: Path, env: Mapping[str, str] | None = None) -> str:
@@ -1315,6 +1332,7 @@ def compile_nsis_installer(
         f"-DBLINK_ICON={icon_path}",
         f"-DBLINK_OUT_FILE={out_file}",
         f"-DBLINK_FILES_NSH={files_nsh}",
+        f"-DBLINK_DESKTOP_ON_UPDATE={'1' if spec.desktop_on_update else '0'}",
         str(nsi_path),
     ]
     proc = subprocess.run(
@@ -1447,6 +1465,7 @@ def build_windows_package(
             "app_id": spec.app_id,
             "product_name": spec.product_name,
             "git_sha": git_state.sha,
+            "git_branch": git_state.branch,
             "dirty": version_info.dirty,
             "flutter_version": flutter_version,
             "installer": installer_filename,
@@ -1498,6 +1517,8 @@ def new_install_receipt(
     dirty: bool | None,
     installer: str | None,
     at: str,
+    branch: str | None = None,
+    git_sha: str | None = None,
 ) -> dict[str, Any]:
     """install-dev.json with every field present (the unified camelCase ones plus BLINK's own)."""
     return {
@@ -1509,6 +1530,8 @@ def new_install_receipt(
         "firstInstall": False,
         "oldVersion": None,
         "newVersion": new_version,
+        "branch": branch,
+        "gitSha": git_sha,
         "dirty": dirty,
         "installLocation": None,
         "installer": installer,
@@ -1546,13 +1569,15 @@ def run_dev_auto_install(
     poll_interval_s: float = QUIT_POLL_INTERVAL_SECONDS,
     defer_timeout_s: float = WINDOW_DEFER_TIMEOUT_SECONDS,
     defer_poll_interval_s: float = WINDOW_DEFER_POLL_INTERVAL_SECONDS,
+    branch: str | None = None,
+    git_sha: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Install the freshly built blink-dev on this machine (engineering.md 2.2, DEC-029).
 
-    Installs on first use too; waits while the BLINK Dev window is open (up to defer_timeout_s),
-    asks a tray-only instance to save and quit (never force-killed), installs silently, checks
-    the uninstall entry and the exe version, then starts it in the tray. The receipt uses the
-    shared camelCase fields.
+    Works on both clean PR branches (for pre-review testing) and main; installs on first use too;
+    waits while the BLINK Dev window is open (up to defer_timeout_s), asks a tray-only instance
+    to save and quit (never force-killed), installs silently, checks the uninstall entry and the
+    exe version, then starts it in the tray. The receipt uses the shared camelCase fields.
     """
     eff_platform = platform_name if platform_name is not None else sys.platform
     eff_identity = identity if identity is not None else channel
@@ -1564,6 +1589,8 @@ def run_dev_auto_install(
         dirty=dirty,
         installer=rel_installer,
         at=utc_iso(deps.clock.utc_now()),
+        branch=branch,
+        git_sha=git_sha,
     )
 
     def elapsed_ms(since: float) -> int:
@@ -2067,6 +2094,59 @@ def _resolve_uninstaller_path(entry: UninstallEntry | None, install_dir: Path) -
     raise PackageError("Uninstaller executable Uninstall.exe not found for blink-dev-test")
 
 
+def _resolve_windows_shell_dir(csidl: int) -> Path | None:
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    get_folder = shell32.SHGetFolderPathW
+    get_folder.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR]
+    get_folder.restype = ctypes.c_long
+    buf = ctypes.create_unicode_buffer(32768)
+    if get_folder(None, csidl, None, 0, buf) == 0 and buf.value:
+        return Path(buf.value)
+    return None
+
+
+def resolve_user_shortcut_paths(
+    spec: IdentitySpec,
+    env: Mapping[str, str] | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Return (start_menu_lnk, desktop_lnk) matching NSIS $SMPROGRAMS and $DESKTOP."""
+    effective_env = env if env is not None else os.environ
+    sm_dir: Path | None = None
+    desktop_dir: Path | None = None
+    if sys.platform == "win32" and env is None:
+        sm_dir = _resolve_windows_shell_dir(0x0002)  # CSIDL_PROGRAMS
+        desktop_dir = _resolve_windows_shell_dir(0x0010)  # CSIDL_DESKTOPDIRECTORY
+    if sm_dir is None:
+        appdata = effective_env.get("APPDATA", "").strip()
+        if appdata:
+            sm_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    if desktop_dir is None:
+        userprofile = effective_env.get("USERPROFILE", "").strip()
+        if userprofile:
+            desktop_dir = Path(userprofile) / "Desktop"
+    lnk_name = f"{spec.product_name}.lnk"
+    return (sm_dir / lnk_name if sm_dir is not None else None), (desktop_dir / lnk_name if desktop_dir is not None else None)
+
+
+def _unlink_with_retry(path: Path, *, timeout_s: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
 def run_rehearsal(
     *,
     receipt_path: Path = ARTIFACTS_PACKAGE_DIR / "rehearsal.json",
@@ -2143,6 +2223,7 @@ def run_rehearsal(
         steps["build_a_b"] = {"status": "passed", "versionA": version_a, "versionB": version_b}
 
         # Step R1: Silent install A into isolated temp dir without desktop shortcut.
+        sm_lnk, desktop_lnk = resolve_user_shortcut_paths(spec, None if env is None else effective_env)
         rc_a = run_silent_installer(pkg_a.installer_path, extra_args=["/NODESKTOP"], install_dir=install_dir)
         if rc_a != 0:
             raise PackageError(f"Rehearsal installer A failed with exit code {rc_a}")
@@ -2157,7 +2238,20 @@ def run_rehearsal(
         pv_a = read_exe_product_version(exe_path)
         if pv_a != version_a:
             raise PackageError(f"PE ProductVersion mismatch after A install: expected {version_a!r}, got {pv_a!r}")
-        steps["install_a"] = {"status": "passed", "registryVersion": entry_a.display_version, "exeVersion": pv_a}
+        sm_mtime_a: int | None = None
+        if sm_lnk is not None:
+            if not sm_lnk.is_file():
+                raise PackageError(f"First install did not create Start Menu shortcut: {sm_lnk.name}")
+            sm_mtime_a = sm_lnk.stat().st_mtime_ns
+        if desktop_lnk is not None and desktop_lnk.exists():
+            raise PackageError(f"First install with /NODESKTOP unexpectedly created Desktop shortcut: {desktop_lnk.name}")
+        steps["install_a"] = {
+            "status": "passed",
+            "registryVersion": entry_a.display_version,
+            "exeVersion": pv_a,
+            "startMenuCreated": sm_mtime_a is not None,
+            "desktopSkipped": desktop_lnk is not None and not desktop_lnk.exists(),
+        }
 
         # Step R2: Verify --quit-for-update with no running instance exits 0 immediately (M2-K05).
         t0 = time.monotonic()
@@ -2247,12 +2341,27 @@ def run_rehearsal(
         pv_b = read_exe_product_version(exe_path)
         if pv_b != version_b:
             raise PackageError(f"PE ProductVersion mismatch after B install: expected {version_b!r}, got {pv_b!r}")
+        if sm_lnk is not None and sm_mtime_a is not None:
+            if not sm_lnk.is_file():
+                raise PackageError(f"Silent over-install unexpectedly removed Start Menu shortcut: {sm_lnk.name}")
+            sm_mtime_b = sm_lnk.stat().st_mtime_ns
+            if sm_mtime_b != sm_mtime_a:
+                raise PackageError(
+                    f"Silent over-install modified existing Start Menu shortcut {sm_lnk.name} "
+                    f"(mtime_ns {sm_mtime_a} -> {sm_mtime_b})"
+                )
+        if desktop_lnk is not None and desktop_lnk.exists():
+            raise PackageError(
+                f"Silent over-install with /NODESKTOP unexpectedly created Desktop shortcut: {desktop_lnk.name}"
+            )
         steps["upgrade_a_to_b"] = {
             "status": "passed",
             "quitAElapsedSeconds": quit_a_elapsed,
             "lifecycleA": lifecycle_a,
             "registryVersionB": entry_b.display_version,
             "exeVersionB": pv_b,
+            "startMenuUntouched": sm_mtime_a is not None,
+            "desktopSkipped": desktop_lnk is not None and not desktop_lnk.exists(),
         }
 
         # Step R6: Launch B --background quiet, ping, then --quit-for-update.
@@ -2295,6 +2404,27 @@ def run_rehearsal(
             "lifecycleB": lifecycle_b,
         }
 
+        # Step R6b: Delete ONLY the test-identity Start Menu shortcut, reinstall silently with /NODESKTOP,
+        # and confirm Start Menu stays absent (never recreated) while /NODESKTOP still keeps Desktop clean.
+        if sm_lnk is not None:
+            _unlink_with_retry(sm_lnk)
+            if sm_lnk.exists():
+                raise PackageError(f"Could not delete test Start Menu shortcut before reinstall check: {sm_lnk.name}")
+            rc_b2 = run_silent_installer(pkg_b.installer_path, extra_args=["/NODESKTOP"], install_dir=install_dir)
+            if rc_b2 != 0:
+                raise PackageError(f"Rehearsal reinstall B failed with exit code {rc_b2}")
+            if sm_lnk.exists():
+                raise PackageError(f"Silent over-install unexpectedly recreated deleted Start Menu shortcut: {sm_lnk.name}")
+            if desktop_lnk is not None and desktop_lnk.exists():
+                raise PackageError(
+                    f"Silent reinstall with /NODESKTOP unexpectedly created Desktop shortcut: {desktop_lnk.name}"
+                )
+            steps["reinstall_keeps_deleted_start_menu_absent"] = {
+                "status": "passed",
+                "startMenuAbsent": True,
+                "desktopSkipped": desktop_lnk is not None and not desktop_lnk.exists(),
+            }
+
         # Step R7: Silent uninstall & clean residue check (also confirm user data dir was preserved by uninstaller).
         time.sleep(0.25)
         unins_exe = _resolve_uninstaller_path(entry_b, install_dir)
@@ -2331,11 +2461,10 @@ def run_rehearsal(
             leftovers = [p.relative_to(install_dir).as_posix() for p in install_dir.rglob("*")]
             residue.append(f"install_dir still exists (entries: {leftovers})")
 
-        appdata = effective_env.get("APPDATA", "").strip()
-        if appdata:
-            sm_lnk = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / f"{spec.product_name}.lnk"
-            if sm_lnk.exists():
-                residue.append(f"Start Menu shortcut still exists: {sm_lnk.name}")
+        if sm_lnk is not None and sm_lnk.exists():
+            residue.append(f"Start Menu shortcut still exists: {sm_lnk.name}")
+        if desktop_lnk is not None and desktop_lnk.exists():
+            residue.append(f"Desktop shortcut still exists: {desktop_lnk.name}")
 
         if residue:
             steps["uninstall_clean"] = {"status": "failed", "residue": list(residue)}
@@ -2519,7 +2648,19 @@ def main(argv: list[str] | None = None) -> int:
                 dest_dir=DIST_ROOT / "blink-dev",
             )
         except PackageError as exc:
-            failed = new_install_receipt(identity="blink-dev", new_version=None, dirty=None, installer=None, at=utc_iso())
+            try:
+                gs = read_git_state()
+            except PackageError:
+                gs = None
+            failed = new_install_receipt(
+                identity="blink-dev",
+                new_version=None,
+                dirty=gs.dirty if gs is not None else None,
+                installer=None,
+                at=utc_iso(),
+                branch=gs.branch if gs is not None else None,
+                git_sha=gs.sha if gs is not None else None,
+            )
             failed.update(reason="build_failed", error=str(exc))
             atomic_write_json(receipt_path, failed)
             print(f"FAIL: {exc}", file=sys.stderr)
@@ -2533,6 +2674,8 @@ def main(argv: list[str] | None = None) -> int:
             env=os.environ,
             deps=deps,
             receipt_path=receipt_path,
+            branch=pkg.git_state.branch,
+            git_sha=pkg.git_state.sha,
         )
         if rc != 0:
             print(f"FAIL: dev auto-install failed ({receipt.get('reason')}): {receipt.get('error')}", file=sys.stderr)
@@ -2541,7 +2684,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(
                 f"INSTALLED: blink-dev {receipt['newVersion']} "
-                f"(firstInstall={receipt['firstInstall']}, wasRunning={receipt['wasRunning']}, "
+                f"(branch={receipt['branch']}, gitSha={receipt['gitSha']}, "
+                f"firstInstall={receipt['firstInstall']}, wasRunning={receipt['wasRunning']}, "
                 f"deferred={receipt['deferred']}, runningInTray={receipt['runningInTray']}, "
                 f"inJob={receipt['inJob']}, launch={receipt['launchMethod']})."
             )
