@@ -4,7 +4,7 @@ import 'package:sqlite3/sqlite3.dart';
 const int currentVaultFormatVersion = 1;
 
 /// Current SQLite schema version stored in `vault.json` and `vault_meta`.
-const int currentVaultSchemaVersion = 1;
+const int currentVaultSchemaVersion = 2;
 
 /// Applies BLINK's mandatory SQLite WAL & safety pragmas on [db].
 void applyBlinkSqlitePragmas(Database db) {
@@ -240,28 +240,57 @@ CREATE TABLE IF NOT EXISTS sync_oplog (
   created_at TEXT NOT NULL,
   UNIQUE (device_id, client_op_id)
 );
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_entity
+  ON sync_oplog (entity_type, entity_id, seq_id DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc
+  ON sync_oplog (hlc_ts, device_id, client_op_id);
 
 CREATE TABLE IF NOT EXISTS outbox_ops (
   client_op_id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,
   hlc_ts TEXT NOT NULL,
+  base_revision INTEGER NOT NULL DEFAULT 0,
   entity_layer TEXT NOT NULL CHECK(entity_layer IN ('raw', 'ai')),
   entity_type TEXT NOT NULL,
   entity_id TEXT NOT NULL,
   op_type TEXT NOT NULL,
+  op_origin TEXT NOT NULL DEFAULT 'app_ui',
   privacy_level TEXT NOT NULL CHECK(privacy_level IN ('normal', 'private')),
   payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed')),
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_outbox_ops_status
+  ON outbox_ops (status, created_at ASC, client_op_id ASC);
 
 CREATE TABLE IF NOT EXISTS sync_devices (
   device_id TEXT PRIMARY KEY,
   device_name TEXT NOT NULL,
   token_sha256 TEXT NOT NULL,
   revoked_at TEXT NULL,
+  last_seen_at TEXT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  local_copy_id TEXT NOT NULL,
+  remote_device_id TEXT NOT NULL,
+  remote_device_name TEXT NOT NULL DEFAULT '',
+  remote_hlc_ts TEXT NOT NULL,
+  local_body_md TEXT NOT NULL,
+  remote_body_md TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+  resolution TEXT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status
+  ON sync_conflicts (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity
+  ON sync_conflicts (entity_type, entity_id, status);
 
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
@@ -303,6 +332,95 @@ CREATE VIEW IF NOT EXISTS v_normal_bfm_links AS
 CREATE VIEW IF NOT EXISTS v_normal_syntheses AS
   SELECT * FROM ai_syntheses WHERE privacy_scope = 'normal_only';
 ''');
+}
+
+/// Idempotent schema migration from v1 to v2 (`sync_conflicts`, sync indexes,
+/// `outbox_ops.base_revision`/`op_origin`, and `sync_devices.last_seen_at`).
+///
+/// Must be invoked inside an active `BEGIN IMMEDIATE` transaction AFTER taking
+/// a pre-migration `VACUUM INTO` hot snapshot (`INV-07`).
+void migrateMainDatabaseV1ToV2(Database db) {
+  db.execute('''
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  local_copy_id TEXT NOT NULL,
+  remote_device_id TEXT NOT NULL,
+  remote_device_name TEXT NOT NULL DEFAULT '',
+  remote_hlc_ts TEXT NOT NULL,
+  local_body_md TEXT NOT NULL,
+  remote_body_md TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+  resolution TEXT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status
+  ON sync_conflicts (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity
+  ON sync_conflicts (entity_type, entity_id, status);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_entity
+  ON sync_oplog (entity_type, entity_id, seq_id DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc
+  ON sync_oplog (hlc_ts, device_id, client_op_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_ops_status
+  ON outbox_ops (status, created_at ASC, client_op_id ASC);
+''');
+
+  final outboxCols = _tableColumnNames(db, 'outbox_ops');
+  if (!outboxCols.contains('base_revision')) {
+    db.execute(
+      'ALTER TABLE outbox_ops ADD COLUMN base_revision INTEGER NOT NULL DEFAULT 0;',
+    );
+  }
+  if (!outboxCols.contains('op_origin')) {
+    db.execute(
+      "ALTER TABLE outbox_ops ADD COLUMN op_origin TEXT NOT NULL DEFAULT 'app_ui';",
+    );
+  }
+
+  // Backfill base_revision and op_origin on existing v1 outbox rows from sync_oplog.
+  db.execute('''
+UPDATE outbox_ops
+SET
+  base_revision = COALESCE(
+    (
+      SELECT o.base_revision
+      FROM sync_oplog o
+      WHERE o.device_id = outbox_ops.device_id
+        AND o.client_op_id = outbox_ops.client_op_id
+      LIMIT 1
+    ),
+    base_revision
+  ),
+  op_origin = COALESCE(
+    (
+      SELECT o.op_origin
+      FROM sync_oplog o
+      WHERE o.device_id = outbox_ops.device_id
+        AND o.client_op_id = outbox_ops.client_op_id
+      LIMIT 1
+    ),
+    op_origin
+  );
+''');
+
+  final deviceCols = _tableColumnNames(db, 'sync_devices');
+  if (!deviceCols.contains('last_seen_at')) {
+    db.execute('ALTER TABLE sync_devices ADD COLUMN last_seen_at TEXT NULL;');
+  }
+
+  db.execute(
+    "INSERT INTO vault_meta (key, value) VALUES ('schema_version', ?) "
+    'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    <Object?>[currentVaultSchemaVersion.toString()],
+  );
+}
+
+Set<String> _tableColumnNames(Database db, String tableName) {
+  final rows = db.select('PRAGMA table_info($tableName);');
+  return rows.map((row) => row['name'] as String).toSet();
 }
 
 /// Initializes isolated FTS5 schema (`fts_normal` and `fts_private`) in `index/fts.db` (`INV-03`, `INV-09`).
