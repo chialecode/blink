@@ -875,7 +875,7 @@ class _BlinkSyncSettingsSectionState extends State<BlinkSyncSettingsSection> {
                     obscureText: true,
                     style: BlinkTypography.body(tokens),
                     decoration: InputDecoration(
-                      labelText: widget.sync.hasRelayCredentials
+                      labelText: widget.sync.hasWebDavCredentials
                           ? 'WebDAV 密码（已存密钥库 · 留空保持不变）'
                           : 'WebDAV 密码（仅存系统密钥库）',
                       isDense: true,
@@ -952,7 +952,7 @@ class _BlinkSyncSettingsSectionState extends State<BlinkSyncSettingsSection> {
                     obscureText: true,
                     style: BlinkTypography.monoValue(tokens),
                     decoration: InputDecoration(
-                      labelText: widget.sync.hasRelayCredentials
+                      labelText: widget.sync.hasS3Credentials
                           ? 'Access Key ID（已存密钥库 · 留空保持不变）'
                           : 'Access Key ID（仅存系统密钥库）',
                       isDense: true,
@@ -968,7 +968,7 @@ class _BlinkSyncSettingsSectionState extends State<BlinkSyncSettingsSection> {
                     obscureText: true,
                     style: BlinkTypography.monoValue(tokens),
                     decoration: InputDecoration(
-                      labelText: widget.sync.hasRelayCredentials
+                      labelText: widget.sync.hasS3Credentials
                           ? 'Secret Access Key（已存密钥库 · 留空保持不变）'
                           : 'Secret Access Key（仅存系统密钥库）',
                       isDense: true,

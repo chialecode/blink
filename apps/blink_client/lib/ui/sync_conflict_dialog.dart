@@ -35,12 +35,54 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
   String? _errorText;
 
   @override
+  void initState() {
+    super.initState();
+    widget.sync.addListener(_onSyncChanged);
+    _syncMergeTextFromCurrentConflict();
+  }
+
+  @override
+  void didUpdateWidget(covariant BlinkSyncConflictDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.sync, widget.sync)) {
+      oldWidget.sync.removeListener(_onSyncChanged);
+      widget.sync.addListener(_onSyncChanged);
+    }
+    if (oldWidget.initialConflictId != widget.initialConflictId) {
+      _loadedConflictId = null;
+      _syncMergeTextFromCurrentConflict();
+    }
+  }
+
+  @override
   void dispose() {
+    widget.sync.removeListener(_onSyncChanged);
     _mergeController.dispose();
     super.dispose();
   }
 
-  void _ensureMergeTextFor(SyncConflict conflict) {
+  void _onSyncChanged() {
+    if (!mounted) {
+      return;
+    }
+    _syncMergeTextFromCurrentConflict();
+  }
+
+  void _syncMergeTextFromCurrentConflict() {
+    final conflicts = widget.sync.openConflicts;
+    if (conflicts.isEmpty) {
+      _loadedConflictId = null;
+      return;
+    }
+    if (_loadedConflictId == null && widget.initialConflictId != null) {
+      final idx = conflicts.indexWhere((c) => c.id == widget.initialConflictId);
+      if (idx >= 0) {
+        _selectedIndex = idx;
+      }
+    }
+    final safeIndex = _selectedIndex.clamp(0, conflicts.length - 1);
+    _selectedIndex = safeIndex;
+    final conflict = conflicts[safeIndex];
     if (_loadedConflictId == conflict.id) {
       return;
     }
@@ -70,6 +112,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
           if (_selectedIndex >= widget.sync.openConflicts.length) {
             _selectedIndex = widget.sync.openConflicts.length - 1;
           }
+          _syncMergeTextFromCurrentConflict();
         });
       }
     } catch (error) {
@@ -138,17 +181,8 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
               );
             }
 
-            if (_loadedConflictId == null && widget.initialConflictId != null) {
-              final idx = conflicts.indexWhere(
-                (c) => c.id == widget.initialConflictId,
-              );
-              if (idx >= 0) {
-                _selectedIndex = idx;
-              }
-            }
             final safeIndex = _selectedIndex.clamp(0, conflicts.length - 1);
             final conflict = conflicts[safeIndex];
-            _ensureMergeTextFor(conflict);
 
             return Column(
               mainAxisSize: MainAxisSize.min,
@@ -187,6 +221,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                               ? () => setState(() {
                                   _selectedIndex = safeIndex - 1;
                                   _loadedConflictId = null;
+                                  _syncMergeTextFromCurrentConflict();
                                 })
                               : null,
                           icon: const Icon(Icons.chevron_left_rounded),
@@ -198,6 +233,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                               ? () => setState(() {
                                   _selectedIndex = safeIndex + 1;
                                   _loadedConflictId = null;
+                                  _syncMergeTextFromCurrentConflict();
                                 })
                               : null,
                           icon: const Icon(Icons.chevron_right_rounded),

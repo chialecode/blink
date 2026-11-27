@@ -455,6 +455,7 @@ class BlinkSyncController extends ChangeNotifier {
   VaultManager? _vault;
   DirectShelfServer? _server;
   bool _initialized = false;
+  bool _isStopping = false;
   bool _isDisposed = false;
 
   SyncClientConfig _config = const SyncClientConfig();
@@ -477,7 +478,8 @@ class BlinkSyncController extends ChangeNotifier {
   bool _hasDirectDeviceToken = false;
   bool _hasRelayMasterKey = false;
   String? _relayMasterKeyId;
-  bool _hasRelayCredentials = false;
+  bool _hasWebDavCredentials = false;
+  bool _hasS3Credentials = false;
   String? _activeChannelLabel;
   BlinkErrorCode? _lastErrorCode;
   String? _lastErrorMessage;
@@ -490,6 +492,7 @@ class BlinkSyncController extends ChangeNotifier {
   Timer? _writeDebounceTimer;
   Timer? _sseReconnectTimer;
   int _sseReconnectAttempt = 0;
+  int _sseGeneration = 0;
   StreamSubscription<int>? _sseSub;
   DirectShelfTransport? _sseTransport;
   StreamSubscription<SyncStatusSnapshot>? _statusSub;
@@ -521,7 +524,9 @@ class BlinkSyncController extends ChangeNotifier {
   bool get hasDirectDeviceToken => _hasDirectDeviceToken;
   bool get hasRelayMasterKey => _hasRelayMasterKey;
   String? get relayMasterKeyId => _relayMasterKeyId;
-  bool get hasRelayCredentials => _hasRelayCredentials;
+  bool get hasWebDavCredentials => _hasWebDavCredentials;
+  bool get hasS3Credentials => _hasS3Credentials;
+  bool get hasRelayCredentials => _hasWebDavCredentials || _hasS3Credentials;
 
   PairingCodeInfo? get activePairingCode {
     final code = _activePairingCode;
@@ -565,6 +570,7 @@ class BlinkSyncController extends ChangeNotifier {
       await initialize();
     }
     await _detachCurrentVault();
+    _isStopping = false;
     _vault = vault;
     if (vault == null || !vault.isOpen) {
       _pendingOutboxCount = 0;
@@ -621,7 +627,7 @@ class BlinkSyncController extends ChangeNotifier {
 
   /// Triggered on `AppLifecycleState.resumed` (mobile & desktop foregrounding).
   void onAppResumed() {
-    if (_isDisposed || _vault == null || !_vault!.isOpen) {
+    if (_isDisposed || _isStopping || _vault == null || !_vault!.isOpen) {
       return;
     }
     if (isDirectConfigured && _sseSub == null) {
@@ -635,11 +641,14 @@ class BlinkSyncController extends ChangeNotifier {
     }
   }
 
-  /// Stops timers, SSE, LAN advertising, and embedded desktop HTTP server
-  /// cleanly BEFORE mirror flush and SQLite WAL checkpoint (`INV-07`).
+  /// Stops timers, subscriptions, SSE, in-flight syncs, LAN advertising, and
+  /// embedded desktop HTTP server cleanly BEFORE mirror flush and SQLite WAL
+  /// checkpoint (`INV-07`).
   Future<void> stopForShutdown() async {
+    _isStopping = true;
     _writeDebounceTimer?.cancel();
     _writeDebounceTimer = null;
+    await _cancelVaultSubscriptions();
     await _stopSseWakeupLoop();
     final inFlight = _syncInFlight;
     if (inFlight != null) {
@@ -647,8 +656,13 @@ class BlinkSyncController extends ChangeNotifier {
         await inFlight.timeout(const Duration(seconds: 2));
       } catch (_) {}
     }
+    final followUp = _followUpSyncFuture;
+    if (followUp != null) {
+      try {
+        await followUp.timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
     await _stopDesktopHostInternal();
-    await _cancelVaultSubscriptions();
     if (Platform.isAndroid && !isQuiet) {
       await _androidBridge.releaseMulticastLock();
     }
@@ -693,6 +707,11 @@ class BlinkSyncController extends ChangeNotifier {
 
     if (!enabled) {
       await _stopDesktopHostInternal();
+      if (_uiStatus == BlinkSyncUiStatus.error) {
+        _lastErrorCode = null;
+        _lastErrorMessage = null;
+        _recomputeBaselineStatus();
+      }
       _safeNotify();
       return true;
     }
@@ -871,6 +890,13 @@ class BlinkSyncController extends ChangeNotifier {
     final vault = _vault;
     if (vault == null || !vault.isOpen) {
       _setError(BlinkErrorCode.ioError, '便携库尚未就绪，无法配对同步节点。');
+      return null;
+    }
+    if (_hasUriUserInfo(baseUrl)) {
+      _setError(
+        BlinkErrorCode.invalidArgument,
+        '同步节点地址禁止在 URL 中内嵌用户名或密码，请仅填写主机地址与端口（INV-08）。',
+      );
       return null;
     }
     final normalizedUri = _parseSyncUri(baseUrl);
@@ -1105,16 +1131,25 @@ class BlinkSyncController extends ChangeNotifier {
     bool? excludePrivateFromRelay,
   }) async {
     final trimmedEndpoint = endpoint.trim();
-    if (enabled && _parseSyncUri(trimmedEndpoint) == null) {
+    if (trimmedEndpoint.isNotEmpty && _hasUriUserInfo(trimmedEndpoint)) {
+      _setError(
+        BlinkErrorCode.invalidArgument,
+        '中继地址禁止在 URL 中内嵌用户名或密码，请将凭据填写到下方独立密钥输入框（仅存系统密钥库，INV-08）。',
+      );
+      return false;
+    }
+    final parsedEndpoint = trimmedEndpoint.isEmpty
+        ? null
+        : _parseSyncUri(trimmedEndpoint);
+    if ((enabled && parsedEndpoint == null) ||
+        (trimmedEndpoint.isNotEmpty && parsedEndpoint == null)) {
       _setError(
         BlinkErrorCode.invalidArgument,
         '中继地址格式无效，请输入完整的 http:// 或 https:// 地址。',
       );
       return false;
     }
-    final normalizedEndpoint = trimmedEndpoint.isEmpty
-        ? null
-        : (_parseSyncUri(trimmedEndpoint)?.toString() ?? trimmedEndpoint);
+    final normalizedEndpoint = parsedEndpoint?.toString();
 
     try {
       if (password != null && password.isNotEmpty) {
@@ -1187,6 +1222,9 @@ class BlinkSyncController extends ChangeNotifier {
   /// callers observe the converged post-sync state rather than an in-progress
   /// follow-up cycle.
   Future<SyncRunResult?> syncNow({bool manual = true}) {
+    if (_isDisposed || _isStopping) {
+      return Future<SyncRunResult?>.value(null);
+    }
     if (_syncInFlight != null) {
       if (manual) {
         _followUpManual = true;
@@ -1208,6 +1246,7 @@ class BlinkSyncController extends ChangeNotifier {
           _followUpManual = false;
           try {
             if (_isDisposed ||
+                _isStopping ||
                 !isConfigured ||
                 (!runManual && _uiStatus == BlinkSyncUiStatus.deviceRevoked)) {
               completer.complete(null);
@@ -1336,7 +1375,7 @@ class BlinkSyncController extends ChangeNotifier {
 
   Future<SyncRunResult?> _runSyncCycle({required bool manual}) async {
     final vault = _vault;
-    if (_isDisposed || vault == null || !vault.isOpen) {
+    if (_isDisposed || _isStopping || vault == null || !vault.isOpen) {
       return null;
     }
     if (!isConfigured) {
@@ -1539,6 +1578,11 @@ class BlinkSyncController extends ChangeNotifier {
           // mDNS failure must not bring down the HTTP direct sync host.
         }
       }
+      if (_uiStatus == BlinkSyncUiStatus.error) {
+        _lastErrorCode = null;
+        _lastErrorMessage = null;
+        _recomputeBaselineStatus();
+      }
       return true;
     } catch (error) {
       await server.stop();
@@ -1585,6 +1629,8 @@ class BlinkSyncController extends ChangeNotifier {
     }
 
     if (localAdvanced &&
+        !_isStopping &&
+        !_isDisposed &&
         _config.autoSyncEnabled &&
         isConfigured &&
         _uiStatus != BlinkSyncUiStatus.deviceRevoked) {
@@ -1594,24 +1640,36 @@ class BlinkSyncController extends ChangeNotifier {
   }
 
   void _scheduleWriteDebouncedSync() {
+    if (_isDisposed || _isStopping) {
+      return;
+    }
     _writeDebounceTimer?.cancel();
     _writeDebounceTimer = Timer(writeDebounce, () {
-      if (!_isDisposed && _config.autoSyncEnabled && isConfigured) {
+      if (!_isDisposed &&
+          !_isStopping &&
+          _config.autoSyncEnabled &&
+          isConfigured) {
         unawaited(syncNow(manual: false));
       }
     });
   }
 
   void _startSseWakeupLoop() {
-    if (!enableSseWakeup || !_config.autoSyncEnabled) {
+    if (_isDisposed ||
+        _isStopping ||
+        !enableSseWakeup ||
+        !_config.autoSyncEnabled) {
       return;
     }
     unawaited(_connectSseOnce());
   }
 
   Future<void> _connectSseOnce() async {
-    await _stopSseWakeupLoop();
-    if (_isDisposed ||
+    final generation = ++_sseGeneration;
+    await _tearDownSseResources();
+    if (generation != _sseGeneration ||
+        _isDisposed ||
+        _isStopping ||
         !enableSseWakeup ||
         !_config.autoSyncEnabled ||
         !isDirectConfigured ||
@@ -1629,7 +1687,11 @@ class BlinkSyncController extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    if (token == null || token.isEmpty || _isDisposed) {
+    if (generation != _sseGeneration ||
+        token == null ||
+        token.isEmpty ||
+        _isDisposed ||
+        _isStopping) {
       return;
     }
 
@@ -1644,7 +1706,7 @@ class BlinkSyncController extends ChangeNotifier {
 
     _sseSub = transport.watchSeqEvents().listen(
       (remoteSeq) {
-        if (_isDisposed) {
+        if (generation != _sseGeneration || _isDisposed || _isStopping) {
           return;
         }
         _sseReconnectAttempt = 0;
@@ -1666,7 +1728,7 @@ class BlinkSyncController extends ChangeNotifier {
         }
       },
       onError: (Object error) {
-        if (_isDisposed) {
+        if (generation != _sseGeneration || _isDisposed || _isStopping) {
           return;
         }
         if (error is BlinkException &&
@@ -1678,7 +1740,9 @@ class BlinkSyncController extends ChangeNotifier {
         _scheduleSseReconnect();
       },
       onDone: () {
-        if (!_isDisposed &&
+        if (generation == _sseGeneration &&
+            !_isDisposed &&
+            !_isStopping &&
             isDirectConfigured &&
             _uiStatus != BlinkSyncUiStatus.deviceRevoked) {
           _scheduleSseReconnect();
@@ -1690,6 +1754,7 @@ class BlinkSyncController extends ChangeNotifier {
 
   void _scheduleSseReconnect() {
     if (_isDisposed ||
+        _isStopping ||
         !isDirectConfigured ||
         _uiStatus == BlinkSyncUiStatus.deviceRevoked) {
       return;
@@ -1701,13 +1766,18 @@ class BlinkSyncController extends ChangeNotifier {
       milliseconds: sseReconnectBaseDelay.inMilliseconds * multiplier,
     );
     _sseReconnectTimer = Timer(delay, () {
-      if (!_isDisposed && isDirectConfigured) {
+      if (!_isDisposed && !_isStopping && isDirectConfigured) {
         unawaited(_connectSseOnce());
       }
     });
   }
 
   Future<void> _stopSseWakeupLoop() async {
+    _sseGeneration++;
+    await _tearDownSseResources();
+  }
+
+  Future<void> _tearDownSseResources() async {
     _sseReconnectTimer?.cancel();
     _sseReconnectTimer = null;
     final sub = _sseSub;
@@ -1752,15 +1822,17 @@ class BlinkSyncController extends ChangeNotifier {
       final s3Secret = await secretStore.read(
         BlinkSecretKeys.relayS3SecretAccessKey,
       );
-      _hasRelayCredentials =
+      _hasWebDavCredentials =
           (webdavPass != null && webdavPass.isNotEmpty) ||
-          (webdavBearer != null && webdavBearer.isNotEmpty) ||
+          (webdavBearer != null && webdavBearer.isNotEmpty);
+      _hasS3Credentials =
           (s3Key != null &&
-              s3Key.isNotEmpty &&
-              s3Secret != null &&
-              s3Secret.isNotEmpty);
+          s3Key.isNotEmpty &&
+          s3Secret != null &&
+          s3Secret.isNotEmpty);
     } catch (_) {
-      _hasRelayCredentials = false;
+      _hasWebDavCredentials = false;
+      _hasS3Credentials = false;
     }
   }
 
@@ -1864,6 +1936,19 @@ class BlinkSyncController extends ChangeNotifier {
     _conflictsSub = null;
   }
 
+  static bool _hasUriUserInfo(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    final withScheme =
+        (trimmed.startsWith('http://') || trimmed.startsWith('https://'))
+        ? trimmed
+        : 'http://$trimmed';
+    final parsed = Uri.tryParse(withScheme);
+    return parsed != null && parsed.userInfo.isNotEmpty;
+  }
+
   static Uri? _parseSyncUri(String raw) {
     final trimmed = raw.trim();
     if (trimmed.isEmpty) {
@@ -1876,7 +1961,8 @@ class BlinkSyncController extends ChangeNotifier {
     final parsed = Uri.tryParse(withScheme);
     if (parsed == null ||
         (parsed.scheme != 'http' && parsed.scheme != 'https') ||
-        parsed.host.trim().isEmpty) {
+        parsed.host.trim().isEmpty ||
+        parsed.userInfo.isNotEmpty) {
       return null;
     }
     return parsed;
@@ -1946,7 +2032,9 @@ class BlinkSyncController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isStopping = true;
     _isDisposed = true;
+    _sseGeneration++;
     _writeDebounceTimer?.cancel();
     _sseReconnectTimer?.cancel();
     unawaited(stopForShutdown());

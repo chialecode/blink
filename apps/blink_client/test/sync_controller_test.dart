@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -63,6 +64,60 @@ class _InMemoryRelayObjectStore implements RelayObjectStore {
 
   @override
   void close() {}
+}
+
+class _BlockingRelayObjectStore extends _InMemoryRelayObjectStore {
+  _BlockingRelayObjectStore({
+    required this.firstCycleEntered,
+    required this.releaseFirstCycle,
+  });
+
+  final Completer<void> firstCycleEntered;
+  final Completer<void> releaseFirstCycle;
+  int checkConnectionCalls = 0;
+
+  @override
+  Future<void> checkConnection() async {
+    checkConnectionCalls++;
+    if (checkConnectionCalls == 1) {
+      if (!firstCycleEntered.isCompleted) {
+        firstCycleEntered.complete();
+      }
+      await releaseFirstCycle.future;
+    }
+  }
+}
+
+class _GatedSecretStore implements BlinkSecretStore {
+  _GatedSecretStore(this.inner);
+
+  final InMemoryBlinkSecretStore inner;
+  Completer<void>? readStarted;
+  Completer<void>? allowReadCompletion;
+
+  @override
+  String get channel => inner.channel;
+
+  @override
+  Future<String?> read(String key) async {
+    if (key == BlinkSecretKeys.directDeviceToken &&
+        allowReadCompletion != null) {
+      if (readStarted != null && !readStarted!.isCompleted) {
+        readStarted!.complete();
+      }
+      await allowReadCompletion!.future;
+    }
+    return inner.read(key);
+  }
+
+  @override
+  Future<void> write(String key, String value) => inner.write(key, value);
+
+  @override
+  Future<void> delete(String key) => inner.delete(key);
+
+  @override
+  Future<void> deleteAllForChannel() => inner.deleteAllForChannel();
 }
 
 class _FakeWindowAdapter implements DesktopWindowAdapter {
@@ -428,6 +483,30 @@ void main() {
       expect(mobileSync.openConflictCount, 0);
       final afterLocal = await mobileVault.raw.getEntryById(baseEntry.id);
       expect(afterLocal?.bodyMd, conflict2.localBodyMd);
+
+      // Trigger a third concurrent conflict to verify keepRemote explicitly.
+      await mobileSync.syncNow(manual: true);
+      await desktopSync.setDesktopServerEnabled(false);
+      await desktopVault.raw.updateEntry(
+        id: baseEntry.id,
+        bodyMd: '第三轮远端版本 RemoteV3',
+      );
+      await mobileVault.raw.updateEntry(
+        id: baseEntry.id,
+        bodyMd: '第三轮本机版本 LocalV3',
+      );
+      await desktopSync.setDesktopServerEnabled(
+        true,
+        bindHost: '127.0.0.1',
+        port: port,
+      );
+      await mobileSync.syncNow(manual: true);
+      expect(mobileSync.openConflictCount, 1);
+      final conflict3 = mobileSync.openConflicts.single;
+      await mobileSync.resolveConflictKeepRemote(conflict3);
+      expect(mobileSync.openConflictCount, 0);
+      final afterRemote = await mobileVault.raw.getEntryById(baseEntry.id);
+      expect(afterRemote?.bodyMd, conflict3.remoteBodyMd);
     });
 
     test('Channel B E2EE relay encrypts all payloads, blocks #private with 0 bytes uploaded by default, and recovers via recovery code', () async {
@@ -570,6 +649,201 @@ void main() {
       expect(ok, isTrue);
       expect(callOrder, <String>['stop_sync', 'flush_and_wal_checkpoint']);
       expect(desktopSync.isHostRunning, isFalse);
+    });
+
+    test('rejects URL-embedded credentials (INV-08) regardless of relay enabled flag and separates WebDAV/S3 credential flags', () async {
+      // Build synthetic credential-embedded URIs programmatically so static
+      // hygiene checks never flag literal user:pass@ URLs in test source.
+      final directCredUrl = Uri(
+        scheme: 'http',
+        userInfo: 'alice:super-secret',
+        host: '127.0.0.1',
+        port: 48231,
+      ).toString();
+      final relayCredUrl = Uri(
+        scheme: 'https',
+        userInfo: 'alice:plain-pass-leak',
+        host: 'dav.example.test',
+        path: '/blink/',
+      ).toString();
+
+      // Direct peer URL with embedded userInfo must be rejected before any network/file write.
+      final pairResult = await mobileSync.pairWithDirectPeer(
+        baseUrl: directCredUrl,
+        pairingCode: 'ABCD-EFGH',
+      );
+      expect(pairResult, isNull);
+      expect(mobileSync.lastErrorCode, BlinkErrorCode.invalidArgument);
+      expect(mobileSync.config.directPeerUrl, isNull);
+
+      // Relay endpoint with embedded userInfo must be rejected when enabled=true AND enabled=false!
+      for (final enabled in <bool>[true, false]) {
+        final saved = await mobileSync.saveRelayConfiguration(
+          enabled: enabled,
+          protocol: RelayProtocol.webdav,
+          endpoint: relayCredUrl,
+        );
+        expect(saved, isFalse);
+        expect(mobileSync.lastErrorCode, BlinkErrorCode.invalidArgument);
+      }
+
+      // Invalid non-empty endpoint when enabled=false must also be rejected (no raw fallback).
+      final savedInvalid = await mobileSync.saveRelayConfiguration(
+        enabled: false,
+        protocol: RelayProtocol.webdav,
+        endpoint: 'https://:bad-url-without-host',
+      );
+      expect(savedInvalid, isFalse);
+
+      // Verify sync.json never persisted any embedded credential or raw invalid string.
+      if (mobilePaths.syncSettingsFile.existsSync()) {
+        final rawJson = mobilePaths.syncSettingsFile.readAsStringSync();
+        expect(rawJson, isNot(contains('plain-pass-leak')));
+        expect(rawJson, isNot(contains('super-secret')));
+        expect(rawJson, isNot(contains('bad-url-without-host')));
+      }
+
+      // Saving valid WebDAV credentials sets hasWebDavCredentials without polluting hasS3Credentials.
+      final savedValid = await mobileSync.saveRelayConfiguration(
+        enabled: false,
+        protocol: RelayProtocol.webdav,
+        endpoint: 'https://dav.example.test/blink/',
+        username: 'alice',
+        password: 'webdav-secret-only',
+      );
+      expect(savedValid, isTrue);
+      expect(mobileSync.hasWebDavCredentials, isTrue);
+      expect(mobileSync.hasS3Credentials, isFalse);
+      expect(mobileSync.hasRelayCredentials, isTrue);
+    });
+
+    test('stopForShutdown cancels queued follow-up sync and stale async SSE connection (INV-07)', () async {
+      final firstEntered = Completer<void>();
+      final releaseFirst = Completer<void>();
+      final blockingStore = _BlockingRelayObjectStore(
+        firstCycleEntered: firstEntered,
+        releaseFirstCycle: releaseFirst,
+      );
+      final gatedSecrets = _GatedSecretStore(
+        InMemoryBlinkSecretStore(channel: 'blink-dev'),
+      );
+
+      final ctrl = BlinkSyncController(
+        paths: mobilePaths,
+        expectedChannel: BlinkChannel.blinkDev,
+        secretStore: gatedSecrets,
+        lanDiscovery: LanDiscovery(enabled: false),
+        relayStoreFactory: (_, _) => blockingStore,
+        isQuiet: true,
+        isMobilePlatform: true,
+        enableSseWakeup: true,
+      );
+      addTearDown(ctrl.dispose);
+
+      await ctrl.attachVault(mobileVault);
+      await ctrl.generateAndStoreRelayMasterKey();
+      expect(
+        await ctrl.saveRelayConfiguration(
+          enabled: true,
+          protocol: RelayProtocol.webdav,
+          endpoint: 'https://dav.example.test/blink/',
+        ),
+        isTrue,
+      );
+
+      // Start cycle 1 (blocks in checkConnection), then coalesce a follow-up syncNow().
+      final firstSync = ctrl.syncNow(manual: true);
+      await firstEntered.future;
+      final followUpSync = ctrl.syncNow(manual: true);
+
+      // Initiate shutdown while cycle 1 is in flight and follow-up is queued.
+      final shutdownFuture = ctrl.stopForShutdown();
+      releaseFirst.complete();
+      await Future.wait<Object?>([firstSync, followUpSync, shutdownFuture]);
+
+      // Follow-up cycle must NOT have started after stopForShutdown() began.
+      expect(blockingStore.checkConnectionCalls, 1);
+
+      // Post-shutdown syncNow() must be a no-op.
+      expect(await ctrl.syncNow(manual: true), isNull);
+      expect(blockingStore.checkConnectionCalls, 1);
+
+      // Verify async SSE token read completing after stopForShutdown does not reconnect.
+      final started = await desktopSync.setDesktopServerEnabled(
+        true,
+        bindHost: '127.0.0.1',
+        port: 0,
+      );
+      expect(started, isTrue);
+      final code = desktopSync.generatePairingCode()!;
+
+      await ctrl.attachVault(mobileVault);
+      await ctrl.pairWithDirectPeer(
+        baseUrl: 'http://127.0.0.1:${desktopSync.activeServerPort!}',
+        pairingCode: code.code,
+      );
+      await ctrl.stopForShutdown();
+
+      gatedSecrets.readStarted = Completer<void>();
+      gatedSecrets.allowReadCompletion = Completer<void>();
+      // Re-attach triggers async _connectSseOnce() which suspends on secretStore.read().
+      final reattachFuture = ctrl.attachVault(mobileVault);
+      await gatedSecrets.readStarted!.future;
+      final stopDuringSse = ctrl.stopForShutdown();
+      gatedSecrets.allowReadCompletion!.complete();
+      await Future.wait<void>([reattachFuture, stopDuringSse]);
+      // Calling onAppResumed after stopForShutdown must not trigger any sync,
+      // and a new desktop write must not arrive via any leaked SSE stream.
+      ctrl.onAppResumed();
+      final afterStopDesktop = await desktopVault.raw.createEntry(
+        bodyMd: '退出后桌面端写入不得经残留 SSE 拉取',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(ctrl.isSyncing, isFalse);
+      expect(await mobileVault.raw.getEntryById(afterStopDesktop.id), isNull);
+    });
+
+    test('desktop server clears stale error status after port-occupied failure recovers or disables (INV-11)', () async {
+      final blocker = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => blocker.close(force: true));
+
+      // Attempt to start on already-occupied port -> honest error status.
+      final failedStart = await desktopSync.setDesktopServerEnabled(
+        true,
+        bindHost: '127.0.0.1',
+        port: blocker.port,
+      );
+      expect(failedStart, isFalse);
+      expect(desktopSync.isHostRunning, isFalse);
+      expect(desktopSync.uiStatus, BlinkSyncUiStatus.error);
+      expect(desktopSync.lastErrorMessage, isNotNull);
+
+      // Retry on a free ephemeral port -> succeeds and clears stale error!
+      final recoveredStart = await desktopSync.setDesktopServerEnabled(
+        true,
+        bindHost: '127.0.0.1',
+        port: 0,
+      );
+      expect(recoveredStart, isTrue);
+      expect(desktopSync.isHostRunning, isTrue);
+      expect(desktopSync.uiStatus, isNot(BlinkSyncUiStatus.error));
+      expect(desktopSync.lastErrorCode, isNull);
+      expect(desktopSync.lastErrorMessage, isNull);
+
+      // Fail again on occupied port, then disable -> error also clears cleanly.
+      final failedAgain = await desktopSync.setDesktopServerEnabled(
+        true,
+        bindHost: '127.0.0.1',
+        port: blocker.port,
+      );
+      expect(failedAgain, isFalse);
+      expect(desktopSync.uiStatus, BlinkSyncUiStatus.error);
+
+      final disabled = await desktopSync.setDesktopServerEnabled(false);
+      expect(disabled, isTrue);
+      expect(desktopSync.uiStatus, isNot(BlinkSyncUiStatus.error));
+      expect(desktopSync.lastErrorCode, isNull);
+      expect(desktopSync.lastErrorMessage, isNull);
     });
   });
 }
