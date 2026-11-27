@@ -22,10 +22,14 @@ class BlinkPaths {
     required Directory dataRoot,
     Directory? defaultVaultDir,
     Directory? vaultDirOverride,
+    Directory? cacheDir,
+    Directory? noBackupDir,
   }) : this._(
          dataRoot,
          defaultVaultDir,
          vaultDirOverride,
+         cacheDir,
+         noBackupDir,
          const <String>[],
          null,
          null,
@@ -35,6 +39,8 @@ class BlinkPaths {
     this.dataRoot,
     this._defaultVaultDir,
     this.vaultDirOverride,
+    this._cacheDir,
+    this.noBackupDir,
     this._forbiddenRoots,
     this._isWindowsContext,
     this._canonicalBaseDir,
@@ -48,6 +54,10 @@ class BlinkPaths {
     bool? isWindows,
     bool? isMacOS,
     bool? isLinux,
+    bool? isAndroid,
+    String? androidFilesDir,
+    String? androidCacheDir,
+    String? androidNoBackupFilesDir,
     String? fallbackTempPath,
     String? Function()? resolveSystemDocumentsDir,
     Directory? repoRootOverride,
@@ -55,9 +65,10 @@ class BlinkPaths {
     String? executablePathOverride,
   }) {
     final env = environment ?? Platform.environment;
-    final win = isWindows ?? Platform.isWindows;
-    final mac = isMacOS ?? Platform.isMacOS;
-    final lin = isLinux ?? Platform.isLinux;
+    final android = isAndroid ?? Platform.isAndroid;
+    final win = android ? false : (isWindows ?? Platform.isWindows);
+    final mac = android ? false : (isMacOS ?? Platform.isMacOS);
+    final lin = android ? false : (isLinux ?? Platform.isLinux);
     final sep = win ? r'\' : '/';
 
     final rawDataOverride = _readEnvCaseInsensitive(env, 'BLINK_DATA_DIR');
@@ -70,6 +81,19 @@ class BlinkPaths {
       env,
       'BLINK_DOCUMENTS_DIR',
     );
+
+    if (android) {
+      return _resolveAndroidPaths(
+        buildInfo: buildInfo,
+        rawDataOverride: rawDataOverride,
+        hasExplicitDataDir: hasExplicitDataDir,
+        vaultOverride: vaultOverride,
+        androidFilesDir: androidFilesDir,
+        androidCacheDir: androidCacheDir,
+        androidNoBackupFilesDir: androidNoBackupFilesDir,
+        currentDirectoryOverride: currentDirectoryOverride,
+      );
+    }
 
     // Issue #21: Source builds targeting the formal production channel `blink`
     // are refused unless both explicit opt-in (`BLINK_ALLOW_SOURCE_PROD=1`)
@@ -196,6 +220,8 @@ class BlinkPaths {
       resolvedDataRoot,
       resolvedDefaultVaultDir,
       vaultOverride,
+      null,
+      null,
       forbiddenRoots,
       win,
       canonicalBase,
@@ -214,6 +240,100 @@ class BlinkPaths {
     return result;
   }
 
+  /// Resolves Android private sandbox roots (`docs/design/architecture.md` §4.1):
+  /// - `blink` channel -> `<AppFilesDir>/blink`
+  /// - `blink-dev` channel -> `<AppFilesDir>/blink-dev`
+  /// - LRU media cache -> `<AppCacheDir>/media`
+  ///
+  /// Never falls back to ephemeral `Directory.systemTemp`.
+  static BlinkPaths _resolveAndroidPaths({
+    required BlinkBuildInfo buildInfo,
+    required String rawDataOverride,
+    required bool hasExplicitDataDir,
+    required Directory? vaultOverride,
+    required String? androidFilesDir,
+    required String? androidCacheDir,
+    required String? androidNoBackupFilesDir,
+    required Directory? currentDirectoryOverride,
+  }) {
+    final trimmedFilesDir = androidFilesDir?.trim() ?? '';
+    if (!hasExplicitDataDir && trimmedFilesDir.isEmpty) {
+      throw StateError(
+        'Android private storage directory (androidFilesDir) is required on '
+        'Android; refusing to fall back to ephemeral systemTemp.',
+      );
+    }
+
+    final channelSegment = buildInfo.isProductionChannel
+        ? 'blink'
+        : 'blink-dev';
+    final oppositeSegment = buildInfo.isProductionChannel
+        ? 'blink-dev'
+        : 'blink';
+
+    final canonicalBase = _canonicalBasePath(
+      win: false,
+      currentDirectoryOverride: currentDirectoryOverride,
+    );
+
+    final forbiddenRoots = <String>[];
+    if (trimmedFilesDir.isNotEmpty) {
+      forbiddenRoots.add(
+        _canonicalizePath(
+          _joinPath(trimmedFilesDir, oppositeSegment, '/'),
+          isWindows: false,
+          canonicalBase: canonicalBase,
+        ),
+      );
+    }
+
+    final Directory resolvedDataRoot;
+    final Directory resolvedDefaultVaultDir;
+    if (hasExplicitDataDir) {
+      resolvedDataRoot = Directory(rawDataOverride);
+      resolvedDefaultVaultDir = Directory(
+        _joinPath(resolvedDataRoot.path, 'vault', '/'),
+      );
+    } else {
+      final channelRoot = Directory(
+        _joinPath(trimmedFilesDir, channelSegment, '/'),
+      );
+      resolvedDataRoot = channelRoot;
+      resolvedDefaultVaultDir = channelRoot;
+    }
+
+    final trimmedCacheDir = androidCacheDir?.trim() ?? '';
+    final resolvedCacheDir = trimmedCacheDir.isNotEmpty
+        ? Directory(trimmedCacheDir)
+        : null;
+
+    final trimmedNoBackupDir = androidNoBackupFilesDir?.trim() ?? '';
+    final resolvedNoBackupDir = trimmedNoBackupDir.isNotEmpty
+        ? Directory(_joinPath(trimmedNoBackupDir, channelSegment, '/'))
+        : null;
+
+    final result = BlinkPaths._(
+      resolvedDataRoot,
+      resolvedDefaultVaultDir,
+      vaultOverride,
+      resolvedCacheDir,
+      resolvedNoBackupDir,
+      forbiddenRoots,
+      false,
+      canonicalBase,
+    );
+
+    result.assertAllowedPath(resolvedDataRoot.path, label: 'dataRoot');
+    result.assertAllowedPath(
+      resolvedDefaultVaultDir.path,
+      label: 'defaultVaultDir',
+    );
+    if (vaultOverride != null) {
+      result.assertAllowedPath(vaultOverride.path, label: 'BLINK_VAULT_DIR');
+    }
+    return result;
+  }
+
   /// Root app-local state directory (`settings/`, `run/`, `webview2/`,
   /// `credentials/`, `logs/`, `cache/`).
   final Directory dataRoot;
@@ -223,9 +343,31 @@ class BlinkPaths {
   /// Optional explicit vault directory override from `BLINK_VAULT_DIR`.
   final Directory? vaultDirOverride;
 
+  final Directory? _cacheDir;
+
+  /// Optional OS backup-excluded channel directory (e.g. Android
+  /// `<noBackupFilesDir>/blink[-dev]`).
+  final Directory? noBackupDir;
+
   final List<String> _forbiddenRoots;
   final bool? _isWindowsContext;
   final String? _canonicalBaseDir;
+
+  /// Platform cache root (`<AppCacheDir>` on Android, `<dataRoot>/cache`
+  /// elsewhere).
+  Directory get cacheDir =>
+      _cacheDir ??
+      Directory(_joinPath(dataRoot.path, 'cache', Platform.pathSeparator));
+
+  /// On-demand LRU media cache directory (`<AppCacheDir>/media` on Android,
+  /// `<cacheDir>/media` elsewhere).
+  Directory get mediaCacheDir => Directory(
+    _joinPath(
+      cacheDir.path,
+      'media',
+      (_isWindowsContext ?? Platform.isWindows) ? r'\' : '/',
+    ),
+  );
 
   /// Whether `BLINK_VAULT_DIR` explicitly overrides the default vault location.
   bool get hasVaultDirOverride => vaultDirOverride != null;

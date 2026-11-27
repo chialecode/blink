@@ -4,10 +4,38 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+fun compareNdkVersionStrings(a: String, b: String): Int {
+    val aParts = a.split(".").map { it.toIntOrNull() ?: 0 }
+    val bParts = b.split(".").map { it.toIntOrNull() ?: 0 }
+    val maxLen = maxOf(aParts.size, bParts.size)
+    for (i in 0 until maxLen) {
+        val av = aParts.getOrElse(i) { 0 }
+        val bv = bParts.getOrElse(i) { 0 }
+        if (av != bv) {
+            return av.compareTo(bv)
+        }
+    }
+    return a.compareTo(b)
+}
+
+val resolvedNdkVersion: String =
+    project
+        .findProperty("flutter.installedNdkVersions")
+        ?.toString()
+        ?.split(",")
+        ?.map(String::trim)
+        ?.filter(String::isNotEmpty)
+        ?.maxWithOrNull(Comparator(::compareNdkVersionStrings))
+        ?: flutter.ndkVersion
+
 android {
     namespace = "io.github.chialecode.blink_client"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = resolvedNdkVersion
+
+    buildFeatures {
+        resValues = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -15,10 +43,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "io.github.chialecode.blink_client"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        applicationId = "io.github.chialecode.blink"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
@@ -27,6 +52,20 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    flavorDimensions += "channel"
+    productFlavors {
+        create("blink") {
+            dimension = "channel"
+            applicationId = "io.github.chialecode.blink"
+            resValue("string", "app_name", "BLINK")
+        }
+        create("blinkDev") {
+            dimension = "channel"
+            applicationId = "io.github.chialecode.blink.dev"
+            resValue("string", "app_name", "BLINK Dev")
+        }
     }
 
     buildTypes {

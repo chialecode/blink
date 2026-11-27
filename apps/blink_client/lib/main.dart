@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_app.dart';
 import 'package:blink_client/application/workspace_controller.dart';
+import 'package:blink_client/platform/android/android_platform.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/cli_args.dart';
 import 'package:blink_client/platform/control_protocol.dart';
@@ -25,11 +26,12 @@ const MethodChannel _kDesktopShellChannel = MethodChannel(
 Future<void> main(List<String> args) async {
   final options = parseLaunchOptions(args);
   final buildInfo = BlinkBuildInfo.fromEnvironment();
-  final paths = BlinkPaths.resolve(buildInfo);
 
   SingleInstanceLock? singleInstanceLock;
 
   // Source builds (empty BLINK_IDENTITY) never claim a mutex or control pipe.
+  // Keep Windows single-instance / `--quit-for-update` fast path ahead of
+  // Flutter engine binding so secondary helper invocations exit immediately.
   if (Platform.isWindows && !buildInfo.isSourceBuild) {
     final mutexName = buildInfo.mutexName!;
     final pipeName = buildInfo.controlPipeName!;
@@ -70,6 +72,20 @@ Future<void> main(List<String> args) async {
 
   WidgetsFlutterBinding.ensureInitialized();
 
+  final BlinkPaths paths;
+  if (Platform.isAndroid) {
+    final androidDirs = await const AndroidPlatformBridge().getStorageDirs();
+    paths = BlinkPaths.resolve(
+      buildInfo,
+      isAndroid: true,
+      androidFilesDir: androidDirs.filesDir,
+      androidCacheDir: androidDirs.cacheDir,
+      androidNoBackupFilesDir: androidDirs.noBackupFilesDir,
+    );
+  } else {
+    paths = BlinkPaths.resolve(buildInfo);
+  }
+
   ControlPipeServer? pipeServer;
   BlinkWorkspaceController? workspaceController;
   final settingsStore = DesktopSettingsStore(file: paths.desktopSettingsFile);
@@ -97,18 +113,21 @@ Future<void> main(List<String> args) async {
     exitProcess: exit,
   );
 
-  _kDesktopShellChannel.setMethodCallHandler((call) async {
-    if (call.method == 'onTaskbarCreated') {
-      await controller.handleTaskbarCreated();
-    }
-  });
+  if (Platform.isWindows) {
+    _kDesktopShellChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onTaskbarCreated') {
+        await controller.handleTaskbarCreated();
+      }
+    });
+  }
 
   await controller.initializeStartup(options);
 
   workspaceController = BlinkWorkspaceController(
     lifecycle: controller,
     filePicker: createDefaultBlinkFilePicker(quietOverride: options.quiet),
-    enableMirrorExporter: !options.quiet,
+    enableMirrorExporter:
+        !options.quiet && !Platform.isAndroid && !Platform.isIOS,
   );
   await workspaceController.initialize();
 

@@ -219,6 +219,17 @@ class HygieneTests(FixtureCase):
         self.write("scripts/.symlinks/leak.dart", leak)
         self.assertFlags("Windows absolute path", self.run_check())
 
+    def test_android_gradle_and_cxx_caches_are_excluded(self) -> None:
+        win_leak = "sdk.dir=" + "Q:" + "\\android\\sdk\n"
+        unix_leak = '{"directory": "/' + 'home/builder/project"}\n'
+        self.write("apps/blink_client/android/.gradle/8.14/fileHashes/cache.txt", win_leak)
+        self.write("apps/blink_client/android/app/.cxx/Debug/arm64/compile_commands.json", unix_leak)
+        self.assertEqual(self.run_check(), [])
+
+    def test_tracked_android_files_still_fail_hygiene(self) -> None:
+        self.write("apps/blink_client/android/app/notes.txt", "root=" + "Q:" + "\\android\\sdk\n")
+        self.assertFlags("Windows absolute path", self.run_check())
+
 
 class ReferenceNameTests(FixtureCase):
     def test_sibling_repository_name(self) -> None:
