@@ -270,6 +270,17 @@ class DesktopLifecycleController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Persists the preferred default note editor mode (`wysiwyg` or `source`)
+  /// atomically to `settings/desktop.json`.
+  void updateDefaultNoteEditorMode(NoteEditorMode mode) {
+    if (_settings.defaultNoteEditorMode == mode) {
+      return;
+    }
+    _settings = _settings.copyWith(defaultNoteEditorMode: mode);
+    settingsStore.saveSync(_settings);
+    notifyListeners();
+  }
+
   /// Restores and focuses the main window (from tray click or `focus` command).
   Future<void> handleOpenRequest() async {
     if (_quiet || _isShuttingDown) {

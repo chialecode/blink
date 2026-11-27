@@ -299,7 +299,8 @@ void main() {
       WidgetTester tester, {
       String channel = 'blink-dev',
       bool enableMirror = false,
-      BlinkNavDestination initialDestination = BlinkNavDestination.stream,
+      BlinkNavDestination initialDestination = BlinkNavDestination.memos,
+      SettingsCategory initialSettingsCategory = SettingsCategory.general,
     }) async {
       final paths = BlinkPaths(dataRoot: tempDir);
       final buildInfo = BlinkBuildInfo.normalized(
@@ -335,6 +336,7 @@ void main() {
         filePicker: picker,
         initialVault: vault,
         initialDestination: initialDestination,
+        initialSettingsCategory: initialSettingsCategory,
         enableMirrorExporter: enableMirror,
       );
       await tester.runAsync(() => workspace.initialize());
@@ -379,22 +381,28 @@ void main() {
           expect(tester.takeException(), isNull);
           expect(find.byType(AppBar), findsNothing);
           expect(find.text('DEV 开发通道'), findsNothing);
-          expect(find.byKey(const Key('nav_stream')), findsOneWidget);
-          expect(find.byKey(const Key('nav_files')), findsOneWidget);
+          expect(find.byKey(const Key('nav_memos')), findsOneWidget);
+          expect(find.byKey(const Key('nav_notes')), findsOneWidget);
           expect(find.byKey(const Key('nav_tasks')), findsOneWidget);
           expect(find.byKey(const Key('nav_settings')), findsOneWidget);
-          expect(find.byKey(const Key('open_search_button')), findsOneWidget);
 
           if (size.width < 600) {
             expect(find.byKey(const Key('mobile_bottom_nav')), findsOneWidget);
+            expect(find.byKey(const Key('nav_files')), findsNothing);
             expect(find.byKey(const Key('desktop_nav_rail')), findsNothing);
             expect(find.byKey(const Key('pane_divider_rail')), findsNothing);
             expect(
               find.byKey(const Key('open_sidebar_drawer_button')),
               findsOneWidget,
             );
+            expect(
+              find.byKey(const Key('mobile_search_button')),
+              findsOneWidget,
+            );
           } else {
             expect(find.byKey(const Key('desktop_nav_rail')), findsOneWidget);
+            expect(find.byKey(const Key('nav_files')), findsOneWidget);
+            expect(find.byKey(const Key('open_search_button')), findsOneWidget);
             expect(find.byKey(const Key('mobile_bottom_nav')), findsNothing);
 
             final railDivider = find.byKey(const Key('pane_divider_rail'));
@@ -443,10 +451,12 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('filter_all')), findsOneWidget);
 
-        // Close drawer, switch to Settings, and verify brand mark + DEV badge live in About.
+        // Close drawer, switch to Settings -> About, and verify brand mark + DEV badge live in About.
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('nav_settings')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('settings_compact_cat_about')));
         await tester.pumpAndSettle();
         expect(find.byType(AppBar), findsNothing);
         expect(
@@ -467,7 +477,7 @@ void main() {
     );
 
     testWidgets(
-      'creates BFM v1 entry with #private, split preview, CJK FTS5 search, endogenous task sync, and 30-day trash',
+      'creates memo with #private, CJK FTS5 search, task sync, jump back, and 30-day trash restore/purge',
       (tester) async {
         tester.view.physicalSize = const Size(1360, 800);
         tester.view.devicePixelRatio = 1.0;
@@ -482,22 +492,17 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        // Toggle 150ms split preview and enter BFM v1 content.
-        await tester.tap(find.byKey(const Key('editor_preview_toggle')));
-        await tester.pumpAndSettle();
-        expect(find.byKey(const Key('bfm_split_preview')), findsOneWidget);
-
         const body =
             '# 量子计算笔记\n==核心洞察== #研究 #private\n- [ ] 完成量子算法复盘\n> [!insight] 重点\n> 保持本地隔离\n:::fold 详细推导\n隐蔽细节\n:::';
-        await tester.enterText(find.byKey(const Key('bfm_editor_input')), body);
+        await tester.enterText(
+          find.byKey(const Key('editor_text_field')),
+          body,
+        );
         await tester.pump(const Duration(milliseconds: 220));
         await tester.pumpAndSettle();
 
-        // Preview reflects headings & callout.
-        expect(find.textContaining('量子计算笔记'), findsWidgets);
-
-        // Submit entry.
-        await tester.tap(find.byKey(const Key('bfm_submit_button')));
+        // Submit memo.
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 50)),
         );
@@ -510,9 +515,10 @@ void main() {
         final created = entries!.first;
         expect(created.isPrivate, isTrue);
         expect(
-          find.byKey(Key('entry_private_badge_${created.id}')),
+          find.byKey(Key('memo_private_badge_${created.id}')),
           findsOneWidget,
         );
+        expect(find.textContaining('量子计算笔记'), findsWidgets);
 
         // Live CJK FTS5 search via search button (`Ctrl+K` modal).
         await tester.tap(find.byKey(const Key('open_search_button')));
@@ -534,7 +540,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('search_modal')), findsNothing);
 
-        // Endogenous Tasks view: toggle `- [ ]` -> `- [x]` syncs to raw_entries.body_md.
+        // Tasks view: toggle `- [ ]` -> `- [x]` syncs to raw_entries.body_md.
         await tester.tap(find.byKey(const Key('nav_tasks')));
         await tester.pumpAndSettle();
 
@@ -556,13 +562,13 @@ void main() {
         );
         expect(updatedEntry!.bodyMd, contains('- [x] 完成量子算法复盘'));
 
-        // Jump back to source entry from Tasks view.
+        // Jump back to source memo from Tasks view.
         await tester.tap(find.byKey(Key('task_source_${task.id}')));
         await tester.pumpAndSettle();
-        expect(fixture.workspace.destination, BlinkNavDestination.stream);
+        expect(fixture.workspace.destination, BlinkNavDestination.memos);
 
         // Soft-delete to 30-day Trash -> restore -> soft-delete -> purge permanently.
-        await tester.tap(find.byKey(Key('entry_delete_${created.id}')));
+        await tester.tap(find.byKey(Key('memo_delete_${created.id}')));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 50)),
         );
@@ -584,12 +590,14 @@ void main() {
         expect(restored, isNotNull);
         expect(restored!.isDeleted, isFalse);
 
-        // Delete again and permanently purge.
+        // Delete again and permanently purge via confirmation dialog.
         await tester.runAsync(
           () => fixture.workspace.softDeleteEntry(created.id),
         );
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(Key('trash_purge_${created.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('trash_purge_confirm')));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 50)),
         );
@@ -726,7 +734,9 @@ void main() {
         final darkScaffold = tester.widget<Scaffold>(find.byType(Scaffold));
         expect(darkScaffold.backgroundColor, BlinkColorTokens.dark.canvas);
 
-        // Attempt to switch blink-dev client to blink prod vault -> channel_mismatch banner!
+        // Switch to Storage & Backup category, then attempt to switch blink-dev client to blink prod vault -> channel_mismatch banner!
+        await tester.tap(find.byKey(const Key('settings_cat_storage')));
+        await tester.pumpAndSettle();
         await tester.ensureVisible(find.byKey(const Key('vault_path_input')));
         await tester.enterText(
           find.byKey(const Key('vault_path_input')),
@@ -811,6 +821,7 @@ void main() {
           filePicker: _FakeFilePicker(),
           initialVault: vault,
           initialDestination: BlinkNavDestination.settings,
+          initialSettingsCategory: SettingsCategory.storage,
           enableMirrorExporter: false,
         );
         await tester.runAsync(() => workspace.initialize());
@@ -828,8 +839,8 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('便携库目录（用户数据）'), findsOneWidget);
-        expect(find.text('应用本地目录'), findsOneWidget);
+        expect(find.text('数据文件夹'), findsWidgets);
+        expect(find.byKey(const Key('vault_path_value')), findsOneWidget);
         expect(find.byKey(const Key('vault_onedrive_hint')), findsOneWidget);
         expect(find.textContaining('OneDrive'), findsWidgets);
         // Vault remains open and unblocked.
@@ -910,7 +921,7 @@ void main() {
           tester,
           channel: 'blink-dev',
           enableMirror: false,
-          initialDestination: BlinkNavDestination.stream,
+          initialDestination: BlinkNavDestination.memos,
         );
         final vaultADir = fixture.vault.config.vaultDir;
         final vaultBDir = Directory(
@@ -927,11 +938,11 @@ void main() {
 
         const secretDraft = '绝密草稿 #private 不能泄漏到新库';
         await tester.enterText(
-          find.byKey(const Key('bfm_editor_input')),
+          find.byKey(const Key('editor_text_field')),
           secretDraft,
         );
         await tester.pump();
-        await tester.tap(find.byKey(const Key('editor_private_toggle')));
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
         await tester.pumpAndSettle();
 
         // Open search modal and set a query before switching vaults.
@@ -962,7 +973,7 @@ void main() {
 
         // Editor must be completely cleared on Vault B (zero Vault A leak).
         final editorField = tester.widget<TextField>(
-          find.byKey(const Key('bfm_editor_input')),
+          find.byKey(const Key('editor_text_field')),
         );
         expect(editorField.controller!.text, isEmpty);
 
@@ -999,13 +1010,13 @@ void main() {
 
         final fixture = await createFixture(
           tester,
-          initialDestination: BlinkNavDestination.stream,
+          initialDestination: BlinkNavDestination.memos,
         );
         final entry1 = (await tester.runAsync(
-          () => fixture.workspace.createEntry(bodyMd: '第一条待删笔记\n* [ ] 星号待办'),
+          () => fixture.workspace.createMemo(bodyMd: '第一条待删小记\n* [ ] 星号待办'),
         ))!;
         final entry2 = (await tester.runAsync(
-          () => fixture.workspace.createEntry(bodyMd: '第二条将被后台清除的笔记'),
+          () => fixture.workspace.createMemo(bodyMd: '第二条将被后台清除的小记'),
         ))!;
 
         await tester.pumpWidget(
@@ -1016,43 +1027,47 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        // Start editing entry1, then soft-delete entry1 -> editor resets to empty inbox.
-        await tester.tap(find.byKey(Key('entry_edit_${entry1.id}')));
+        // Start editing entry1 (select bubble to reveal desktop action strip), then soft-delete -> editor resets to empty inbox.
+        await tester.tap(find.byKey(Key('memo_bubble_${entry1.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${entry1.id}')));
         await _drainRealIo(tester);
         expect(
           tester
-              .widget<TextField>(find.byKey(const Key('bfm_editor_input')))
+              .widget<TextField>(find.byKey(const Key('editor_text_field')))
               .controller!
               .text,
-          contains('第一条待删笔记'),
+          contains('第一条待删小记'),
         );
 
-        await tester.tap(find.byKey(Key('entry_delete_${entry1.id}')));
+        await tester.tap(find.byKey(Key('memo_delete_${entry1.id}')));
         await _drainRealIo(tester);
         expect(
           tester
-              .widget<TextField>(find.byKey(const Key('bfm_editor_input')))
+              .widget<TextField>(find.byKey(const Key('editor_text_field')))
               .controller!
               .text,
           isEmpty,
         );
 
         // Start editing entry2, purge it underneath, then click submit -> honest error banner (zero unhandled exception).
-        await tester.tap(find.byKey(Key('entry_edit_${entry2.id}')));
+        await tester.tap(find.byKey(Key('memo_bubble_${entry2.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${entry2.id}')));
         await _drainRealIo(tester);
         await tester.runAsync(() async {
           await fixture.vault.raw.softDeleteEntry(entry2.id);
           await fixture.vault.raw.purgeEntryPermanently(entry2.id);
         });
 
-        await tester.tap(find.byKey(const Key('bfm_submit_button')));
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
         await _drainRealIo(
           tester,
           until: () => fixture.workspace.bannerIsError,
         );
         expect(tester.takeException(), isNull);
         expect(fixture.workspace.bannerIsError, isTrue);
-        expect(fixture.workspace.bannerMessage, contains('not_found'));
+        expect(fixture.workspace.bannerMessage, contains('not found'));
       },
     );
 

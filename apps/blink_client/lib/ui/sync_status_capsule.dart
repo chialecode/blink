@@ -5,7 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/sync_controller.dart';
 
-/// Quiet, accessible top-level sync status capsule (`INV-11`, `docs/ui.md` §4.5).
+/// Quiet, accessible top-level sync status banner (`INV-11`, `docs/ui.md`).
 ///
 /// Always communicates sync state with icon + text + semantics (never color
 /// alone) and derives 100% of colors from [BlinkColorTokens].
@@ -22,6 +22,62 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
   final VoidCallback onOpenConflicts;
   final VoidCallback onOpenSyncSettings;
   final bool compact;
+
+  /// Returns whether the global top sync banner should occupy vertical space.
+  ///
+  /// Quiet baseline states (`unconfigured`, `idleSynced`) stay tucked inside
+  /// the rail status dot and Settings; active or actionable states surface the
+  /// banner so sync issues are never silently hidden (`INV-11`).
+  static bool shouldShowGlobalBanner(BlinkSyncUiStatus status) {
+    switch (status) {
+      case BlinkSyncUiStatus.unconfigured:
+      case BlinkSyncUiStatus.idleSynced:
+        return false;
+      case BlinkSyncUiStatus.syncing:
+      case BlinkSyncUiStatus.offlinePending:
+      case BlinkSyncUiStatus.peerAsleep:
+      case BlinkSyncUiStatus.conflictPending:
+      case BlinkSyncUiStatus.deviceRevoked:
+      case BlinkSyncUiStatus.channelMismatch:
+      case BlinkSyncUiStatus.privacyBlocked:
+      case BlinkSyncUiStatus.error:
+        return true;
+    }
+  }
+
+  /// Concise plain-language status label for Settings rows and summaries.
+  static String shortStatusLabel(BlinkSyncController sync) {
+    final pending = sync.pendingOutboxCount;
+    final conflicts = sync.openConflictCount;
+    switch (sync.uiStatus) {
+      case BlinkSyncUiStatus.unconfigured:
+        return sync.isHostRunning ? '局域网服务运行中' : '未配置';
+      case BlinkSyncUiStatus.idleSynced:
+        return '已同步';
+      case BlinkSyncUiStatus.syncing:
+        return '同步中…';
+      case BlinkSyncUiStatus.offlinePending:
+        return pending > 0 ? '待同步 $pending 项' : '当前离线';
+      case BlinkSyncUiStatus.peerAsleep:
+        return pending > 0 ? '对端休眠 · 待同步 $pending 项' : '对端休眠';
+      case BlinkSyncUiStatus.conflictPending:
+        return '有 $conflicts 条冲突待处理';
+      case BlinkSyncUiStatus.deviceRevoked:
+        return '需重新配对';
+      case BlinkSyncUiStatus.channelMismatch:
+        return '通道不匹配';
+      case BlinkSyncUiStatus.privacyBlocked:
+        return '仅局域网同步';
+      case BlinkSyncUiStatus.error:
+        return '同步异常';
+    }
+  }
+
+  /// Semantic indicator color for rail and sidebar sync status dots.
+  static Color statusDotColor(
+    BlinkSyncController sync,
+    BlinkColorTokens tokens,
+  ) => _describeStatus(sync, tokens).dotColor;
 
   @override
   Widget build(BuildContext context) {
@@ -159,8 +215,8 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
   }
 }
 
-/// Compact sync status dot rendered above Settings on the desktop icon rail
-/// (`docs/ui.md` §1).
+/// Compact `32×32` sync status dot rendered above Settings on the desktop icon
+/// rail (`docs/ui.md`).
 class BlinkSyncRailDot extends StatelessWidget {
   const BlinkSyncRailDot({required this.sync, required this.onTap, super.key});
 
@@ -174,6 +230,7 @@ class BlinkSyncRailDot extends StatelessWidget {
       listenable: sync,
       builder: (context, _) {
         final spec = _describeStatus(sync, tokens);
+        final isSyncing = sync.uiStatus == BlinkSyncUiStatus.syncing;
         return Tooltip(
           message: spec.label,
           child: Semantics(
@@ -184,21 +241,30 @@ class BlinkSyncRailDot extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
               onTap: onTap,
               child: SizedBox(
-                width: 36,
+                width: 32,
                 height: 32,
                 child: Center(
-                  child: Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: spec.dotColor,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: tokens.borderHairline,
-                        width: 1,
-                      ),
-                    ),
-                  ),
+                  child: isSyncing
+                      ? SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.8,
+                            color: spec.dotColor,
+                          ),
+                        )
+                      : Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: spec.dotColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: tokens.borderHairline,
+                              width: 1,
+                            ),
+                          ),
+                        ),
                 ),
               ),
             ),
@@ -240,8 +306,8 @@ _SyncStatusPresentation _describeStatus(
         final port = sync.activeServerPort ?? sync.config.desktopServerPort;
         return _SyncStatusPresentation(
           icon: Icons.dns_outlined,
-          label: '桌面直连同步服务运行中（端口 $port）',
-          semanticsLabel: '桌面直连同步服务运行中，监听端口 $port',
+          label: '局域网直连服务运行中（端口 $port）',
+          semanticsLabel: '局域网直连服务运行中，端口 $port',
           foreground: tokens.statusOk,
           background: tokens.statusOkSubtle,
           dotColor: tokens.statusOk,
@@ -249,7 +315,7 @@ _SyncStatusPresentation _describeStatus(
       }
       return _SyncStatusPresentation(
         icon: Icons.cloud_off_outlined,
-        label: pending > 0 ? '仅本机离线 · $pending 项保存在本机' : '仅本机离线 · 未配置同步',
+        label: pending > 0 ? '仅本机保存 · 未配置同步（$pending 项）' : '仅本机离线 · 未配置同步',
         semanticsLabel: '仅本机离线，未配置同步',
         foreground: tokens.textSecondary,
         background: tokens.sidebar,
@@ -259,9 +325,9 @@ _SyncStatusPresentation _describeStatus(
       return _SyncStatusPresentation(
         icon: Icons.cloud_done_outlined,
         label: sync.lastSkippedPrivateCount > 0
-            ? '已同步 · 已跳过 ${sync.lastSkippedPrivateCount} 条 #private 中继'
+            ? '已同步 · ${sync.lastSkippedPrivateCount} 条私密内容仅保留本地'
             : '已同步',
-        semanticsLabel: '已同步，无待传变更',
+        semanticsLabel: '已同步，无待同步内容',
         foreground: tokens.statusOk,
         background: tokens.statusOkSubtle,
         dotColor: tokens.statusOk,
@@ -270,7 +336,7 @@ _SyncStatusPresentation _describeStatus(
       return _SyncStatusPresentation(
         icon: Icons.cloud_upload_outlined,
         label: '当前离线 · $pending 项待同步',
-        semanticsLabel: '当前离线，本地安全排队 $pending 项待同步',
+        semanticsLabel: '当前离线，本地安全保存 $pending 项待同步',
         foreground: tokens.statusWarn,
         background: tokens.statusWarnSubtle,
         dotColor: tokens.statusWarn,
@@ -278,17 +344,17 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.peerAsleep:
       return _SyncStatusPresentation(
         icon: Icons.bedtime_outlined,
-        label: pending > 0 ? '对端休眠 · $pending 项已排队待同步' : '同步对端当前休眠',
-        semanticsLabel: '同步对端当前离线或休眠，$pending 项本地变更已安全排队',
+        label: pending > 0 ? '对端休眠（离线）· $pending 项待同步' : '对端休眠（当前离线）',
+        semanticsLabel: '同步对端当前休眠或离线，$pending 项本地内容已安全排队',
         foreground: tokens.statusWarn,
         background: tokens.statusWarnSubtle,
         dotColor: tokens.statusWarn,
       );
     case BlinkSyncUiStatus.syncing:
-      final via = sync.activeChannelLabel ?? '同步通道';
+      final via = sync.activeChannelLabel ?? '同步连接';
       return _SyncStatusPresentation(
         icon: Icons.sync_rounded,
-        label: pending > 0 ? '正在经 $via 同步（待传 $pending 项）…' : '正在经 $via 同步…',
+        label: pending > 0 ? '同步中（经 $via，待同步 $pending 项）…' : '同步中（经 $via）…',
         semanticsLabel: '正在经 $via 同步',
         foreground: tokens.accentPrimary,
         background: tokens.accentSubtle,
@@ -297,8 +363,8 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.conflictPending:
       return _SyncStatusPresentation(
         icon: Icons.compare_arrows_rounded,
-        label: '$conflicts 条同步冲突待处理（双本全文已保留）',
-        semanticsLabel: '存在 $conflicts 条同步冲突待裁定，双本原文已完整保留',
+        label: '$conflicts 条同步冲突待处理（已保留双方全文）',
+        semanticsLabel: '存在 $conflicts 条同步冲突待处理，双方原文已完整保留',
         foreground: tokens.statusErr,
         background: tokens.statusErrSubtle,
         dotColor: tokens.statusErr,
@@ -306,8 +372,8 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.deviceRevoked:
       return _SyncStatusPresentation(
         icon: Icons.gpp_bad_outlined,
-        label: '设备令牌已被吊销 · 请重新配对',
-        semanticsLabel: '设备同步权限已被吊销，请前往同步设置重新配对',
+        label: '设备同步权限已被取消 · 请重新配对',
+        semanticsLabel: '设备同步权限已被取消，请前往多端同步设置重新配对',
         foreground: tokens.statusErr,
         background: tokens.statusErrSubtle,
         dotColor: tokens.statusErr,
@@ -315,8 +381,8 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.channelMismatch:
       return _SyncStatusPresentation(
         icon: Icons.block_outlined,
-        label: '通道或协议不匹配 · 已停止同步',
-        semanticsLabel: '同步节点通道或协议版本不匹配，已拦截',
+        label: '数据通道或版本不匹配 · 已停止同步',
+        semanticsLabel: '同步设备的数据通道或版本不匹配，已停止同步',
         foreground: tokens.statusErr,
         background: tokens.statusErrSubtle,
         dotColor: tokens.statusErr,
@@ -324,8 +390,8 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.privacyBlocked:
       return _SyncStatusPresentation(
         icon: Icons.lock_outline_rounded,
-        label: '#private 已禁止经云中继同步 · 仅待局域网/Tailscale 直连',
-        semanticsLabel: '私密条目已按策略拦截云端中继，仅保留本地等待直连同步',
+        label: '私密内容不上传云端 · 仅等待局域网直连同步',
+        semanticsLabel: '私密内容按隐私保护设置不上传云端，仅等待局域网直连同步',
         foreground: tokens.privacyPrivate,
         background: tokens.privacySubtle,
         dotColor: tokens.privacyPrivate,
@@ -333,8 +399,8 @@ _SyncStatusPresentation _describeStatus(
     case BlinkSyncUiStatus.error:
       return _SyncStatusPresentation(
         icon: Icons.error_outline_rounded,
-        label: sync.lastErrorMessage ?? '同步遇到错误 · 本地变更已安全保存',
-        semanticsLabel: sync.lastErrorMessage ?? '同步出错，本地变更已安全保存',
+        label: sync.lastErrorMessage ?? '同步遇到错误 · 本地内容已安全保存',
+        semanticsLabel: sync.lastErrorMessage ?? '同步出错，本地内容已安全保存',
         foreground: tokens.statusErr,
         background: tokens.statusErrSubtle,
         dotColor: tokens.statusErr,

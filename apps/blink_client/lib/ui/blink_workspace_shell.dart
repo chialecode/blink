@@ -4,24 +4,26 @@ import 'package:blink_core/blink_core.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:blink_client/app/blink_brand_mark.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/editor_controller.dart';
 import 'package:blink_client/application/search_controller.dart';
 import 'package:blink_client/application/tasks_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/ui/files_page.dart';
+import 'package:blink_client/ui/memos_page.dart';
+import 'package:blink_client/ui/notes_page.dart';
 import 'package:blink_client/ui/search_modal.dart';
 import 'package:blink_client/ui/settings_page.dart';
-import 'package:blink_client/ui/stream_page.dart';
 import 'package:blink_client/ui/sync_conflict_dialog.dart';
 import 'package:blink_client/ui/sync_status_capsule.dart';
 import 'package:blink_client/ui/tasks_page.dart';
 
-/// Adaptive 4-breakpoint M3 Desktop/Five-Platform Workspace Shell (`docs/ui.md` §1):
-/// - `>= 1280px`: `56px` icon rail + `264px` sidebar + main workspace
-/// - `960..1279px`: `56px` icon rail + `232px` sidebar + main workspace
-/// - `600..959px`: `52px` icon rail + drawer + main workspace
-/// - `< 600px`: bottom 4-tab navigation bar + drawer + main workspace
+/// Feishu-style 4-breakpoint adaptive workspace shell (`docs/ui.md` §1):
+/// - `>= 1280px`: `60px` icon rail + collapsible `260px` resource sidebar + main panel
+/// - `960..1279px`: `60px` icon rail + collapsible `232px` resource sidebar + main panel
+/// - `600..959px`: `52px` icon rail + contextual sidebar drawer + main panel
+/// - `< 600px`: minimal `52px` 4-tab bottom nav (`小记`/`笔记`/`待办`/`设置`) + drawer
 class BlinkWorkspaceShell extends StatefulWidget {
   const BlinkWorkspaceShell({required this.workspace, super.key});
 
@@ -34,17 +36,17 @@ class BlinkWorkspaceShell extends StatefulWidget {
 class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  final FocusNode _editorFocusNode = FocusNode();
+  final FocusNode _memoComposerFocusNode = FocusNode();
 
-  late final BlinkEditorController _editorController = BlinkEditorController(
-    vaultProvider: () => widget.workspace.vault,
-  );
+  late final BlinkEditorController _memoEditorController =
+      BlinkEditorController(vaultProvider: () => widget.workspace.vault);
   late final BlinkSearchController _searchController = BlinkSearchController(
     vaultProvider: () => widget.workspace.vault,
   );
   late final BlinkTasksController _tasksController = BlinkTasksController(
     vaultProvider: () => widget.workspace.vault,
   );
+  late final BlinkFilesController _filesController = BlinkFilesController();
 
   VaultManager? _lastBoundVault;
   bool _searchDialogVisible = false;
@@ -53,7 +55,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    widget.workspace.registerDraftFlushHook(_editorController.flushDraftNow);
+    widget.workspace.addDraftFlushHook(_memoEditorController.flushDraftNow);
     widget.workspace.addListener(_onWorkspaceChanged);
     _syncVaultBinding();
   }
@@ -62,11 +64,12 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.workspace.removeListener(_onWorkspaceChanged);
-    widget.workspace.registerDraftFlushHook(null);
-    _editorFocusNode.dispose();
-    _editorController.dispose();
+    widget.workspace.removeDraftFlushHook(_memoEditorController.flushDraftNow);
+    _memoComposerFocusNode.dispose();
+    _memoEditorController.dispose();
     _searchController.dispose();
     _tasksController.dispose();
+    _filesController.dispose();
     super.dispose();
   }
 
@@ -75,7 +78,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      unawaited(_editorController.flushDraftNow());
+      unawaited(_memoEditorController.flushDraftNow());
     } else if (state == AppLifecycleState.resumed) {
       widget.workspace.sync.onAppResumed();
     }
@@ -102,7 +105,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       _lastBoundVault = current;
       _searchController.clear();
       unawaited(_tasksController.bindVault(current));
-      unawaited(_editorController.loadInboxDraft(resetIfMissing: true));
+      unawaited(_memoEditorController.loadInboxDraft(resetIfMissing: true));
     }
   }
 
@@ -119,6 +122,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
         builder: (dialogContext) {
           return BlinkSearchModal(
             controller: _searchController,
+            workspace: widget.workspace,
             onClose: () => Navigator.of(dialogContext).pop(),
             onSelectHit: (hit) {
               Navigator.of(dialogContext).pop();
@@ -135,35 +139,43 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
 
   Future<void> _jumpToSearchHit(FtsSearchHit hit) async {
     if (hit.docKind == 'entry') {
-      await widget.workspace.openEntryById(hit.docId);
-      final entry = await widget.workspace.vault?.raw.getEntryById(
-        hit.docId,
-        includeDeleted: true,
-      );
-      if (entry != null && !entry.isDeleted) {
-        await _editorController.startEditingEntry(entry);
-      }
+      await _jumpToEntryId(hit.docId);
     } else if (hit.docKind == 'task') {
       widget.workspace.setDestination(BlinkNavDestination.tasks);
     }
   }
 
-  void _focusComposerShortcut() {
-    widget.workspace.setDestination(BlinkNavDestination.stream);
-    if (widget.workspace.streamFilter == StreamFilterKind.trash) {
-      widget.workspace.setStreamFilter(StreamFilterKind.all);
+  Future<void> _jumpToEntryId(String entryId) async {
+    await widget.workspace.openEntryById(entryId);
+  }
+
+  void _handleNewShortcut() {
+    if (widget.workspace.destination == BlinkNavDestination.notes) {
+      unawaited(widget.workspace.createNote());
+      return;
     }
-    unawaited(_editorController.startNewEntry());
+    widget.workspace.setDestination(BlinkNavDestination.memos);
+    if (widget.workspace.selectedMemoFilter == MemoFilterKind.trash) {
+      widget.workspace.selectMemoFilter(MemoFilterKind.all);
+    }
+    unawaited(_memoEditorController.startNewEntry());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _editorFocusNode.requestFocus();
+        _memoComposerFocusNode.requestFocus();
       }
     });
   }
 
+  void _handleToggleNoteEditorModeShortcut() {
+    if (widget.workspace.destination != BlinkNavDestination.notes) {
+      return;
+    }
+    widget.workspace.toggleNoteEditorMode();
+  }
+
   void _dismissOverlaysShortcut() {
-    if (_editorController.showAutocomplete) {
-      _editorController.dismissAutocomplete();
+    if (_memoEditorController.showAutocomplete) {
+      _memoEditorController.dismissAutocomplete();
       return;
     }
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
@@ -173,18 +185,13 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     widget.workspace.clearBanner();
   }
 
-  Future<void> _attachBlobToNewEntry(MediaBlob blob) async {
-    widget.workspace.setDestination(BlinkNavDestination.stream);
-    if (widget.workspace.streamFilter == StreamFilterKind.trash) {
-      widget.workspace.setStreamFilter(StreamFilterKind.all);
+  Future<void> _attachBlobToNewNote(MediaBlob blob) async {
+    final created = await widget.workspace.createNote(
+      imageBlobSha256s: <String>[blob.sha256],
+    );
+    if (created != null) {
+      widget.workspace.setDestination(BlinkNavDestination.notes);
     }
-    await _editorController.startNewEntry();
-    _editorController.attachBlobSha256(blob.sha256);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _editorFocusNode.requestFocus();
-      }
-    });
   }
 
   @override
@@ -194,29 +201,31 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.keyN, control: true):
-            _focusComposerShortcut,
+            _handleNewShortcut,
         const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
-            _focusComposerShortcut,
+            _handleNewShortcut,
         const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
             unawaited(_openSearchModal()),
         const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
             unawaited(_openSearchModal()),
-        const SingleActivator(
-          LogicalKeyboardKey.keyP,
-          control: true,
-          shift: true,
-        ): widget.workspace.toggleSplitPreview,
-        const SingleActivator(LogicalKeyboardKey.keyP, meta: true, shift: true):
-            widget.workspace.toggleSplitPreview,
+        const SingleActivator(LogicalKeyboardKey.backslash, control: true):
+            widget.workspace.toggleSidebarCollapsed,
+        const SingleActivator(LogicalKeyboardKey.backslash, meta: true):
+            widget.workspace.toggleSidebarCollapsed,
+        const SingleActivator(LogicalKeyboardKey.slash, control: true):
+            _handleToggleNoteEditorModeShortcut,
+        const SingleActivator(LogicalKeyboardKey.slash, meta: true):
+            _handleToggleNoteEditorModeShortcut,
         const SingleActivator(LogicalKeyboardKey.escape):
             _dismissOverlaysShortcut,
       },
       child: Focus(
-        autofocus: false,
+        autofocus: true,
         child: ListenableBuilder(
           listenable: Listenable.merge(<Listenable>[
             widget.workspace,
             widget.workspace.lifecycle,
+            widget.workspace.sync,
           ]),
           builder: (context, _) {
             return LayoutBuilder(
@@ -227,44 +236,61 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                 final isCompactTablet = width >= 600 && width < 960;
                 final isMobile = width < 600;
 
-                final isStream =
-                    widget.workspace.destination == BlinkNavDestination.stream;
+                final isDesktopWithSidebar = isWideDesktop || isStandardDesktop;
                 final showPersistentSidebar =
-                    (isWideDesktop || isStandardDesktop) && isStream;
-                final railWidth = isCompactTablet ? 52.0 : 56.0;
-                final sidebarWidth = isWideDesktop ? 264.0 : 232.0;
+                    isDesktopWithSidebar && !widget.workspace.sidebarCollapsed;
+                final showExpandSidebarButton =
+                    isDesktopWithSidebar && widget.workspace.sidebarCollapsed;
+                final railWidth = isCompactTablet ? 52.0 : 60.0;
+                final sidebarWidth = isWideDesktop ? 260.0 : 232.0;
+
+                final showGlobalSyncBanner =
+                    BlinkSyncStatusCapsule.shouldShowGlobalBanner(
+                      widget.workspace.sync.uiStatus,
+                    );
+                final showVaultErrorBanner =
+                    widget.workspace.vaultErrorMessage != null &&
+                    (widget.workspace.destination !=
+                            BlinkNavDestination.settings ||
+                        widget.workspace.selectedSettingsCategory !=
+                            SettingsCategory.storage);
 
                 final workspaceContent = Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
-                    BlinkSyncStatusCapsule(
-                      sync: widget.workspace.sync,
-                      compact: isMobile,
-                      onOpenConflicts: () =>
-                          unawaited(_openSyncConflictDialog()),
-                      onOpenSyncSettings: () => widget.workspace.setDestination(
-                        BlinkNavDestination.settings,
+                    if (showGlobalSyncBanner)
+                      BlinkSyncStatusCapsule(
+                        sync: widget.workspace.sync,
+                        compact: isMobile,
+                        onOpenConflicts: () =>
+                            unawaited(_openSyncConflictDialog()),
+                        onOpenSyncSettings: () => widget.workspace
+                            .openSettingsCategory(SettingsCategory.sync),
                       ),
-                    ),
                     if (widget.workspace.bannerMessage != null)
                       _StatusBanner(
                         message: widget.workspace.bannerMessage!,
                         isError: widget.workspace.bannerIsError,
                         onDismiss: widget.workspace.clearBanner,
                       ),
-                    if (widget.workspace.vaultErrorMessage != null &&
-                        widget.workspace.destination !=
-                            BlinkNavDestination.settings)
+                    if (showVaultErrorBanner)
                       _StatusBanner(
                         message: widget.workspace.vaultErrorMessage!,
                         isError: true,
                         actionLabel: '前往设置',
-                        onAction: () => widget.workspace.setDestination(
-                          BlinkNavDestination.settings,
+                        onAction: () => widget.workspace.openSettingsCategory(
+                          SettingsCategory.storage,
                         ),
                         onDismiss: widget.workspace.clearVaultError,
                       ),
-                    Expanded(child: _buildActivePage(isMobile: isMobile)),
+                    Expanded(
+                      child: _buildActivePage(
+                        isMobile: isMobile,
+                        isCompactTablet: isCompactTablet,
+                        showPersistentSidebar: showPersistentSidebar,
+                        showExpandSidebarButton: showExpandSidebarButton,
+                      ),
+                    ),
                   ],
                 );
 
@@ -276,11 +302,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                           backgroundColor: tokens.sidebar,
                           surfaceTintColor: Colors.transparent,
                           child: SafeArea(
-                            child: _StreamFilterSidebar(
-                              workspace: widget.workspace,
-                              onCloseDrawer: () =>
-                                  _scaffoldKey.currentState?.closeDrawer(),
-                            ),
+                            child: _buildContextualSidebar(isDrawer: true),
                           ),
                         )
                       : null,
@@ -298,7 +320,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                           _buildNavigationRail(
                             tokens,
                             railWidth,
-                            showDrawerToggle: isCompactTablet && isStream,
+                            isCompactTablet: isCompactTablet,
                           ),
                           VerticalDivider(
                             key: const Key('pane_divider_rail'),
@@ -309,12 +331,11 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                         ],
                         if (showPersistentSidebar) ...<Widget>[
                           SizedBox(
+                            key: const Key('resource_sidebar_pane'),
                             width: sidebarWidth,
                             child: ColoredBox(
                               color: tokens.sidebar,
-                              child: _StreamFilterSidebar(
-                                workspace: widget.workspace,
-                              ),
+                              child: _buildContextualSidebar(isDrawer: false),
                             ),
                           ),
                           VerticalDivider(
@@ -337,14 +358,66 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     );
   }
 
+  Widget _buildContextualSidebar({required bool isDrawer}) {
+    void closeDrawerIfNeeded() {
+      if (isDrawer) {
+        _scaffoldKey.currentState?.closeDrawer();
+      }
+    }
+
+    final onCollapse = isDrawer
+        ? null
+        : () => widget.workspace.setSidebarCollapsed(true);
+
+    switch (widget.workspace.destination) {
+      case BlinkNavDestination.memos:
+        return BlinkMemosSidebar(
+          workspace: widget.workspace,
+          isDrawer: isDrawer,
+          onItemSelected: isDrawer ? closeDrawerIfNeeded : null,
+          onCollapse: onCollapse,
+        );
+      case BlinkNavDestination.notes:
+        return BlinkNotesSidebar(
+          workspace: widget.workspace,
+          isDrawer: isDrawer,
+          onItemSelected: isDrawer ? closeDrawerIfNeeded : null,
+          onCollapse: onCollapse,
+        );
+      case BlinkNavDestination.tasks:
+        return BlinkTasksSidebar(
+          controller: _tasksController,
+          isDrawer: isDrawer,
+          onItemSelected: isDrawer ? closeDrawerIfNeeded : null,
+          onCollapse: onCollapse,
+        );
+      case BlinkNavDestination.files:
+        return BlinkFilesSidebar(
+          workspace: widget.workspace,
+          controller: _filesController,
+          isDrawer: isDrawer,
+          onItemSelected: isDrawer ? closeDrawerIfNeeded : null,
+          onCollapse: onCollapse,
+        );
+      case BlinkNavDestination.settings:
+        return BlinkSettingsSidebar(
+          workspace: widget.workspace,
+          isDrawer: isDrawer,
+          onItemSelected: isDrawer ? closeDrawerIfNeeded : null,
+          onCollapse: onCollapse,
+        );
+    }
+  }
+
   Widget _buildNavigationRail(
     BlinkColorTokens tokens,
     double width, {
-    required bool showDrawerToggle,
+    required bool isCompactTablet,
   }) {
     final active = widget.workspace.destination;
+    final itemWidth = width - (isCompactTablet ? 8 : 10);
 
-    Widget railAction({
+    Widget railIconAction({
       required Key itemKey,
       required IconData icon,
       required String tooltip,
@@ -358,16 +431,16 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
           borderRadius: BorderRadius.circular(8),
           onTap: onTap,
           child: Container(
-            width: width - 12,
-            height: 40,
-            margin: const EdgeInsets.symmetric(vertical: 3),
+            width: itemWidth,
+            height: 36,
+            margin: const EdgeInsets.symmetric(vertical: 2),
             decoration: BoxDecoration(
               color: selected ? tokens.accentSubtle : Colors.transparent,
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
               icon,
-              size: 20,
+              size: 19,
               color: selected ? tokens.accentPrimary : tokens.textSecondary,
             ),
           ),
@@ -379,14 +452,42 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       required Key itemKey,
       required BlinkNavDestination destination,
       required IconData icon,
-      required String tooltip,
+      required String label,
     }) {
-      return railAction(
-        itemKey: itemKey,
-        icon: icon,
-        tooltip: tooltip,
-        selected: active == destination,
-        onTap: () => widget.workspace.setDestination(destination),
+      final selected = active == destination;
+      final fg = selected ? tokens.accentPrimary : tokens.textSecondary;
+      return Tooltip(
+        message: label,
+        child: InkWell(
+          key: itemKey,
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => widget.workspace.setDestination(destination),
+          child: Container(
+            width: itemWidth,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            margin: const EdgeInsets.symmetric(vertical: 2),
+            decoration: BoxDecoration(
+              color: selected ? tokens.accentSubtle : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(icon, size: 19, color: fg),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: BlinkTypography.metaLabel(
+                    tokens,
+                    color: fg,
+                  ).copyWith(fontSize: 10.5, height: 1.1),
+                ),
+              ],
+            ),
+          ),
+        ),
       );
     }
 
@@ -394,18 +495,20 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       key: const Key('desktop_nav_rail'),
       width: width,
       color: tokens.sidebar,
-      padding: const EdgeInsets.symmetric(vertical: 14),
+      padding: const EdgeInsets.symmetric(vertical: 12),
       child: Column(
         children: <Widget>[
-          if (showDrawerToggle) ...<Widget>[
-            railAction(
+          const BlinkBrandMark(key: Key('rail_brand_mark'), size: 28),
+          const SizedBox(height: 10),
+          if (isCompactTablet) ...<Widget>[
+            railIconAction(
               itemKey: const Key('open_sidebar_drawer_button'),
               icon: Icons.menu_rounded,
-              tooltip: '筛选与标签',
+              tooltip: '展开侧边栏',
               onTap: () => _scaffoldKey.currentState?.openDrawer(),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.symmetric(vertical: 4),
               child: SizedBox(
                 width: 24,
                 child: Divider(height: 1, color: tokens.borderHairline),
@@ -413,25 +516,31 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
             ),
           ],
           railDestination(
-            itemKey: const Key('nav_stream'),
-            destination: BlinkNavDestination.stream,
+            itemKey: const Key('nav_memos'),
+            destination: BlinkNavDestination.memos,
             icon: Icons.bolt_rounded,
-            tooltip: '采集流与 BFM 编辑器',
+            label: '小记',
           ),
           railDestination(
-            itemKey: const Key('nav_files'),
-            destination: BlinkNavDestination.files,
-            icon: Icons.folder_outlined,
-            tooltip: '文件与附件管理',
+            itemKey: const Key('nav_notes'),
+            destination: BlinkNavDestination.notes,
+            icon: Icons.description_outlined,
+            label: '笔记',
           ),
           railDestination(
             itemKey: const Key('nav_tasks'),
             destination: BlinkNavDestination.tasks,
             icon: Icons.check_circle_outline_rounded,
-            tooltip: '内生待办',
+            label: '待办',
+          ),
+          railDestination(
+            itemKey: const Key('nav_files'),
+            destination: BlinkNavDestination.files,
+            icon: Icons.attach_file_rounded,
+            label: '附件',
           ),
           const Spacer(),
-          railAction(
+          railIconAction(
             itemKey: const Key('open_search_button'),
             icon: Icons.search_rounded,
             tooltip: '全局搜索 (Ctrl+K)',
@@ -443,7 +552,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
               if (widget.workspace.sync.openConflictCount > 0) {
                 unawaited(_openSyncConflictDialog());
               } else {
-                widget.workspace.setDestination(BlinkNavDestination.settings);
+                widget.workspace.openSettingsCategory(SettingsCategory.sync);
               }
             },
           ),
@@ -451,7 +560,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
             itemKey: const Key('nav_settings'),
             destination: BlinkNavDestination.settings,
             icon: Icons.settings_outlined,
-            tooltip: '便携库与设置',
+            label: '设置',
           ),
         ],
       ),
@@ -472,9 +581,14 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       return Expanded(
         child: InkWell(
           key: itemKey,
-          onTap: () => widget.workspace.setDestination(destination),
+          onTap: () {
+            if (destination == BlinkNavDestination.notes) {
+              widget.workspace.clearPendingMobileNoteOpen();
+            }
+            widget.workspace.setDestination(destination);
+          },
           child: SizedBox(
-            height: 54,
+            height: 52,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: <Widget>[
@@ -506,16 +620,16 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
         child: Row(
           children: <Widget>[
             tab(
-              itemKey: const Key('nav_stream'),
-              destination: BlinkNavDestination.stream,
+              itemKey: const Key('nav_memos'),
+              destination: BlinkNavDestination.memos,
               icon: Icons.bolt_rounded,
-              label: '采集流',
+              label: '小记',
             ),
             tab(
-              itemKey: const Key('nav_files'),
-              destination: BlinkNavDestination.files,
-              icon: Icons.folder_outlined,
-              label: '文件',
+              itemKey: const Key('nav_notes'),
+              destination: BlinkNavDestination.notes,
+              icon: Icons.description_outlined,
+              label: '笔记',
             ),
             tab(
               itemKey: const Key('nav_tasks'),
@@ -535,172 +649,72 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     );
   }
 
-  Widget _buildActivePage({required bool isMobile}) {
+  Widget _buildActivePage({
+    required bool isMobile,
+    required bool isCompactTablet,
+    required bool showPersistentSidebar,
+    required bool showExpandSidebarButton,
+  }) {
+    final openDrawer = (isMobile || isCompactTablet)
+        ? () => _scaffoldKey.currentState?.openDrawer()
+        : null;
+    void expandSidebar() => widget.workspace.setSidebarCollapsed(false);
+    void openSearch() => unawaited(_openSearchModal());
+
     switch (widget.workspace.destination) {
-      case BlinkNavDestination.stream:
-        return BlinkStreamPage(
+      case BlinkNavDestination.memos:
+        return BlinkMemosPage(
           workspace: widget.workspace,
-          editor: _editorController,
-          editorFocusNode: _editorFocusNode,
-          onOpenFilterDrawer: isMobile
-              ? () => _scaffoldKey.currentState?.openDrawer()
-              : null,
-          onOpenSearch: isMobile ? () => unawaited(_openSearchModal()) : null,
+          isMobile: isMobile,
+          onOpenDrawer: openDrawer,
+          onExpandSidebar: expandSidebar,
+          showExpandSidebarButton: showExpandSidebarButton,
+          onOpenSearch: openSearch,
+          composerFocusNode: _memoComposerFocusNode,
+          editor: _memoEditorController,
         );
-      case BlinkNavDestination.files:
-        return BlinkFilesPage(
+      case BlinkNavDestination.notes:
+        return BlinkNotesPage(
           workspace: widget.workspace,
-          onAttachToNewEntry: (blob) => unawaited(_attachBlobToNewEntry(blob)),
+          isMobile: isMobile,
+          onOpenDrawer: openDrawer,
+          onExpandSidebar: expandSidebar,
+          showExpandSidebarButton: showExpandSidebarButton,
+          onOpenSearch: openSearch,
         );
       case BlinkNavDestination.tasks:
         return BlinkTasksPage(
           controller: _tasksController,
-          onJumpToEntry: (entryId) async {
-            await widget.workspace.openEntryById(entryId);
-            final entry = await widget.workspace.vault?.raw.getEntryById(
-              entryId,
-              includeDeleted: true,
-            );
-            if (entry != null && !entry.isDeleted) {
-              await _editorController.startEditingEntry(entry);
-            }
-          },
+          workspace: widget.workspace,
+          onJumpToEntry: (entryId) => unawaited(_jumpToEntryId(entryId)),
+          showInlineFilters: !showPersistentSidebar,
+          isMobile: isMobile,
+          onOpenDrawer: openDrawer,
+          onOpenSearch: openSearch,
+          onExpandSidebar: expandSidebar,
+          showExpandSidebarButton: showExpandSidebarButton,
+        );
+      case BlinkNavDestination.files:
+        return BlinkFilesPage(
+          workspace: widget.workspace,
+          controller: _filesController,
+          onAttachToNewEntry: (blob) => unawaited(_attachBlobToNewNote(blob)),
+          showInlineFilters: !showPersistentSidebar,
+          isMobile: isMobile,
+          onOpenDrawer: openDrawer,
+          onExpandSidebar: expandSidebar,
+          showExpandSidebarButton: showExpandSidebarButton,
         );
       case BlinkNavDestination.settings:
-        return BlinkSettingsPage(workspace: widget.workspace);
+        return BlinkSettingsPage(
+          workspace: widget.workspace,
+          isMobile: isMobile,
+          showCompactCategorySwitcher: isCompactTablet,
+          onOpenDrawer: isCompactTablet ? openDrawer : null,
+          onExpandSidebar: expandSidebar,
+          showExpandSidebarButton: showExpandSidebarButton,
+        );
     }
-  }
-}
-
-class _StreamFilterSidebar extends StatelessWidget {
-  const _StreamFilterSidebar({required this.workspace, this.onCloseDrawer});
-
-  final BlinkWorkspaceController workspace;
-  final VoidCallback? onCloseDrawer;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = BlinkColorTokens.of(context);
-    final stats = workspace.stats;
-    final sortedTags = workspace.tagCounts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    Widget navRow({
-      required Key itemKey,
-      required IconData icon,
-      required String label,
-      required bool selected,
-      required VoidCallback onTap,
-      int? count,
-      Color? accentOverride,
-    }) {
-      final fg = selected
-          ? (accentOverride ?? tokens.accentPrimary)
-          : tokens.textPrimary;
-      return InkWell(
-        key: itemKey,
-        borderRadius: BorderRadius.circular(8),
-        onTap: () {
-          onTap();
-          onCloseDrawer?.call();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: selected ? tokens.accentSubtle : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            children: <Widget>[
-              Icon(
-                icon,
-                size: 16,
-                color: selected
-                    ? (accentOverride ?? tokens.accentPrimary)
-                    : (accentOverride ?? tokens.textSecondary),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: BlinkTypography.controlLabel(tokens)
-                      .copyWith(color: fg),
-                ),
-              ),
-              if (count != null)
-                Text(
-                  '$count',
-                  style: BlinkTypography.metaLabel(
-                    tokens,
-                    color: tokens.textMuted,
-                  ).copyWith(fontFeatures: BlinkTypography.tabularFigures),
-                ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 16, 12, 16),
-      children: <Widget>[
-        Text('视图筛选', style: BlinkTypography.metaLabel(tokens)),
-        const SizedBox(height: 6),
-        navRow(
-          itemKey: const Key('filter_all'),
-          icon: Icons.all_inbox_outlined,
-          label: '全部记录',
-          count: stats?.activeEntries,
-          selected: workspace.streamFilter == StreamFilterKind.all,
-          onTap: () => workspace.setStreamFilter(StreamFilterKind.all),
-        ),
-        navRow(
-          itemKey: const Key('filter_private'),
-          icon: Icons.lock_outline_rounded,
-          label: '#private 私密',
-          count: stats?.privateEntries,
-          accentOverride: tokens.privacyPrivate,
-          selected: workspace.streamFilter == StreamFilterKind.privateOnly,
-          onTap: () => workspace.setStreamFilter(StreamFilterKind.privateOnly),
-        ),
-        navRow(
-          itemKey: const Key('filter_trash'),
-          icon: Icons.delete_outline_rounded,
-          label: '30 天回收站',
-          count: stats?.trashedEntries,
-          selected: workspace.streamFilter == StreamFilterKind.trash,
-          onTap: () => workspace.setStreamFilter(StreamFilterKind.trash),
-        ),
-        const SizedBox(height: 16),
-        Text('标签', style: BlinkTypography.metaLabel(tokens)),
-        const SizedBox(height: 6),
-        if (sortedTags.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            child: Text(
-              '尚无标签',
-              style: BlinkTypography.metaLabel(tokens, color: tokens.textMuted),
-            ),
-          )
-        else
-          for (final tagEntry in sortedTags)
-            navRow(
-              itemKey: Key('filter_tag_${tagEntry.key}'),
-              icon: Icons.tag_rounded,
-              label: '#${tagEntry.key}',
-              count: tagEntry.value,
-              selected:
-                  workspace.streamFilter == StreamFilterKind.tag &&
-                  workspace.selectedTag == tagEntry.key,
-              onTap: () => workspace.setStreamFilter(
-                StreamFilterKind.tag,
-                tag: tagEntry.key,
-              ),
-            ),
-      ],
-    );
   }
 }
 

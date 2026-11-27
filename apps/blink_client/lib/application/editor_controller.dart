@@ -71,11 +71,50 @@ class _StyledSegment {
 /// 4. Atomic single-value replacement with `composing: TextRange.empty` when
 ///    selecting an `OverlayPortal` autocomplete candidate.
 class BlinkSyntaxTextController extends TextEditingController {
-  BlinkSyntaxTextController({super.text});
+  BlinkSyntaxTextController({
+    super.text,
+    this.dimInlineMarkers = true,
+    this.enableBlockPrefixes = true,
+    this.enableInlineSyntax = true,
+    this.overrideBaseStyle,
+  });
 
-  static final RegExp _tokenPattern = RegExp(
-    r'(!\[\[ai:[^\]]+\]\]|\[\[[^\]]+\]\]|==[^=\n]+==|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*)|^[ \t]*>[ \t]*\[![A-Za-z]+\]|^[ \t]*[-*][ \t]+\[[ xX>\-]\])',
-    multiLine: true,
+  /// Whether Markdown syntax markers (`**`, `*`, `~~`, `` ` ``, `==`, `[](url)`)
+  /// are visually dimmed with `tokens.textMuted` while keeping 1:1 UTF-16 length.
+  final bool dimInlineMarkers;
+
+  /// Whether line-level structural prefixes (`# `, `> `, `- `, `1. `, `- [ ] `)
+  /// receive line-start syntax styling. Enabled in Source mode; disabled inside
+  /// active WYSIWYG blocks where structural prefixes are rendered outside the
+  /// `TextField`.
+  bool enableBlockPrefixes;
+
+  /// Whether inline Markdown tokens (`**`, `*`, `~~`, `` ` ``, `==`, `#tag`,
+  /// `[[...]]`) receive inline styling. Disabled inside fenced code blocks so
+  /// code comments and operators render cleanly in monospace.
+  bool enableInlineSyntax;
+
+  /// Optional typography override (e.g. `BlinkTypography.heading1(tokens)` for
+  /// an active WYSIWYG heading block) while preserving inline syntax dimming.
+  TextStyle? overrideBaseStyle;
+
+  static final RegExp _fenceLinePattern = RegExp(r'^[ \t]*```');
+  static final RegExp _headingPrefixPattern = RegExp(r'^(#{1,6}[ \t]+)');
+  static final RegExp _calloutPrefixPattern = RegExp(
+    r'^([ \t]*>[ \t]*\[![A-Za-z]+\])',
+  );
+  static final RegExp _quotePrefixPattern = RegExp(r'^([ \t]*>[ \t]?)');
+  static final RegExp _taskPrefixPattern = RegExp(
+    r'^([ \t]*[-*][ \t]+\[[ xX>\-]\])',
+  );
+  static final RegExp _bulletPrefixPattern = RegExp(r'^([ \t]*[-*][ \t]+)');
+  static final RegExp _orderedPrefixPattern = RegExp(r'^([ \t]*\d+\.[ \t]+)');
+  static final RegExp _dividerLinePattern = RegExp(
+    r'^[ \t]*(?:---+|\*\*\*+)[ \t]*$',
+  );
+
+  static final RegExp _inlineTokenPattern = RegExp(
+    r'(`[^`\n]+`|!\[\[ai:[^\]]+\]\]|\[\[[^\]]+\]\]|\[[^\]\n]+\]\([^\)\n]+\)|==[^=\n]+==|\*\*[^*\n]+\*\*|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*))',
     unicode: true,
   );
 
@@ -301,7 +340,8 @@ class BlinkSyntaxTextController extends TextEditingController {
     required bool withComposing,
   }) {
     final tokens = BlinkColorTokens.of(context);
-    final baseStyle = style ?? BlinkTypography.editorBody(tokens);
+    final baseStyle =
+        overrideBaseStyle ?? style ?? BlinkTypography.editorBody(tokens);
     final source = value.text;
     if (source.isEmpty) {
       return TextSpan(style: baseStyle, text: '');
@@ -321,6 +361,9 @@ class BlinkSyntaxTextController extends TextEditingController {
 
     final children = <InlineSpan>[];
     for (final seg in segments) {
+      if (seg.start >= seg.end) {
+        continue;
+      }
       if (!hasComposingRange ||
           seg.end <= composingStart ||
           seg.start >= composingEnd) {
@@ -376,70 +419,324 @@ class BlinkSyntaxTextController extends TextEditingController {
     BlinkColorTokens tokens,
   ) {
     final segments = <_StyledSegment>[];
-    var cursor = 0;
+    var lineStart = 0;
+    var inFencedCode = false;
 
-    for (final match in _tokenPattern.allMatches(source)) {
-      if (match.start > cursor) {
-        segments.add(_StyledSegment(cursor, match.start, baseStyle));
-      }
-      final raw = match.group(0)!;
-      if (raw.startsWith('![[ai:')) {
+    while (lineStart < source.length) {
+      final nlIndex = source.indexOf('\n', lineStart);
+      final lineEnd = nlIndex < 0 ? source.length : nlIndex;
+      final line = source.substring(lineStart, lineEnd);
+
+      if (enableBlockPrefixes && _fenceLinePattern.hasMatch(line)) {
+        inFencedCode = !inFencedCode;
         segments.add(
           _StyledSegment(
-            match.start,
-            match.end,
+            lineStart,
+            lineEnd,
+            BlinkTypography.codeBlock(tokens, color: tokens.textMuted),
+          ),
+        );
+      } else if (enableBlockPrefixes && inFencedCode) {
+        if (lineEnd > lineStart) {
+          segments.add(
+            _StyledSegment(
+              lineStart,
+              lineEnd,
+              BlinkTypography.codeBlock(tokens),
+            ),
+          );
+        }
+      } else {
+        _tokenizeLine(segments, line, lineStart, lineEnd, baseStyle, tokens);
+      }
+
+      if (nlIndex >= 0) {
+        segments.add(_StyledSegment(nlIndex, nlIndex + 1, baseStyle));
+        lineStart = nlIndex + 1;
+      } else {
+        break;
+      }
+    }
+
+    return segments;
+  }
+
+  void _tokenizeLine(
+    List<_StyledSegment> segments,
+    String line,
+    int lineStart,
+    int lineEnd,
+    TextStyle baseStyle,
+    BlinkColorTokens tokens,
+  ) {
+    if (line.isEmpty) {
+      return;
+    }
+
+    var contentOffset = 0;
+    var lineStyle = baseStyle;
+
+    if (enableBlockPrefixes) {
+      if (_dividerLinePattern.hasMatch(line)) {
+        segments.add(
+          _StyledSegment(
+            lineStart,
+            lineEnd,
             baseStyle.copyWith(color: tokens.textMuted),
           ),
         );
-      } else if (raw.startsWith('[[')) {
-        _addWikiLinkSegments(
-          segments,
-          match.start,
-          match.end,
-          raw,
-          baseStyle,
-          tokens,
-        );
-      } else if (raw.startsWith('==')) {
+        return;
+      }
+
+      final headingMatch = _headingPrefixPattern.firstMatch(line);
+      if (headingMatch != null) {
+        final rawPrefix = headingMatch.group(1)!;
+        final level = rawPrefix.trimRight().length;
+        final headingStyle = BlinkTypography.headingForLevel(tokens, level);
         segments.add(
           _StyledSegment(
-            match.start,
-            match.end,
-            baseStyle.copyWith(backgroundColor: tokens.highlightMark),
+            lineStart,
+            lineStart + headingMatch.end,
+            headingStyle.copyWith(
+              color: tokens.textMuted,
+              fontWeight: FontWeight.w400,
+            ),
           ),
         );
+        contentOffset = headingMatch.end;
+        lineStyle = headingStyle;
+      } else {
+        final calloutMatch = _calloutPrefixPattern.firstMatch(line);
+        if (calloutMatch != null) {
+          segments.add(
+            _StyledSegment(
+              lineStart,
+              lineStart + calloutMatch.end,
+              baseStyle.copyWith(
+                color: tokens.accentPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          );
+          contentOffset = calloutMatch.end;
+          lineStyle = baseStyle.copyWith(color: tokens.textSecondary);
+        } else {
+          final quoteMatch = _quotePrefixPattern.firstMatch(line);
+          if (quoteMatch != null) {
+            segments.add(
+              _StyledSegment(
+                lineStart,
+                lineStart + quoteMatch.end,
+                baseStyle.copyWith(
+                  color: tokens.textMuted,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            );
+            contentOffset = quoteMatch.end;
+            lineStyle = baseStyle.copyWith(color: tokens.textSecondary);
+          } else {
+            final taskMatch = _taskPrefixPattern.firstMatch(line);
+            if (taskMatch != null) {
+              segments.add(
+                _StyledSegment(
+                  lineStart,
+                  lineStart + taskMatch.end,
+                  baseStyle.copyWith(
+                    color: tokens.accentPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              );
+              contentOffset = taskMatch.end;
+            } else {
+              final bulletMatch = _bulletPrefixPattern.firstMatch(line);
+              if (bulletMatch != null) {
+                segments.add(
+                  _StyledSegment(
+                    lineStart,
+                    lineStart + bulletMatch.end,
+                    baseStyle.copyWith(
+                      color: tokens.textMuted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                );
+                contentOffset = bulletMatch.end;
+              } else {
+                final orderedMatch = _orderedPrefixPattern.firstMatch(line);
+                if (orderedMatch != null) {
+                  segments.add(
+                    _StyledSegment(
+                      lineStart,
+                      lineStart + orderedMatch.end,
+                      baseStyle.copyWith(
+                        color: tokens.textMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  );
+                  contentOffset = orderedMatch.end;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (contentOffset >= line.length) {
+      return;
+    }
+
+    if (!enableInlineSyntax) {
+      segments.add(
+        _StyledSegment(lineStart + contentOffset, lineEnd, lineStyle),
+      );
+      return;
+    }
+
+    final remainder = line.substring(contentOffset);
+    final baseOffset = lineStart + contentOffset;
+    var cursor = 0;
+
+    for (final match in _inlineTokenPattern.allMatches(remainder)) {
+      if (match.start > cursor) {
+        segments.add(
+          _StyledSegment(
+            baseOffset + cursor,
+            baseOffset + match.start,
+            lineStyle,
+          ),
+        );
+      }
+
+      final start = baseOffset + match.start;
+      final end = baseOffset + match.end;
+      final raw = match.group(0)!;
+      final markerStyle = dimInlineMarkers
+          ? lineStyle.copyWith(color: tokens.textMuted)
+          : lineStyle;
+
+      if (raw.startsWith('`') && raw.endsWith('`') && raw.length >= 2) {
+        final codeStyle = BlinkTypography.inlineCode(tokens).copyWith(
+          fontSize: lineStyle.fontSize != null
+              ? (lineStyle.fontSize! * 0.9).clamp(12.0, 22.0)
+              : null,
+        );
+        final tickStyle = dimInlineMarkers
+            ? codeStyle.copyWith(color: tokens.textMuted)
+            : codeStyle;
+        segments.add(_StyledSegment(start, start + 1, tickStyle));
+        if (end - 1 > start + 1) {
+          segments.add(_StyledSegment(start + 1, end - 1, codeStyle));
+        }
+        segments.add(_StyledSegment(end - 1, end, tickStyle));
+      } else if (raw.startsWith('![[ai:')) {
+        segments.add(
+          _StyledSegment(
+            start,
+            end,
+            lineStyle.copyWith(color: tokens.textMuted),
+          ),
+        );
+      } else if (raw.startsWith('[[')) {
+        _addWikiLinkSegments(segments, start, end, raw, lineStyle, tokens);
+      } else if (raw.startsWith('[') && raw.contains('](')) {
+        final splitIdx = raw.indexOf('](');
+        segments.add(_StyledSegment(start, start + 1, markerStyle));
+        if (splitIdx > 1) {
+          segments.add(
+            _StyledSegment(
+              start + 1,
+              start + splitIdx,
+              lineStyle.copyWith(
+                color: tokens.accentPrimary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          );
+        }
+        segments.add(_StyledSegment(start + splitIdx, end, markerStyle));
+      } else if (raw.startsWith('==') &&
+          raw.endsWith('==') &&
+          raw.length >= 4) {
+        final markStyle = lineStyle.copyWith(
+          backgroundColor: tokens.highlightMark,
+        );
+        final markMarkerStyle = dimInlineMarkers
+            ? markStyle.copyWith(color: tokens.textMuted)
+            : markStyle;
+        segments.add(_StyledSegment(start, start + 2, markMarkerStyle));
+        if (end - 2 > start + 2) {
+          segments.add(_StyledSegment(start + 2, end - 2, markStyle));
+        }
+        segments.add(_StyledSegment(end - 2, end, markMarkerStyle));
+      } else if (raw.startsWith('**') &&
+          raw.endsWith('**') &&
+          raw.length >= 4) {
+        segments.add(_StyledSegment(start, start + 2, markerStyle));
+        if (end - 2 > start + 2) {
+          segments.add(
+            _StyledSegment(
+              start + 2,
+              end - 2,
+              lineStyle.copyWith(fontWeight: FontWeight.w600),
+            ),
+          );
+        }
+        segments.add(_StyledSegment(end - 2, end, markerStyle));
+      } else if (raw.startsWith('~~') &&
+          raw.endsWith('~~') &&
+          raw.length >= 4) {
+        segments.add(_StyledSegment(start, start + 2, markerStyle));
+        if (end - 2 > start + 2) {
+          segments.add(
+            _StyledSegment(
+              start + 2,
+              end - 2,
+              lineStyle.copyWith(
+                color: tokens.textMuted,
+                decoration: TextDecoration.lineThrough,
+              ),
+            ),
+          );
+        }
+        segments.add(_StyledSegment(end - 2, end, markerStyle));
+      } else if (raw.startsWith('*') && raw.endsWith('*') && raw.length >= 2) {
+        segments.add(_StyledSegment(start, start + 1, markerStyle));
+        if (end - 1 > start + 1) {
+          segments.add(
+            _StyledSegment(
+              start + 1,
+              end - 1,
+              lineStyle.copyWith(fontStyle: FontStyle.italic),
+            ),
+          );
+        }
+        segments.add(_StyledSegment(end - 1, end, markerStyle));
       } else if (raw.startsWith('#')) {
         final isPrivate = raw.toLowerCase() == '#private';
         segments.add(
           _StyledSegment(
-            match.start,
-            match.end,
-            baseStyle.copyWith(
+            start,
+            end,
+            lineStyle.copyWith(
               color: isPrivate ? tokens.privacyPrivate : tokens.accentPrimary,
               fontWeight: isPrivate ? FontWeight.w600 : FontWeight.w500,
             ),
           ),
         );
       } else {
-        // Callout prefix `> [!type]` or endogenous task prefix `- [ ]`.
-        segments.add(
-          _StyledSegment(
-            match.start,
-            match.end,
-            baseStyle.copyWith(
-              color: tokens.accentPrimary,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        );
+        segments.add(_StyledSegment(start, end, lineStyle));
       }
+
       cursor = match.end;
     }
 
-    if (cursor < source.length) {
-      segments.add(_StyledSegment(cursor, source.length, baseStyle));
+    if (cursor < remainder.length) {
+      segments.add(_StyledSegment(baseOffset + cursor, lineEnd, lineStyle));
     }
-    return segments;
   }
 
   void _addWikiLinkSegments(
@@ -533,27 +830,27 @@ class BlinkEditorController extends ChangeNotifier {
       <AutocompleteCandidate>[
         AutocompleteCandidate(
           label: '/insight',
-          subtitle: '插入洞察 Callout 块',
+          subtitle: '插入洞察提示块',
           insertText: '> [!insight] 洞察\n> ',
         ),
         AutocompleteCandidate(
           label: '/note',
-          subtitle: '插入注释 Callout 块',
+          subtitle: '插入说明提示块',
           insertText: '> [!note] 说明\n> ',
         ),
         AutocompleteCandidate(
           label: '/warning',
-          subtitle: '插入警示 Callout 块',
+          subtitle: '插入警示提示块',
           insertText: '> [!warning] 提示\n> ',
         ),
         AutocompleteCandidate(
           label: '/fold',
-          subtitle: '插入 :::fold 折叠块',
+          subtitle: '插入折叠块',
           insertText: ':::fold 折叠标题\n内容\n:::\n',
         ),
         AutocompleteCandidate(
           label: '/task',
-          subtitle: '插入内生待办 - [ ]',
+          subtitle: '插入待办项 - [ ]',
           insertText: '- [ ] ',
         ),
         AutocompleteCandidate(
@@ -966,10 +1263,12 @@ class BlinkEditorController extends ChangeNotifier {
     unawaited(_loadCandidatesForTrigger(trigger, epoch));
   }
 
-  Future<void> _loadCandidatesForTrigger(
-    AutocompleteTrigger trigger,
-    int epoch,
-  ) async {
+  /// Shared autocomplete candidate resolver for both Memo and Note editors.
+  static Future<List<AutocompleteCandidate>> queryAutocompleteCandidates(
+    VaultManager? vault,
+    AutocompleteTrigger trigger, {
+    String? excludeEntryId,
+  }) async {
     final nextCandidates = <AutocompleteCandidate>[];
     final queryLower = trigger.query.trim().toLowerCase();
 
@@ -995,13 +1294,12 @@ class BlinkEditorController extends ChangeNotifier {
           nextCandidates.add(
             const AutocompleteCandidate(
               label: '#private',
-              subtitle: '私密隔离 · 零云端出境',
+              subtitle: '私密隔离 · 仅存本机',
               insertText: '#private ',
               isPrivate: true,
             ),
           );
         }
-        final vault = vaultProvider();
         if (vault != null && vault.isOpen) {
           final tagCounts = await vault.raw.listTagCounts();
           final sortedTags = tagCounts.entries.toList()
@@ -1023,7 +1321,6 @@ class BlinkEditorController extends ChangeNotifier {
           }
         }
       case AutocompleteTriggerKind.wikiLink:
-        final vault = vaultProvider();
         if (vault != null && vault.isOpen) {
           final trimmedQuery = trigger.query.trim();
           if (trimmedQuery.isNotEmpty) {
@@ -1053,14 +1350,14 @@ class BlinkEditorController extends ChangeNotifier {
               const EntryQuery(limit: 8),
             );
             for (final entry in recent) {
-              if (entry.id == _editingEntryId) {
+              if (entry.id == excludeEntryId) {
                 continue;
               }
               final title = _entrySummaryTitle(entry.bodyMd);
               nextCandidates.add(
                 AutocompleteCandidate(
                   label: title,
-                  subtitle: entry.isPrivate ? '🔒 私密条目' : '最近记录',
+                  subtitle: entry.isPrivate ? '🔒 私密内容' : '最近记录',
                   insertText: '[[entry:${entry.id}|$title]]',
                   isPrivate: entry.isPrivate,
                 ),
@@ -1070,10 +1367,22 @@ class BlinkEditorController extends ChangeNotifier {
         }
     }
 
+    return List<AutocompleteCandidate>.unmodifiable(nextCandidates);
+  }
+
+  Future<void> _loadCandidatesForTrigger(
+    AutocompleteTrigger trigger,
+    int epoch,
+  ) async {
+    final nextCandidates = await queryAutocompleteCandidates(
+      vaultProvider(),
+      trigger,
+      excludeEntryId: _editingEntryId,
+    );
     if (_isDisposed || epoch != _candidateQueryEpoch) {
       return;
     }
-    _candidates = List<AutocompleteCandidate>.unmodifiable(nextCandidates);
+    _candidates = nextCandidates;
     _selectedCandidateIndex = 0;
     _safeNotify();
   }

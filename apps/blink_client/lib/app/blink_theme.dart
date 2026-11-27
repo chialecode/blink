@@ -141,7 +141,7 @@ abstract final class BlinkTypography {
         color: color ?? tokens.textSecondary,
       );
 
-  /// BFM v1 editor prose style (`15px`, line-height `1.65`, `docs/ui.md` §2.2).
+  /// Markdown editor prose style (`15px`, line-height `1.65`, `docs/ui.md` §2.2).
   static TextStyle editorBody(BlinkColorTokens tokens, {Color? color}) =>
       TextStyle(
         fontFamily: uiFontFamily,
@@ -150,6 +150,100 @@ abstract final class BlinkTypography {
         fontWeight: FontWeight.w400,
         height: 1.65,
         color: color ?? tokens.textPrimary,
+      );
+
+  /// Markdown WYSIWYG level-1 heading (`26px`, `w600`).
+  static TextStyle heading1(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 26,
+        fontWeight: FontWeight.w600,
+        height: 1.3,
+        letterSpacing: -0.3,
+        color: color ?? tokens.textPrimary,
+      );
+
+  /// Markdown WYSIWYG level-2 heading (`21px`, `w600`).
+  static TextStyle heading2(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 21,
+        fontWeight: FontWeight.w600,
+        height: 1.35,
+        letterSpacing: -0.2,
+        color: color ?? tokens.textPrimary,
+      );
+
+  /// Markdown WYSIWYG level-3 heading (`18px`, `w600`).
+  static TextStyle heading3(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        height: 1.4,
+        color: color ?? tokens.textPrimary,
+      );
+
+  /// Markdown WYSIWYG level-4+ heading (`16px`, `w600`).
+  static TextStyle heading4(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        height: 1.45,
+        color: color ?? tokens.textPrimary,
+      );
+
+  /// Resolves a Markdown heading style for [level] (`1..6`).
+  static TextStyle headingForLevel(
+    BlinkColorTokens tokens,
+    int level, {
+    Color? color,
+  }) {
+    return switch (level) {
+      <= 1 => heading1(tokens, color: color),
+      2 => heading2(tokens, color: color),
+      3 => heading3(tokens, color: color),
+      _ => heading4(tokens, color: color),
+    };
+  }
+
+  /// Markdown WYSIWYG blockquote prose (`15px`, muted secondary ink).
+  static TextStyle blockquote(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: uiFontFamily,
+        fontFamilyFallback: uiFontFallback,
+        fontSize: 15,
+        fontWeight: FontWeight.w400,
+        height: 1.65,
+        color: color ?? tokens.textSecondary,
+      );
+
+  /// Markdown WYSIWYG fenced code block style (`13.5px` monospace).
+  static TextStyle codeBlock(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: monoFontFamily,
+        fontFamilyFallback: monoFontFallback,
+        fontSize: 13.5,
+        fontWeight: FontWeight.w400,
+        height: 1.55,
+        color: color ?? tokens.textPrimary,
+      );
+
+  /// Markdown WYSIWYG inline code span style (`13.5px` monospace).
+  static TextStyle inlineCode(BlinkColorTokens tokens, {Color? color}) =>
+      TextStyle(
+        fontFamily: monoFontFamily,
+        fontFamilyFallback: monoFontFallback,
+        fontSize: 13.5,
+        fontWeight: FontWeight.w500,
+        height: 1.5,
+        color: color ?? tokens.accentPrimary,
+        backgroundColor: tokens.sidebar,
       );
 
   /// Compact status/channel pill label (`12px`, `w600`).

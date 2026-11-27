@@ -126,21 +126,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.byType(AppBar), findsNothing);
-        expect(find.text('BLINK Dev'), findsOneWidget);
-        expect(find.text('DEV 开发通道'), findsOneWidget);
-        expect(find.text('0.1.0-dev.202611221600'), findsOneWidget);
-        expect(find.text('blink-dev'), findsNWidgets(2));
-        expect(find.text('a1b2c3d'), findsOneWidget);
-        expect(find.text(tempDir.path), findsOneWidget);
-
-        // Brand mark, unified brand blue accent, and dev channel pill styling.
-        final brandMarkFinder = find.byKey(const Key('brand_mark'));
-        expect(brandMarkFinder, findsOneWidget);
-        expect(tester.getSize(brandMarkFinder), const Size(24, 24));
-        expect(
-          tester.widget<BlinkBrandMark>(brandMarkFinder).size,
-          equals(24.0),
-        );
+        expect(find.byKey(const Key('settings_section')), findsOneWidget);
 
         final materialApp = tester.widget<MaterialApp>(
           find.byType(MaterialApp),
@@ -155,13 +141,63 @@ void main() {
           BlinkColorTokens.dark.accentPrimary,
         );
 
+        // Default close behavior is hide-to-tray.
+        expect(
+          controller.settings.closeButtonBehavior,
+          CloseButtonBehavior.hideToTray,
+        );
+
+        // Toggle to direct exit and verify atomic persistence.
+        await tester.tap(find.text('直接退出'));
+        await tester.pumpAndSettle();
+
+        expect(
+          controller.settings.closeButtonBehavior,
+          CloseButtonBehavior.exitApp,
+        );
+        expect(paths.desktopSettingsFile.existsSync(), isTrue);
+        expect(
+          store.loadSync().settings.closeButtonBehavior,
+          CloseButtonBehavior.exitApp,
+        );
+
+        // Switch to Storage & Backup category via compact switcher at 760x560.
+        await tester.tap(find.byKey(const Key('settings_compact_cat_storage')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('vault_settings_section')), findsOneWidget);
+        expect(find.text('数据文件夹'), findsWidgets);
+        expect(find.byKey(const Key('vault_path_value')), findsOneWidget);
+        expect(find.byKey(const Key('vault_onedrive_hint')), findsNothing);
+
+        // Switch to About BLINK category and verify build metadata & styling.
+        await tester.tap(find.byKey(const Key('settings_compact_cat_about')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('about_section')), findsOneWidget);
+        expect(find.text('BLINK Dev'), findsOneWidget);
+        expect(find.text('DEV 开发通道'), findsOneWidget);
+        expect(find.text('0.1.0-dev.202611221600'), findsOneWidget);
+        expect(find.text('blink-dev'), findsNWidgets(2));
+        expect(find.text('a1b2c3d'), findsOneWidget);
+        expect(find.text(tempDir.path), findsOneWidget);
+
+        // Brand mark, unified brand blue accent, and dev channel pill styling.
+        final brandMarkFinder = find.byKey(const Key('brand_mark'));
+        expect(brandMarkFinder, findsOneWidget);
+        expect(tester.getSize(brandMarkFinder), const Size(28, 28));
+        expect(
+          tester.widget<BlinkBrandMark>(brandMarkFinder).size,
+          equals(28.0),
+        );
+
         final devBadgeText = tester.widget<Text>(find.text('DEV 开发通道'));
         expect(devBadgeText.style?.color, BlinkBrandColors.devPillText);
         final devBadgeContainer = tester.widget<Container>(
-          find.ancestor(
-            of: find.text('DEV 开发通道'),
-            matching: find.byType(Container),
-          ),
+          find
+              .ancestor(
+                of: find.text('DEV 开发通道'),
+                matching: find.byType(Container),
+              )
+              .first,
         );
         expect(
           (devBadgeContainer.decoration as BoxDecoration).color,
@@ -172,14 +208,6 @@ void main() {
         expect(
           tester.widget<Text>(find.text('BLINK Dev')).style?.fontWeight,
           FontWeight.w700,
-        );
-        expect(
-          tester.widget<Text>(find.text('设置')).style?.fontWeight,
-          FontWeight.w600,
-        );
-        expect(
-          tester.widget<Text>(find.text('关于')).style?.fontWeight,
-          FontWeight.w600,
         );
 
         final versionText = tester.widget<SelectableText>(
@@ -203,29 +231,7 @@ void main() {
           find.byKey(const Key('about_data_root')),
         );
         expect(dataRootText.style?.fontFamily, BlinkTypography.monoFontFamily);
-        expect(find.text('便携库目录（用户数据）'), findsOneWidget);
-        expect(find.text('应用本地目录'), findsOneWidget);
-        expect(find.byKey(const Key('vault_onedrive_hint')), findsNothing);
-
-        // Default close behavior is hide-to-tray.
-        expect(
-          controller.settings.closeButtonBehavior,
-          CloseButtonBehavior.hideToTray,
-        );
-
-        // Toggle to direct exit and verify atomic persistence.
-        await tester.tap(find.text('直接退出'));
-        await tester.pumpAndSettle();
-
-        expect(
-          controller.settings.closeButtonBehavior,
-          CloseButtonBehavior.exitApp,
-        );
-        expect(paths.desktopSettingsFile.existsSync(), isTrue);
-        expect(
-          store.loadSync().settings.closeButtonBehavior,
-          CloseButtonBehavior.exitApp,
-        );
+        expect(find.text('应用配置目录'), findsOneWidget);
       },
     );
 
@@ -284,33 +290,36 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('BLINK'), findsOneWidget);
-        expect(find.text('正式通道'), findsOneWidget);
-        expect(find.text('0.1.0'), findsOneWidget);
-        expect(find.text('9988776'), findsOneWidget);
         expect(
           find.byKey(const Key('corrupt_settings_notice')),
           findsOneWidget,
         );
+        final corruptNotice = tester.widget<Text>(
+          find.byKey(const Key('corrupt_settings_notice')),
+        );
+        expect(corruptNotice.style?.color, BlinkColorTokens.day.statusWarn);
+
+        // Navigate to About category in Feishu Settings sidebar at 960x640.
+        await tester.tap(find.byKey(const Key('settings_cat_about')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('BLINK'), findsOneWidget);
+        expect(find.text('正式通道'), findsOneWidget);
+        expect(find.text('0.1.0'), findsOneWidget);
+        expect(find.text('9988776'), findsOneWidget);
         expect(find.byKey(const Key('brand_mark')), findsOneWidget);
 
         final prodBadgeText = tester.widget<Text>(find.text('正式通道'));
         expect(prodBadgeText.style?.color, BlinkColorTokens.day.accentPrimary);
         final prodBadgeContainer = tester.widget<Container>(
-          find.ancestor(
-            of: find.text('正式通道'),
-            matching: find.byType(Container),
-          ),
+          find
+              .ancestor(of: find.text('正式通道'), matching: find.byType(Container))
+              .first,
         );
         expect(
           (prodBadgeContainer.decoration as BoxDecoration).color,
           BlinkColorTokens.day.accentSubtle,
         );
-
-        final corruptNotice = tester.widget<Text>(
-          find.byKey(const Key('corrupt_settings_notice')),
-        );
-        expect(corruptNotice.style?.color, BlinkColorTokens.day.statusWarn);
       },
     );
 
