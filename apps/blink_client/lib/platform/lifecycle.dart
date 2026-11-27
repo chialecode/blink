@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show Offset, Rect;
 
 import 'package:flutter/foundation.dart';
 
@@ -49,6 +50,39 @@ abstract interface class DesktopWindowAdapter {
   Future<WindowGeometrySnapshot?> captureGeometry();
 
   Future<void> destroy();
+}
+
+/// Optional extension of [DesktopWindowAdapter] for desktop platforms that
+/// render BLINK's immersive borderless window chrome (hidden OS title bar,
+/// custom drag strips, and native-feeling caption controls).
+abstract interface class DesktopWindowChromeAdapter
+    implements DesktopWindowAdapter {
+  /// Whether custom immersive window chrome is supported on this runtime.
+  bool get supportsCustomWindowChrome;
+
+  /// Whether the OS keeps native traffic-light controls on the leading edge
+  /// (macOS) instead of BLINK rendering trailing caption controls.
+  bool get usesLeadingSystemWindowControls;
+
+  /// Starts a native OS window drag gesture from the current pointer down.
+  Future<void> startDragging();
+
+  /// Toggles between maximized and restored window states.
+  Future<void> toggleMaximize();
+
+  /// Queries whether the window is currently maximized.
+  Future<bool> isMaximized();
+
+  /// Broadcast stream emitting maximized-state transitions triggered natively
+  /// (Aero Snap, Snap Layouts, double-click, keyboard shortcuts, etc.).
+  Stream<bool> get maximizedChanges;
+
+  /// Displays the native window system menu at a window-local logical offset.
+  Future<void> showSystemMenu(Offset position);
+
+  /// Registers or clears (`null`) the client-area logical bounds of BLINK's
+  /// custom Maximize button so Windows 11 can attach native Snap Layouts.
+  void setMaximizeButtonBounds(Rect? bounds);
 }
 
 /// Platform system-tray operations abstracted for unit testing.
@@ -158,10 +192,17 @@ class DesktopLifecycleController extends ChangeNotifier {
   bool _quiet = false;
   bool _trayAvailable = false;
   bool _windowVisible = false;
+  bool _isWindowMaximized = false;
   bool _isShuttingDown = false;
   bool _exited = false;
+  StreamSubscription<bool>? _maximizedSubscription;
   Timer? _deferredExitTimer;
   Object? _lastShutdownPersistenceError;
+
+  DesktopWindowChromeAdapter? get _chromeAdapter =>
+      windowAdapter is DesktopWindowChromeAdapter
+      ? windowAdapter as DesktopWindowChromeAdapter
+      : null;
 
   DesktopSettings get settings => _settings;
 
@@ -172,7 +213,23 @@ class DesktopLifecycleController extends ChangeNotifier {
   bool get isQuiet => _quiet;
   bool get isTrayAvailable => _trayAvailable;
   bool get isWindowVisible => _windowVisible;
+  bool get isWindowMaximized => _isWindowMaximized;
   bool get isShuttingDown => _isShuttingDown;
+
+  /// Whether immersive borderless desktop window chrome is active for this
+  /// runtime (`true` on real desktop builds; `false` in quiet mode or unit/
+  /// widget tests unless a chrome-enabled adapter is supplied).
+  bool get useImmersiveWindowChrome =>
+      !_quiet && (_chromeAdapter?.supportsCustomWindowChrome ?? false);
+
+  /// Whether native leading traffic-light controls are shown by the OS (macOS).
+  bool get usesLeadingSystemWindowControls =>
+      useImmersiveWindowChrome &&
+      (_chromeAdapter?.usesLeadingSystemWindowControls ?? false);
+
+  /// Whether BLINK renders trailing Windows/Linux caption controls (`─ □ ×`).
+  bool get showTrailingWindowCaptionButtons =>
+      useImmersiveWindowChrome && !usesLeadingSystemWindowControls;
 
   static Future<bool> _alwaysIdle() async => false;
   static void _noopExit(int _) {}
@@ -201,6 +258,15 @@ class DesktopLifecycleController extends ChangeNotifier {
         unawaited(handleCloseButton());
       },
     );
+
+    final chrome = _chromeAdapter;
+    if (chrome != null && chrome.supportsCustomWindowChrome) {
+      await _maximizedSubscription?.cancel();
+      _maximizedSubscription = chrome.maximizedChanges.listen(
+        _setWindowMaximized,
+      );
+      _setWindowMaximized(await chrome.isMaximized());
+    }
 
     _trayAvailable = await trayAdapter.init(
       iconAssetPath: buildInfo.trayIconAssetPath,
@@ -290,7 +356,7 @@ class DesktopLifecycleController extends ChangeNotifier {
     _windowVisible = true;
   }
 
-  /// Handles clicking the native window close button.
+  /// Handles clicking the native or custom window close button.
   Future<void> handleCloseButton() async {
     if (_isShuttingDown) {
       return;
@@ -302,6 +368,64 @@ class DesktopLifecycleController extends ChangeNotifier {
       return;
     }
     await performShutdown(ExitReason.closeButton);
+  }
+
+  /// Routes the custom desktop caption close button through the same policy as
+  /// the OS close button (`hideToTray` vs `exitApp`).
+  Future<void> handleCloseButtonPressed() => handleCloseButton();
+
+  /// Starts dragging the desktop window from an immersive top-strip drag area.
+  Future<void> startWindowDrag() async {
+    if (_quiet || _isShuttingDown || !useImmersiveWindowChrome) {
+      return;
+    }
+    await _chromeAdapter?.startDragging();
+  }
+
+  /// Minimizes the desktop window to the taskbar/dock.
+  Future<void> minimizeWindow() async {
+    if (_quiet || _isShuttingDown) {
+      return;
+    }
+    await windowAdapter.minimizeToTaskbar();
+  }
+
+  /// Toggles between maximized and restored desktop window states.
+  Future<void> toggleMaximizeWindow() async {
+    if (_quiet || _isShuttingDown || !useImmersiveWindowChrome) {
+      return;
+    }
+    final chrome = _chromeAdapter;
+    if (chrome == null) {
+      return;
+    }
+    await chrome.toggleMaximize();
+    _setWindowMaximized(await chrome.isMaximized());
+  }
+
+  /// Opens the native OS window system menu at a window-local logical [position].
+  Future<void> showWindowSystemMenu(Offset position) async {
+    if (_quiet || _isShuttingDown || !useImmersiveWindowChrome) {
+      return;
+    }
+    await _chromeAdapter?.showSystemMenu(position);
+  }
+
+  /// Reports or clears the custom Maximize button's client-area bounds for
+  /// Windows 11 Snap Layouts hit testing.
+  void updateMaximizeButtonBounds(Rect? bounds) {
+    if (_quiet || _isShuttingDown || !useImmersiveWindowChrome) {
+      return;
+    }
+    _chromeAdapter?.setMaximizeButtonBounds(bounds);
+  }
+
+  void _setWindowMaximized(bool maximized) {
+    if (_isWindowMaximized == maximized) {
+      return;
+    }
+    _isWindowMaximized = maximized;
+    notifyListeners();
   }
 
   /// Re-registers the tray icon when Windows broadcasts `TaskbarCreated`.
@@ -447,6 +571,8 @@ class DesktopLifecycleController extends ChangeNotifier {
       await _onBeforeExit();
     }
     if (!_quiet) {
+      await _maximizedSubscription?.cancel();
+      _maximizedSubscription = null;
       await windowAdapter.destroy();
     }
     _exitProcess(0);
@@ -454,6 +580,8 @@ class DesktopLifecycleController extends ChangeNotifier {
 
   @override
   void dispose() {
+    unawaited(_maximizedSubscription?.cancel());
+    _maximizedSubscription = null;
     _deferredExitTimer?.cancel();
     super.dispose();
   }

@@ -190,6 +190,63 @@ void main() {
       expect(literalPhHtml, contains('BLINKPH0ENDPH'));
       expect(literalPhHtml, contains('<blink-tag name="标签">#标签</blink-tag>'));
     });
+
+    test('stripPrivateTokens removes standalone #private while preserving code, URLs, links, and formatting', () {
+      expect(bfm.stripPrivateTokens(''), equals(''));
+      expect(bfm.stripPrivateTokens('普通笔记 #工作'), equals('普通笔记 #工作'));
+      expect(bfm.stripPrivateTokens('#private'), equals(''));
+      expect(bfm.stripPrivateTokens('  #PRIVATE  '), equals(''));
+      expect(bfm.stripPrivateTokens('私密想法 #private'), equals('私密想法'));
+      expect(bfm.stripPrivateTokens('#private 私密想法'), equals('私密想法'));
+      expect(bfm.stripPrivateTokens('私密 #Private 想法 #工作'), equals('私密 想法 #工作'));
+      expect(
+        bfm.stripPrivateTokens('# 标题 #private\n\n- [ ] 待办 #private'),
+        equals('# 标题\n\n- [ ] 待办'),
+      );
+      expect(
+        bfm.stripPrivateTokens('第一段\n\n#private\n\n第二段'),
+        equals('第一段\n\n第二段'),
+      );
+      expect(bfm.stripPrivateTokens('第一段\n\n#private'), equals('第一段'));
+      expect(bfm.stripPrivateTokens('#private\n\n正文内容'), equals('正文内容'));
+      expect(
+        bfm.stripPrivateTokens('行内代码 `#private` 与真实 #private'),
+        equals('行内代码 `#private` 与真实'),
+      );
+      expect(
+        bfm.stripPrivateTokens('网址 https://example.com/#private 和 #private'),
+        equals('网址 https://example.com/#private 和'),
+      );
+      expect(
+        bfm.stripPrivateTokens(
+          '```dart\n// #private inside fence\n```\n正文 #private',
+        ),
+        equals('```dart\n// #private inside fence\n```\n正文'),
+      );
+      expect(
+        bfm.stripPrivateTokens('标签 #private/sub 与 #private'),
+        equals('标签 #private/sub 与'),
+      );
+      expect(
+        bfm.stripPrivateTokens('第一行 #private\r\n第二行'),
+        equals('第一行\r\n第二行'),
+      );
+      expect(bfm.stripPrivateTokens('#private#private'), equals(''));
+      expect(bfm.stripPrivateTokens('#private#private#private'), equals(''));
+      expect(bfm.stripPrivateTokens('前缀 #private#PRIVATE 后缀'), equals('前缀 后缀'));
+
+      for (final sample in const <String>[
+        '#private',
+        '#private#private',
+        '前缀 #private#private 后缀',
+        'A #private B #PRIVATE',
+        '# 标题 #private\n\n#private\n\n正文',
+        '```md\n#private\n```\n外部 #private',
+      ]) {
+        final stripped = bfm.stripPrivateTokens(sample);
+        expect(bfm.parse(stripped).hasPrivateToken, isFalse);
+      }
+    });
   });
 
   group('Unicode code-point offsets (INV-10) & RFC 9562 UUIDv7', () {

@@ -113,7 +113,7 @@ BLINK 保留“写入态轻量整理 + 周期性深度综合 + 伴读即时追�
 
 ### 2.1 密级判定与单向传染规则
 
-1. **全入口双重识别**：手写 BFM 提交、外部追加采集（`blink add` / `blink_capture_entry`）与多端同步落盘前，均独立执行词边界 `#private` 正则扫描与界面“私密锁”状态核验；任一命中即锁定 `privacy_level = "private"`，并发冲突合并时 `private` 恒胜（不可降级）。
+1. **全入口双重识别与防自动降级**：手写 BFM 提交、外部追加采集（`blink add` / `blink_capture_entry`）与多端同步落盘前，均独立执行词边界 `#private` 正则扫描与界面“私密锁”状态核验；任一命中即置为 `privacy_level = "private"`。外置 AI、后台处理与多端同步绝不自动降级私密状态（并发冲突合并时 `private` 恒胜）；仅允许用户在客户端界面主动取消私密（显式传参 `allowPrivacyDowngrade = true`、清除正文独立 `#private` 标签并将检索索引迁回 `fts_normal`，见 [DEC-034](../decisions.md#dec-034)）。
 2. **向下与向内单向传染**：
    - 若某本书籍或网页长文 `raw_sources.privacy_level = "private"`，其名下全部章节、高亮、边注、伴读对话、待办与派生综述自动强制继承 `private`；
    - 若任一派生综述、回响边或原则候选引用了至少一条 `private` 记录，其 `privacy_scope` 自动永久锁存为 `local_with_private`。

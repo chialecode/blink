@@ -790,6 +790,8 @@ class BlinkEditorController extends ChangeNotifier {
   String? _editingEntryId;
   EntryKind _entryKind = EntryKind.blink;
   bool _privacyLocked = false;
+  bool _editingEntryOriginallyPrivate = false;
+  bool _explicitPrivacyDowngrade = false;
   List<String> _attachedBlobSha256s = const <String>[];
   String _compiledPreviewHtml = '';
   late BfmDocument _parsedPreviewDoc = _bfm.parse('');
@@ -814,6 +816,8 @@ class BlinkEditorController extends ChangeNotifier {
 
   EntryKind get entryKind => _entryKind;
   bool get privacyLocked => _privacyLocked;
+  bool get editingEntryOriginallyPrivate => _editingEntryOriginallyPrivate;
+  bool get explicitPrivacyDowngrade => _explicitPrivacyDowngrade;
   List<String> get attachedBlobSha256s => _attachedBlobSha256s;
   String get compiledPreviewHtml => _compiledPreviewHtml;
   BfmDocument get parsedPreviewDoc => _parsedPreviewDoc;
@@ -940,6 +944,33 @@ class BlinkEditorController extends ChangeNotifier {
     await loadInboxDraft(resetIfMissing: true);
   }
 
+  /// Replaces the active editing state directly from a persisted [entry]
+  /// (discarding any stale `entry:<id>` draft instead of flushing stale text
+  /// back into `editor_drafts`).
+  Future<void> syncFromSavedEntry(RawEntry entry) async {
+    _draftTimer?.cancel();
+    _previewTimer?.cancel();
+    _hasUnsavedDraft = false;
+    final vault = vaultProvider();
+    if (vault != null && vault.isOpen) {
+      try {
+        await vault.raw.clearDraft('entry:${entry.id}');
+      } catch (_) {}
+    }
+    if (_isDisposed) {
+      return;
+    }
+    _applyLoadedState(
+      entryId: entry.id,
+      bodyMd: entry.bodyMd,
+      entryKind: entry.entryKind,
+      privacyLocked: entry.isPrivate,
+      imageBlobSha256s: entry.imageBlobSha256s,
+      editingEntryOriginallyPrivate: entry.isPrivate,
+      explicitPrivacyDowngrade: false,
+    );
+  }
+
   /// Switches the editor into editing an existing [entry] (restoring any
   /// unsaved draft for `entry:<id>` if present).
   Future<void> startEditingEntry(RawEntry entry) async {
@@ -952,12 +983,18 @@ class BlinkEditorController extends ChangeNotifier {
     if (_isDisposed) {
       return;
     }
+    final loadedBody = draft?.bodyMd ?? entry.bodyMd;
+    final loadedPrivacyLocked = draft?.privacyLocked ?? entry.isPrivate;
+    final loadedHasPrivate =
+        loadedPrivacyLocked || _bfm.parse(loadedBody).hasPrivateToken;
     _applyLoadedState(
       entryId: entry.id,
-      bodyMd: draft?.bodyMd ?? entry.bodyMd,
+      bodyMd: loadedBody,
       entryKind: draft?.entryKind ?? entry.entryKind,
-      privacyLocked: draft?.privacyLocked ?? entry.isPrivate,
+      privacyLocked: loadedPrivacyLocked,
       imageBlobSha256s: draft?.imageBlobSha256s ?? entry.imageBlobSha256s,
+      editingEntryOriginallyPrivate: entry.isPrivate,
+      explicitPrivacyDowngrade: entry.isPrivate && !loadedHasPrivate,
     );
   }
 
@@ -987,12 +1024,16 @@ class BlinkEditorController extends ChangeNotifier {
     required EntryKind entryKind,
     required bool privacyLocked,
     required List<String> imageBlobSha256s,
+    bool editingEntryOriginallyPrivate = false,
+    bool explicitPrivacyDowngrade = false,
   }) {
     _suppressListener = true;
     try {
       _editingEntryId = entryId;
       _entryKind = entryKind;
       _privacyLocked = privacyLocked;
+      _editingEntryOriginallyPrivate = editingEntryOriginallyPrivate;
+      _explicitPrivacyDowngrade = explicitPrivacyDowngrade;
       _attachedBlobSha256s = List<String>.unmodifiable(imageBlobSha256s);
       textController.value = TextEditingValue(
         text: bodyMd,
@@ -1019,10 +1060,15 @@ class BlinkEditorController extends ChangeNotifier {
   }
 
   void setPrivacyLocked(bool locked) {
-    if (_privacyLocked == locked) {
+    final nextDowngrade = locked
+        ? false
+        : (_editingEntryId != null && _editingEntryOriginallyPrivate);
+    if (_privacyLocked == locked &&
+        _explicitPrivacyDowngrade == nextDowngrade) {
       return;
     }
     _privacyLocked = locked;
+    _explicitPrivacyDowngrade = nextDowngrade;
     _scheduleDraftSave();
     _safeNotify();
   }
@@ -1100,6 +1146,7 @@ class BlinkEditorController extends ChangeNotifier {
     }
     if (candidate.isPrivate) {
       _privacyLocked = true;
+      _explicitPrivacyDowngrade = false;
     }
     dismissAutocomplete();
     return true;
@@ -1107,7 +1154,10 @@ class BlinkEditorController extends ChangeNotifier {
 
   /// Submits the current editor text (creating a new `raw_entries` row or
   /// updating the active entry) and clears its crash-recovery draft slot.
-  Future<RawEntry?> submit() async {
+  ///
+  /// [allowPrivacyDowngrade] defaults to `false` (`INV-03`) and MUST only be
+  /// passed `true` for explicit user-initiated privacy cancellation in the UI.
+  Future<RawEntry?> submit({bool allowPrivacyDowngrade = false}) async {
     if (textController.isComposing) {
       return null;
     }
@@ -1116,7 +1166,7 @@ class BlinkEditorController extends ChangeNotifier {
       return null;
     }
     final body = textController.text.trim();
-    if (body.isEmpty) {
+    if (body.isEmpty && _attachedBlobSha256s.isEmpty) {
       return null;
     }
 
@@ -1142,6 +1192,7 @@ class BlinkEditorController extends ChangeNotifier {
           entryKind: _entryKind,
           privacyLocked: _privacyLocked,
           imageBlobSha256s: _attachedBlobSha256s,
+          allowPrivacyDowngrade: allowPrivacyDowngrade,
         );
       }
       await vault.raw.clearDraft(draftKey);
@@ -1162,6 +1213,8 @@ class BlinkEditorController extends ChangeNotifier {
           entryKind: saved.entryKind,
           privacyLocked: saved.isPrivate,
           imageBlobSha256s: saved.imageBlobSha256s,
+          editingEntryOriginallyPrivate: saved.isPrivate,
+          explicitPrivacyDowngrade: false,
         );
       }
       return saved;

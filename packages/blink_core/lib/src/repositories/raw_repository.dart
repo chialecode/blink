@@ -82,14 +82,15 @@ abstract interface class RawRepository {
     bool allowPrivacyDowngrade = false,
   });
 
-  /// Soft-deletes into 30-day trash (`deleted_at = nowUtc`), removes from FTS,
-  /// and schedules mirror archival.
+  /// Soft-deletes into local trash (`deleted_at = nowUtc`), removes from FTS,
+  /// and schedules mirror archival. Trashed items are retained indefinitely
+  /// until manually restored, permanently deleted, or emptied.
   Future<void> softDeleteEntry(String id);
 
-  /// Restores a soft-deleted entry from 30-day trash.
+  /// Restores a soft-deleted entry from local trash.
   Future<RawEntry> restoreEntry(String id);
 
-  /// Lists soft-deleted entries currently in 30-day trash.
+  /// Lists soft-deleted entries currently in local trash.
   Future<List<RawEntry>> listTrash({int limit = 100, int offset = 0});
 
   /// Permanently purges a single entry and runs `BlobStore.gcUnreferencedBlobs()` (`INV-12`).
@@ -98,7 +99,12 @@ abstract interface class RawRepository {
   /// Convenience alias for [purgeEntryPermanently].
   Future<int> permanentlyDeleteEntry(String id);
 
-  /// Permanently purges all trashed entries older than [retention] and collects orphan blobs.
+  /// Permanently purges all trashed entries (optionally filtered by [kinds])
+  /// and collects any newly unreferenced orphan blobs (`INV-12`).
+  Future<int> emptyTrash({List<EntryKind>? kinds});
+
+  /// Permanently purges trashed entries older than [retention] and collects orphan blobs.
+  /// Never invoked automatically; kept for explicit programmatic cleanup only.
   Future<int> purgeExpiredTrash({
     Duration retention = const Duration(days: 30),
   });
@@ -703,6 +709,61 @@ final class SqliteRawRepository implements RawRepository {
 
   @override
   Future<int> permanentlyDeleteEntry(String id) => purgeEntryPermanently(id);
+
+  @override
+  Future<int> emptyTrash({List<EntryKind>? kinds}) async {
+    final purgedIds = <String>[];
+    final removedTaskIds = <String>[];
+
+    _runWriteTx<void>((db) {
+      final where = <String>['deleted_at IS NOT NULL'];
+      final params = <Object?>[];
+      if (kinds != null && kinds.isNotEmpty) {
+        final placeholders = List<String>.filled(kinds.length, '?').join(', ');
+        where.add('entry_kind IN ($placeholders)');
+        params.addAll(kinds.map((k) => k.wireValue));
+      }
+      final rows = db.select(
+        'SELECT id FROM raw_entries WHERE ${where.join(' AND ')}',
+        params,
+      );
+      for (final row in rows) {
+        purgedIds.add(row['id'] as String);
+      }
+      for (final entryId in purgedIds) {
+        for (final tRow in db.select(
+          'SELECT id FROM raw_tasks WHERE origin_entry_id = ?',
+          <Object?>[entryId],
+        )) {
+          removedTaskIds.add(tRow['id'] as String);
+        }
+        db.execute('DELETE FROM raw_tasks WHERE origin_entry_id = ?', <Object?>[
+          entryId,
+        ]);
+        db.execute(
+          "DELETE FROM ai_bfm_links WHERE src_type = 'entry' AND src_id = ?",
+          <Object?>[entryId],
+        );
+        db.execute(
+          'DELETE FROM ai_entry_enrichments WHERE entry_id = ?',
+          <Object?>[entryId],
+        );
+        db.execute('DELETE FROM raw_entries WHERE id = ?', <Object?>[entryId]);
+      }
+    });
+
+    if (purgedIds.isNotEmpty) {
+      for (final id in purgedIds) {
+        _fts.removeDocumentSync(id);
+      }
+      for (final taskId in removedTaskIds) {
+        _fts.removeDocumentSync(taskId);
+      }
+      await _blobs.gcUnreferencedBlobs();
+      _onMutated(triggerMirror: true);
+    }
+    return purgedIds.length;
+  }
 
   @override
   Future<int> purgeExpiredTrash({

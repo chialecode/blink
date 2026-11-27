@@ -42,6 +42,40 @@ class _NoopWindowAdapter implements DesktopWindowAdapter {
   Future<void> showAndFocus() async {}
 }
 
+class _FakeImmersiveWindowAdapter extends _NoopWindowAdapter
+    implements DesktopWindowChromeAdapter {
+  int startDragCalls = 0;
+  int toggleMaximizeCalls = 0;
+
+  @override
+  bool get supportsCustomWindowChrome => true;
+
+  @override
+  bool get usesLeadingSystemWindowControls => false;
+
+  @override
+  Future<void> startDragging() async {
+    startDragCalls++;
+  }
+
+  @override
+  Future<void> toggleMaximize() async {
+    toggleMaximizeCalls++;
+  }
+
+  @override
+  Future<bool> isMaximized() async => false;
+
+  @override
+  Stream<bool> get maximizedChanges => const Stream<bool>.empty();
+
+  @override
+  Future<void> showSystemMenu(Offset position) async {}
+
+  @override
+  void setMaximizeButtonBounds(Rect? bounds) {}
+}
+
 class _NoopTrayAdapter implements DesktopTrayAdapter {
   @override
   Future<void> destroy() async {}
@@ -117,6 +151,7 @@ void main() {
     createFixture(
       WidgetTester tester, {
       BlinkNavDestination initialDestination = BlinkNavDestination.memos,
+      DesktopWindowAdapter? windowAdapter,
     }) async {
       final paths = BlinkPaths(dataRoot: tempDir);
       final buildInfo = BlinkBuildInfo.normalized(
@@ -129,7 +164,7 @@ void main() {
         buildInfo: buildInfo,
         paths: paths,
         settingsStore: DesktopSettingsStore(file: paths.desktopSettingsFile),
-        windowAdapter: _NoopWindowAdapter(),
+        windowAdapter: windowAdapter ?? _NoopWindowAdapter(),
         trayAdapter: _NoopTrayAdapter(),
       );
       await lifecycle.initializeStartup(
@@ -803,6 +838,170 @@ void main() {
           fixture.workspace.selectedNote?.imageBlobSha256s,
           contains(blob.sha256),
         );
+      },
+    );
+
+    testWidgets(
+      'immersive desktop window chrome (138px trailing inset) renders memos & notes headers with zero overflow at 1280, 960, and 760',
+      (tester) async {
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final chromeAdapter = _FakeImmersiveWindowAdapter();
+        final fixture = await createFixture(
+          tester,
+          windowAdapter: chromeAdapter,
+        );
+        late RawEntry note;
+        await tester.runAsync(() async {
+          final memo = await fixture.workspace.createMemo(bodyMd: '沉浸式标题栏测试小记');
+          if (memo != null) {
+            await fixture.workspace.softDeleteEntry(memo.id);
+          }
+          note = (await fixture.workspace.createNote(
+            bodyMd: '# 沉浸式标题栏测试笔记\n正文内容',
+          ))!;
+        });
+        fixture.workspace.clearBanner();
+
+        for (final size in const <Size>[
+          Size(1280, 800),
+          Size(960, 640),
+          Size(760, 560),
+        ]) {
+          tester.view.physicalSize = size;
+          fixture.workspace.setDestination(BlinkNavDestination.memos);
+          fixture.workspace.selectMemoFilter(MemoFilterKind.all);
+          await tester.pumpWidget(
+            BlinkApp(
+              controller: fixture.lifecycle,
+              workspaceController: fixture.workspace,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull, reason: 'Memos all at $size');
+          expect(
+            find.byKey(const Key('window_caption_buttons')),
+            findsOneWidget,
+          );
+
+          // Memos Trash view with `清空回收站` button + 138px trailing inset.
+          fixture.workspace.selectMemoFilter(MemoFilterKind.trash);
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'Memos trash at $size',
+          );
+          expect(find.textContaining('30 天'), findsNothing);
+          expect(find.text('清理已过期'), findsNothing);
+
+          // Notes Editor toolbar with 138px trailing inset:
+          // verify zero overflow, zero sliced format icons, usable drag space, and reachable overflow actions.
+          fixture.workspace.setDestination(BlinkNavDestination.notes);
+          fixture.workspace.selectNoteFilter(NoteFilterKind.all);
+          fixture.workspace.selectNote(note.id);
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'Notes editor at $size',
+          );
+
+          final privRect = tester.getRect(
+            find.byKey(const Key('note_editor_private_toggle')),
+          );
+          final captionRect = tester.getRect(
+            find.byKey(const Key('window_caption_buttons')),
+          );
+          final moreRect = tester.getRect(
+            find.byKey(const Key('note_editor_more_button')),
+          );
+          expect(
+            moreRect.right,
+            lessThanOrEqualTo(captionRect.left),
+            reason:
+                'Toolbar right edge must stay clear of caption buttons at $size',
+          );
+
+          double lastFormatRight = 0;
+          for (final fmtKey in const <Key>[
+            Key('note_fmt_heading'),
+            Key('note_fmt_bold'),
+            Key('note_fmt_italic'),
+            Key('note_fmt_highlight'),
+            Key('note_fmt_task'),
+            Key('note_fmt_bullet'),
+            Key('note_fmt_quote'),
+            Key('note_fmt_code'),
+            Key('note_fmt_overflow'),
+          ]) {
+            final finder = find.byKey(fmtKey);
+            if (finder.evaluate().isNotEmpty) {
+              final r = tester.getRect(finder);
+              expect(
+                r.right,
+                lessThanOrEqualTo(privRect.left),
+                reason: '$fmtKey clipped into private toggle at $size',
+              );
+              if (r.right > lastFormatRight) {
+                lastFormatRight = r.right;
+              }
+            }
+          }
+          expect(
+            privRect.left - lastFormatRight,
+            greaterThanOrEqualTo(32.0),
+            reason:
+                'Usable blank drag space required in notes toolbar at $size',
+          );
+          if (size.width <= 960) {
+            expect(
+              find.byKey(const Key('note_fmt_overflow')),
+              findsOneWidget,
+              reason:
+                  'Tight desktop toolbar should expose format overflow menu at $size',
+            );
+          }
+
+          // Verify P1 #1 integration on Notes toolbar: rapid double-click on `H`
+          // must NOT trigger window maximize, while blank drag gap DOES trigger drag/maximize!
+          final maxBefore = chromeAdapter.toggleMaximizeCalls;
+          await tester.tap(find.byKey(const Key('note_fmt_heading')));
+          await tester.pump(const Duration(milliseconds: 40));
+          await tester.tap(find.byKey(const Key('note_fmt_heading')));
+          await tester.pumpAndSettle();
+          expect(
+            chromeAdapter.toggleMaximizeCalls,
+            maxBefore,
+            reason:
+                'Rapid double-click on note_fmt_heading must not maximize at $size',
+          );
+
+          final blankMid = Offset(
+            (lastFormatRight + privRect.left) / 2,
+            privRect.center.dy,
+          );
+          final dragBefore = chromeAdapter.startDragCalls;
+          await tester.dragFrom(blankMid, const Offset(24, 0));
+          await tester.pumpAndSettle();
+          expect(
+            chromeAdapter.startDragCalls,
+            greaterThan(dragBefore),
+            reason: 'Blank toolbar drag space must start window drag at $size',
+          );
+
+          // Notes Empty/Trash view with 138px trailing inset.
+          fixture.workspace.selectNoteFilter(NoteFilterKind.trash);
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'Notes trash at $size',
+          );
+          expect(find.textContaining('30 天'), findsNothing);
+          expect(find.text('清理已过期'), findsNothing);
+        }
       },
     );
   });

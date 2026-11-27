@@ -279,8 +279,71 @@ void main() {
       final stillPrivate = await vault.raw.updateEntry(
         id: promoted.id,
         bodyMd: '去掉标签但仍锁存私密',
+        privacyLocked: false,
       );
       expect(stillPrivate.privacyLevel, equals(PrivacyLevel.private));
+      expect(
+        await vault.search.search('去掉标签但仍锁存私密', scope: PrivacyScope.normalOnly),
+        isEmpty,
+      );
+
+      // Defensive boundary: even with allowPrivacyDowngrade=true, an active `#private` token keeps it private.
+      final guardedByToken = await vault.raw.updateEntry(
+        id: promoted.id,
+        bodyMd: '仍含标签 #private\n- [x] 整理文献卡片',
+        privacyLocked: false,
+        allowPrivacyDowngrade: true,
+      );
+      expect(guardedByToken.privacyLevel, equals(PrivacyLevel.private));
+
+      // Explicit user cancellation: strip `#private` + `privacyLocked: false` + `allowPrivacyDowngrade: true`
+      // migrates entry & tasks cleanly from `fts_private` back to `fts_normal` (`DEC-034`).
+      final strippedBody = vault.bfm.stripPrivateTokens(guardedByToken.bodyMd);
+      expect(strippedBody, equals('仍含标签\n- [x] 整理文献卡片'));
+      final downgraded = await vault.raw.updateEntry(
+        id: promoted.id,
+        bodyMd: strippedBody,
+        privacyLocked: false,
+        allowPrivacyDowngrade: true,
+      );
+      expect(downgraded.privacyLevel, equals(PrivacyLevel.normal));
+      expect(downgraded.isPrivate, isFalse);
+
+      final normalHitsAfterDowngrade = await vault.search.search(
+        '仍含标签',
+        scope: PrivacyScope.normalOnly,
+      );
+      expect(
+        normalHitsAfterDowngrade.map((h) => h.docId),
+        contains(promoted.id),
+      );
+      final localHitsAfterDowngrade = await vault.search.search(
+        '仍含标签',
+        scope: PrivacyScope.localWithPrivate,
+      );
+      expect(
+        localHitsAfterDowngrade
+            .where((h) => h.docId == promoted.id)
+            .single
+            .privacyLevel,
+        equals(PrivacyLevel.normal),
+      );
+      final tasksAfterDowngrade = await vault.raw.listTasks();
+      expect(tasksAfterDowngrade, hasLength(1));
+      expect(
+        tasksAfterDowngrade.first.privacyLevel,
+        equals(PrivacyLevel.normal),
+      );
+      final normalTaskHits = await vault.search.search(
+        '整理文献卡片',
+        scope: PrivacyScope.normalOnly,
+        docKinds: const <String>['task'],
+      );
+      expect(
+        normalTaskHits.map((h) => h.docId),
+        contains(tasksAfterDowngrade.first.id),
+      );
+      expect(await vault.externalAi.getEntry(promoted.id), isNotNull);
 
       // Crash-recovery draft survives save/load/clear without entering sync_oplog.
       final statsBeforeDraft = await vault.getStats();
@@ -545,6 +608,75 @@ void main() {
       await vault.raw.restoreEntry(entry.id);
       final restoredTasks = await vault.raw.listTasks();
       expect(restoredTasks.map((t) => t.title), equals(<String>['保留任务A']));
+    });
+
+    test('emptyTrash purges trashed entries by kind or all and collects orphan blobs', () async {
+      final vaultDir = Directory(p.join(tempRoot.path, 'vault-empty-trash'));
+      final vault = await VaultManager.open(
+        VaultConfig(
+          vaultDir: vaultDir,
+          expectedChannel: BlinkChannel.blinkDev,
+          enableMirrorExporter: false,
+        ),
+      );
+      addTearDown(vault.checkpointAndClose);
+
+      final memoBlob = await vault.blobs.putBytes(
+        utf8.encode('memo-blob-bytes'),
+        mimeType: 'text/plain',
+      );
+      final noteBlob = await vault.blobs.putBytes(
+        utf8.encode('note-blob-bytes'),
+        mimeType: 'text/plain',
+      );
+      final activeMemo = await vault.raw.createEntry(
+        bodyMd: '保留的活跃小记',
+        entryKind: EntryKind.blink,
+      );
+      final trashedMemo = await vault.raw.createEntry(
+        bodyMd: '待清空的回收站小记',
+        entryKind: EntryKind.blink,
+        imageBlobSha256s: <String>[memoBlob.sha256],
+      );
+      final trashedNote = await vault.raw.createEntry(
+        bodyMd: '# 待清空的回收站笔记',
+        entryKind: EntryKind.diary,
+        imageBlobSha256s: <String>[noteBlob.sha256],
+      );
+
+      await vault.raw.softDeleteEntry(trashedMemo.id);
+      await vault.raw.softDeleteEntry(trashedNote.id);
+
+      // Emptying only memo kinds purges trashedMemo + its blob, keeping trashedNote & activeMemo intact.
+      final purgedMemos = await vault.raw.emptyTrash(
+        kinds: const <EntryKind>[
+          EntryKind.blink,
+          EntryKind.voiceNote,
+          EntryKind.photoNote,
+        ],
+      );
+      expect(purgedMemos, equals(1));
+      expect(
+        await vault.raw.getEntryById(trashedMemo.id, includeDeleted: true),
+        isNull,
+      );
+      expect(await vault.blobs.readBytes(memoBlob.sha256), isNull);
+      expect(
+        await vault.raw.getEntryById(trashedNote.id, includeDeleted: true),
+        isNotNull,
+      );
+      expect(await vault.blobs.readBytes(noteBlob.sha256), isNotNull);
+      expect(await vault.raw.getEntryById(activeMemo.id), isNotNull);
+
+      // Emptying remaining trash purges trashedNote + its blob while keeping activeMemo untouched.
+      final purgedRest = await vault.raw.emptyTrash();
+      expect(purgedRest, equals(1));
+      expect(
+        await vault.raw.getEntryById(trashedNote.id, includeDeleted: true),
+        isNull,
+      );
+      expect(await vault.blobs.readBytes(noteBlob.sha256), isNull);
+      expect(await vault.raw.getEntryById(activeMemo.id), isNotNull);
     });
   });
 }

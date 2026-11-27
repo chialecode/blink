@@ -10,6 +10,7 @@ import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/paths.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 import 'package:blink_client/ui/files_page.dart';
 import 'package:blink_client/ui/sync_conflict_dialog.dart';
 import 'package:blink_client/ui/sync_settings_section.dart';
@@ -101,29 +102,42 @@ class BlinkSettingsSidebar extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      '设置',
-                      style: BlinkTypography.sectionHeading(tokens),
-                    ),
-                  ),
-                  if (!isDrawer && onCollapse != null)
-                    IconButton(
-                      key: const Key('settings_sidebar_collapse_button'),
-                      tooltip: '收起侧边栏',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onCollapse,
-                      icon: Icon(
-                        Icons.keyboard_double_arrow_left_rounded,
-                        size: 18,
-                        color: tokens.textSecondary,
+            BlinkWindowDragArea(
+              enabled: !isDrawer,
+              child: Container(
+                height: kBlinkWindowChromeHeaderHeight,
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: IgnorePointer(
+                        child: Text(
+                          '设置',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: BlinkTypography.sectionHeading(tokens),
+                        ),
                       ),
                     ),
-                ],
+                    if (!isDrawer && onCollapse != null)
+                      IconButton(
+                        key: const Key('settings_sidebar_collapse_button'),
+                        tooltip: '收起侧边栏',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        onPressed: onCollapse,
+                        icon: Icon(
+                          Icons.keyboard_double_arrow_left_rounded,
+                          size: 18,
+                          color: tokens.textSecondary,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             Divider(height: 1, color: tokens.borderHairline),
@@ -300,11 +314,11 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
         }
 
         final category = widget.workspace.selectedSettingsCategory;
+        final trailingInset = BlinkWindowChromeScope.trailingInsetOf(context);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Container(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
               decoration: BoxDecoration(
                 color: tokens.canvas,
                 border: Border(
@@ -312,82 +326,107 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                 ),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      if (widget.showExpandSidebarButton &&
-                          widget.onExpandSidebar != null) ...<Widget>[
-                        IconButton(
-                          key: const Key('settings_sidebar_expand_button'),
-                          tooltip: '展开侧边栏',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onExpandSidebar,
-                          icon: Icon(
-                            Icons.view_sidebar_outlined,
-                            size: 18,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ] else if (widget.onOpenDrawer != null) ...<Widget>[
-                        IconButton(
-                          tooltip: '设置菜单',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onOpenDrawer,
-                          icon: Icon(
-                            Icons.menu_rounded,
-                            size: 19,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      Expanded(
-                        child: Text(
-                          _categoryTitle(category),
-                          style: BlinkTypography.heroHeading(tokens),
-                        ),
+                  BlinkWindowDragArea(
+                    child: Container(
+                      height: kBlinkWindowChromeHeaderHeight,
+                      padding: EdgeInsets.only(
+                        left: 20,
+                        right: trailingInset > 0 ? 0 : 20,
                       ),
-                    ],
-                  ),
-                  if (widget.showCompactCategorySwitcher) ...<Widget>[
-                    const SizedBox(height: 10),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
                       child: Row(
                         children: <Widget>[
-                          _compactCategoryPill(
-                            tokens,
-                            const Key('settings_compact_cat_general'),
-                            SettingsCategory.general,
-                            '常规与外观',
+                          if (widget.showExpandSidebarButton &&
+                              widget.onExpandSidebar != null) ...<Widget>[
+                            IconButton(
+                              key: const Key('settings_sidebar_expand_button'),
+                              tooltip: '展开侧边栏',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: widget.onExpandSidebar,
+                              icon: Icon(
+                                Icons.view_sidebar_outlined,
+                                size: 18,
+                                color: tokens.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ] else if (widget.onOpenDrawer != null) ...<Widget>[
+                            IconButton(
+                              tooltip: '设置菜单',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: widget.onOpenDrawer,
+                              icon: Icon(
+                                Icons.menu_rounded,
+                                size: 19,
+                                color: tokens.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ],
+                          Expanded(
+                            child: IgnorePointer(
+                              child: Text(
+                                _categoryTitle(category),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: BlinkTypography.heroHeading(tokens),
+                              ),
+                            ),
                           ),
-                          const SizedBox(width: 6),
-                          _compactCategoryPill(
-                            tokens,
-                            const Key('settings_compact_cat_storage'),
-                            SettingsCategory.storage,
-                            '存储与备份',
-                          ),
-                          const SizedBox(width: 6),
-                          _compactCategoryPill(
-                            tokens,
-                            const Key('settings_compact_cat_sync'),
-                            SettingsCategory.sync,
-                            '多端同步',
-                          ),
-                          const SizedBox(width: 6),
-                          _compactCategoryPill(
-                            tokens,
-                            const Key('settings_compact_cat_about'),
-                            SettingsCategory.about,
-                            '关于 BLINK',
-                          ),
+                          if (trailingInset > 0) SizedBox(width: trailingInset),
                         ],
                       ),
                     ),
-                  ],
+                  ),
+                  if (widget.showCompactCategorySwitcher)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: <Widget>[
+                            _compactCategoryPill(
+                              tokens,
+                              const Key('settings_compact_cat_general'),
+                              SettingsCategory.general,
+                              '常规与外观',
+                            ),
+                            const SizedBox(width: 6),
+                            _compactCategoryPill(
+                              tokens,
+                              const Key('settings_compact_cat_storage'),
+                              SettingsCategory.storage,
+                              '存储与备份',
+                            ),
+                            const SizedBox(width: 6),
+                            _compactCategoryPill(
+                              tokens,
+                              const Key('settings_compact_cat_sync'),
+                              SettingsCategory.sync,
+                              '多端同步',
+                            ),
+                            const SizedBox(width: 6),
+                            _compactCategoryPill(
+                              tokens,
+                              const Key('settings_compact_cat_about'),
+                              SettingsCategory.about,
+                              '关于 BLINK',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),

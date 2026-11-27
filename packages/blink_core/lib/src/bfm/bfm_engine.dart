@@ -280,6 +280,178 @@ class BfmEngine {
     );
   }
 
+  /// Removes standalone `#private` tag tokens outside fenced code blocks,
+  /// inline code spans, URLs, wiki links, AI embeds, and context binds while
+  /// preserving all other Markdown syntax and original line endings.
+  String stripPrivateTokens(String bodyMd) {
+    if (bodyMd.isEmpty) {
+      return bodyMd;
+    }
+    final usesCrlf = bodyMd.contains('\r\n');
+    final separator = usesCrlf ? '\r\n' : '\n';
+    final lines = _normalizeLineEndings(bodyMd).split('\n');
+
+    final processed = <({String text, bool droppedPrivateOnly})>[];
+    var changed = false;
+    var inFence = false;
+    var fenceChar = '';
+    var fenceLen = 0;
+
+    for (final line in lines) {
+      final fenceMatch = _fencePattern.firstMatch(line);
+      if (fenceMatch != null) {
+        final marker = fenceMatch.group(1)!;
+        if (!inFence) {
+          inFence = true;
+          fenceChar = marker[0];
+          fenceLen = marker.length;
+        } else if (marker[0] == fenceChar &&
+            marker.length >= fenceLen &&
+            line.trim().length == marker.length) {
+          inFence = false;
+        }
+        processed.add((text: line, droppedPrivateOnly: false));
+        continue;
+      }
+      if (inFence) {
+        processed.add((text: line, droppedPrivateOnly: false));
+        continue;
+      }
+
+      final stripped = _stripPrivateTokensFromLine(line);
+      if (stripped.changed) {
+        changed = true;
+      }
+      processed.add((
+        text: stripped.text,
+        droppedPrivateOnly: stripped.wasPrivateOnlyLine,
+      ));
+    }
+
+    if (!changed) {
+      return bodyMd;
+    }
+
+    final outLines = <String>[];
+    var prevWasDropped = false;
+    for (var i = 0; i < processed.length; i++) {
+      final item = processed[i];
+      if (item.droppedPrivateOnly) {
+        if (outLines.isNotEmpty &&
+            outLines.last.trim().isEmpty &&
+            i + 1 < processed.length &&
+            processed[i + 1].text.trim().isEmpty &&
+            !processed[i + 1].droppedPrivateOnly) {
+          outLines.removeLast();
+        }
+        prevWasDropped = true;
+        continue;
+      }
+      if (prevWasDropped && outLines.isEmpty && item.text.trim().isEmpty) {
+        prevWasDropped = false;
+        continue;
+      }
+      prevWasDropped = false;
+      outLines.add(item.text);
+    }
+
+    if (prevWasDropped) {
+      while (outLines.isNotEmpty && outLines.last.trim().isEmpty) {
+        outLines.removeLast();
+      }
+    }
+
+    return outLines.join(separator);
+  }
+
+  ({String text, bool changed, bool wasPrivateOnlyLine})
+  _stripPrivateTokensFromLine(String line) {
+    final codeMask = _maskInlineCodeSpans(line);
+    final urlMask = _maskUrls(codeMask.masked);
+    final protectedTokens = <String, String>{};
+    var protectedIdx = 0;
+
+    String maskProtected(String raw) {
+      final key = '\uE014PROT${protectedIdx++}\uE015';
+      protectedTokens[key] = raw;
+      return key;
+    }
+
+    var text = urlMask.masked;
+    text = text.replaceAllMapped(
+      _aiEmbedPattern,
+      (m) => maskProtected(m.group(0)!),
+    );
+    text = text.replaceAllMapped(
+      _wikiLinkPattern,
+      (m) => maskProtected(m.group(0)!),
+    );
+    text = text.replaceAllMapped(
+      _bookBindPattern,
+      (m) => maskProtected(m.group(0)!),
+    );
+    text = text.replaceAllMapped(
+      _timestampPattern,
+      (m) => maskProtected(m.group(0)!),
+    );
+
+    final headingMatch = _headingPrefixPattern.firstMatch(text);
+    final headingPrefix = headingMatch?.group(0) ?? '';
+    var body = headingMatch != null
+        ? text.substring(headingPrefix.length)
+        : text;
+
+    var strippedAny = false;
+    while (true) {
+      final matches = _hashTokenPattern
+          .allMatches(body)
+          .where((m) => m.group(1)!.toLowerCase() == 'private')
+          .toList(growable: false);
+      if (matches.isEmpty) {
+        break;
+      }
+      strippedAny = true;
+      for (final m in matches.reversed) {
+        final before = body.substring(0, m.start);
+        final after = body.substring(m.end);
+        final beforeEndsWs =
+            before.isNotEmpty &&
+            (before.endsWith(' ') || before.endsWith('\t'));
+        final afterStartsWs =
+            after.isNotEmpty &&
+            (after.startsWith(' ') || after.startsWith('\t'));
+
+        if (before.trim().isEmpty) {
+          body = '$before${after.replaceFirst(RegExp(r'^[ \t]+'), '')}';
+        } else if (after.trim().isEmpty) {
+          body =
+              '${before.replaceFirst(RegExp(r'[ \t]+$'), '')}${after.replaceFirst(RegExp(r'^[ \t]+'), '')}';
+        } else if (beforeEndsWs && afterStartsWs) {
+          body =
+              '${before.replaceFirst(RegExp(r'[ \t]+$'), '')} ${after.replaceFirst(RegExp(r'^[ \t]+'), '')}';
+        } else {
+          body = '$before$after';
+        }
+      }
+    }
+    if (!strippedAny) {
+      return (text: line, changed: false, wasPrivateOnlyLine: false);
+    }
+
+    var restored = '$headingPrefix$body';
+    for (final entry in protectedTokens.entries) {
+      restored = restored.replaceAll(entry.key, entry.value);
+    }
+    restored = urlMask.restore(restored);
+    restored = codeMask.restore(restored);
+
+    final wasPrivateOnly = headingPrefix.isEmpty && restored.trim().isEmpty;
+    if (wasPrivateOnly) {
+      return (text: '', changed: true, wasPrivateOnlyLine: true);
+    }
+    return (text: restored, changed: true, wasPrivateOnlyLine: false);
+  }
+
   /// Extracts FTS5 plain text: strips UUIDs, `#private`, `@t[...]`, `![[ai:...]]`
   /// (`INV-01` / `INV-09`), and Markdown/BFM syntax markers.
   String toPlainText(String bodyMd) {

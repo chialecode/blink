@@ -9,6 +9,7 @@ import 'package:blink_client/application/editor_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/application/wysiwyg_document.dart';
 import 'package:blink_client/ui/bfm_preview_view.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 /// Typora-style dual-mode Markdown editor (`所见即所得` / `源代码`) for BLINK
 /// long-form notes (`EntryKind.diary`).
@@ -50,6 +51,7 @@ class BlinkMarkdownEditor extends StatefulWidget {
 }
 
 class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
+  static const BfmEngine _bfm = BfmEngine();
   static const Duration _autoSaveDelay = Duration(milliseconds: 600);
   static const Duration _draftSaveDelay = Duration(milliseconds: 400);
   static const List<String> _codeLanguages = <String>[
@@ -89,6 +91,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
   String? _loadedEntryId;
   String _lastPersistedBodyMd = '';
   bool _privacyLocked = false;
+  bool _pendingPrivacyDowngrade = false;
   List<String> _attachedBlobSha256s = const <String>[];
 
   late NoteEditorMode _syncedMode = widget.workspace.noteEditorMode;
@@ -113,6 +116,10 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
       widget.workspace.noteEditorMode == NoteEditorMode.wysiwyg;
 
   bool get _isTrashed => widget.entry?.isDeleted ?? false;
+
+  bool get _isCurrentlyPrivate =>
+      _privacyLocked ||
+      _bfm.parse(_currentSerializedMarkdown()).hasPrivateToken;
 
   bool get _showAutocomplete =>
       _activeTrigger != null && _candidates.isNotEmpty && !_isTrashed;
@@ -178,9 +185,11 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
       final prevId = _loadedEntryId;
       final prevBody = _currentSerializedMarkdown();
       final prevPrivate = _privacyLocked;
+      final prevAllowDowngrade = _pendingPrivacyDowngrade;
       final prevBlobs = List<String>.of(_attachedBlobSha256s);
       final prevDirty = _isDirty;
       _isDirty = false;
+      _pendingPrivacyDowngrade = false;
       _cancelTimers();
       if (prevId != null && prevDirty) {
         unawaited(
@@ -190,6 +199,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
             isPrivate: prevPrivate,
             imageBlobSha256s: prevBlobs,
             workspace: oldWidget.workspace,
+            allowPrivacyDowngrade: prevAllowDowngrade,
           ),
         );
       }
@@ -209,11 +219,13 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
     final pendingId = _loadedEntryId;
     final pendingBody = _currentSerializedMarkdown();
     final pendingPrivate = _privacyLocked;
+    final pendingAllowDowngrade = _pendingPrivacyDowngrade;
     final pendingBlobs = List<String>.of(_attachedBlobSha256s);
     final pendingDirty = _isDirty;
     final pendingTrashed = _isTrashed;
 
     _isDirty = false;
+    _pendingPrivacyDowngrade = false;
     _cancelTimers();
     widget.workspace.removeListener(_onWorkspaceChanged);
     widget.workspace.removeDraftFlushHook(_flushForShutdown);
@@ -225,6 +237,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
           isPrivate: pendingPrivate,
           imageBlobSha256s: pendingBlobs,
           workspace: widget.workspace,
+          allowPrivacyDowngrade: pendingAllowDowngrade,
         ),
       );
     }
@@ -275,6 +288,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
     _loadedEntryId = entry?.id;
     _lastPersistedBodyMd = entry?.bodyMd ?? '';
     _privacyLocked = entry?.isPrivate ?? false;
+    _pendingPrivacyDowngrade = false;
     _attachedBlobSha256s = List<String>.unmodifiable(
       entry?.imageBlobSha256s ?? const <String>[],
     );
@@ -571,28 +585,37 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
       return;
     }
     final body = _currentSerializedMarkdown();
+    final allowDowngrade = _pendingPrivacyDowngrade;
     _isDirty = false;
+    _pendingPrivacyDowngrade = false;
     await _persistNoteSnapshot(
       entryId: entryId,
       bodyMd: body,
       isPrivate: _privacyLocked,
       imageBlobSha256s: List<String>.of(_attachedBlobSha256s),
       workspace: widget.workspace,
+      allowPrivacyDowngrade: allowDowngrade,
     );
   }
 
-  Future<void> _saveNoteNow({bool showFeedback = false}) async {
+  Future<RawEntry?> _saveNoteNow({
+    bool showFeedback = false,
+    bool allowPrivacyDowngrade = false,
+  }) async {
     if (_isAnyControllerComposing || _isTrashed) {
-      return;
+      return null;
     }
     final entryId = _loadedEntryId;
     if (entryId == null) {
-      return;
+      return null;
     }
     _cancelTimers();
     final body = _currentSerializedMarkdown();
+    final effectiveAllowDowngrade =
+        allowPrivacyDowngrade || _pendingPrivacyDowngrade;
     final needsUpdate =
         _isDirty ||
+        effectiveAllowDowngrade ||
         body != _lastPersistedBodyMd ||
         (widget.entry != null && widget.entry!.isPrivate != _privacyLocked) ||
         (widget.entry != null &&
@@ -601,7 +624,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
       if (showFeedback) {
         widget.workspace.showBanner('笔记已是最新状态。');
       }
-      return;
+      return widget.entry;
     }
 
     if (mounted) {
@@ -614,10 +637,12 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
         isPrivate: _privacyLocked,
         imageBlobSha256s: List<String>.of(_attachedBlobSha256s),
         workspace: widget.workspace,
+        allowPrivacyDowngrade: effectiveAllowDowngrade,
       );
       if (updated != null && mounted && _loadedEntryId == entryId) {
         _lastPersistedBodyMd = updated.bodyMd;
         _privacyLocked = updated.isPrivate;
+        _pendingPrivacyDowngrade = false;
         _attachedBlobSha256s = List<String>.unmodifiable(
           updated.imageBlobSha256s,
         );
@@ -628,6 +653,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
           widget.workspace.showBanner('笔记已保存。');
         }
       }
+      return updated;
     } finally {
       if (mounted) {
         setState(() => _isSaving = false);
@@ -641,6 +667,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
     required bool isPrivate,
     required List<String> imageBlobSha256s,
     required BlinkWorkspaceController workspace,
+    bool allowPrivacyDowngrade = false,
   }) async {
     final vault = workspace.vault;
     if (vault == null || !vault.isOpen) {
@@ -651,6 +678,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
       bodyMd: bodyMd,
       isPrivate: isPrivate,
       imageBlobSha256s: imageBlobSha256s,
+      allowPrivacyDowngrade: allowPrivacyDowngrade,
     );
     if (updated != null) {
       try {
@@ -1596,19 +1624,78 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
     await _saveNoteNow();
   }
 
+  void _replaceBodyPreservingMode(String nextMd) {
+    final oldControllers = _blockControllers.values.toList(growable: false);
+    final oldFocusNodes = _blockFocusNodes.values.toList(growable: false);
+    _blockControllers.clear();
+    _blockFocusNodes.clear();
+    for (final node in oldFocusNodes) {
+      node.onKeyEvent = null;
+    }
+    if (oldControllers.isNotEmpty || oldFocusNodes.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        for (final node in oldFocusNodes) {
+          node.dispose();
+        }
+        for (final ctrl in oldControllers) {
+          ctrl.dispose();
+        }
+      });
+    }
+
+    _suppressListeners = true;
+    try {
+      final sourceOffset = _sourceController.selection.isValid
+          ? _sourceController.selection.baseOffset.clamp(0, nextMd.length)
+          : nextMd.length;
+      _sourceController.value = TextEditingValue(
+        text: nextMd,
+        selection: TextSelection.collapsed(offset: sourceOffset),
+        composing: TextRange.empty,
+      );
+      final prevActiveIndex = _activeBlockIndex;
+      _blocks = WysiwygDocument.parse(nextMd);
+      if (prevActiveIndex >= 0 && prevActiveIndex < _blocks.length) {
+        _activeBlockIndex = prevActiveIndex;
+      } else {
+        _activeBlockIndex = -1;
+      }
+    } finally {
+      _suppressListeners = false;
+    }
+  }
+
   Future<void> _togglePrivacy() async {
-    if (_isTrashed || _loadedEntryId == null) {
+    if (_isTrashed || _loadedEntryId == null || _isAnyControllerComposing) {
       return;
     }
-    if (widget.entry?.isPrivate == true) {
-      widget.workspace.showBanner('此笔记已设为私密，仅存本机且不上传云端。');
-      return;
+    final currentlyPrivate = _isCurrentlyPrivate;
+    if (currentlyPrivate) {
+      final currentMd = _currentSerializedMarkdown();
+      final cleanedMd = _bfm.stripPrivateTokens(currentMd);
+      if (cleanedMd != currentMd) {
+        _replaceBodyPreservingMode(cleanedMd);
+      }
+      setState(() {
+        _privacyLocked = false;
+        _pendingPrivacyDowngrade = true;
+        _isDirty = true;
+      });
+      final saved = await _saveNoteNow(allowPrivacyDowngrade: true);
+      if (saved != null && mounted) {
+        widget.workspace.showBanner('已取消私密，恢复为常规笔记。');
+      }
+    } else {
+      setState(() {
+        _privacyLocked = true;
+        _pendingPrivacyDowngrade = false;
+        _isDirty = true;
+      });
+      final saved = await _saveNoteNow();
+      if (saved != null && mounted) {
+        widget.workspace.showBanner('已设为私密，仅存本机。');
+      }
     }
-    setState(() {
-      _privacyLocked = !_privacyLocked;
-      _isDirty = true;
-    });
-    await _saveNoteNow();
   }
 
   Future<void> _copyMarkdown() async {
@@ -1742,8 +1829,9 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
           borderRadius: BorderRadius.circular(6),
           onTap: _isTrashed ? null : onPressed,
           child: Container(
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            height: 28,
+            constraints: const BoxConstraints(minWidth: 28),
+            padding: const EdgeInsets.symmetric(horizontal: 6),
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: active ? tokens.accentSubtle : Colors.transparent,
@@ -1762,278 +1850,443 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
         ? _blocks[_activeBlockIndex].type
         : null;
 
+    final isPrivate = _isCurrentlyPrivate;
+    final trailingInset = BlinkWindowChromeScope.trailingInsetOf(context);
+
+    final formatItems =
+        <
+          ({
+            Key buttonKey,
+            String id,
+            String label,
+            String tooltip,
+            bool active,
+            VoidCallback onPressed,
+            Widget child,
+          })
+        >[
+          (
+            buttonKey: const Key('note_fmt_heading'),
+            id: 'heading',
+            label: '标题 (H1–H3)',
+            tooltip: '标题 (H1–H3)',
+            active: activeType == WysiwygBlockType.heading,
+            onPressed: _cycleHeadingFormat,
+            child: Text(
+              'H',
+              style: BlinkTypography.controlLabel(tokens).copyWith(
+                fontWeight: FontWeight.w600,
+                color: activeType == WysiwygBlockType.heading
+                    ? tokens.accentPrimary
+                    : tokens.textSecondary,
+              ),
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_bold'),
+            id: 'bold',
+            label: '加粗',
+            tooltip: '加粗',
+            active: false,
+            onPressed: () => _applyInlineWrap('**', '**', '加粗文本'),
+            child: Text(
+              'B',
+              style: BlinkTypography.controlLabel(tokens).copyWith(
+                fontWeight: FontWeight.w600,
+                color: tokens.textSecondary,
+              ),
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_italic'),
+            id: 'italic',
+            label: '斜体',
+            tooltip: '斜体',
+            active: false,
+            onPressed: () => _applyInlineWrap('*', '*', '斜体文本'),
+            child: Text(
+              'I',
+              style: BlinkTypography.controlLabel(tokens).copyWith(
+                fontStyle: FontStyle.italic,
+                color: tokens.textSecondary,
+              ),
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_highlight'),
+            id: 'highlight',
+            label: '高亮',
+            tooltip: '高亮',
+            active: false,
+            onPressed: () => _applyInlineWrap('==', '==', '高亮内容'),
+            child: Text(
+              '==',
+              style: BlinkTypography.metaLabel(
+                tokens,
+                color: tokens.textSecondary,
+              ),
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_task'),
+            id: 'task',
+            label: '待办清单',
+            tooltip: '待办清单',
+            active: activeType == WysiwygBlockType.taskItem,
+            onPressed: () =>
+                _toggleBlockFormat(WysiwygBlockType.taskItem, '- [ ] '),
+            child: Icon(
+              Icons.check_box_outlined,
+              size: 16,
+              color: activeType == WysiwygBlockType.taskItem
+                  ? tokens.accentPrimary
+                  : tokens.textSecondary,
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_bullet'),
+            id: 'bullet',
+            label: '无序列表',
+            tooltip: '无序列表',
+            active: activeType == WysiwygBlockType.bulletList,
+            onPressed: () =>
+                _toggleBlockFormat(WysiwygBlockType.bulletList, '- '),
+            child: Icon(
+              Icons.format_list_bulleted_rounded,
+              size: 16,
+              color: activeType == WysiwygBlockType.bulletList
+                  ? tokens.accentPrimary
+                  : tokens.textSecondary,
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_quote'),
+            id: 'quote',
+            label: '引用',
+            tooltip: '引用',
+            active: activeType == WysiwygBlockType.blockquote,
+            onPressed: () =>
+                _toggleBlockFormat(WysiwygBlockType.blockquote, '> '),
+            child: Icon(
+              Icons.format_quote_rounded,
+              size: 16,
+              color: activeType == WysiwygBlockType.blockquote
+                  ? tokens.accentPrimary
+                  : tokens.textSecondary,
+            ),
+          ),
+          (
+            buttonKey: const Key('note_fmt_code'),
+            id: 'code',
+            label: '代码块',
+            tooltip: '代码块',
+            active: activeType == WysiwygBlockType.codeBlock,
+            onPressed: () =>
+                _toggleBlockFormat(WysiwygBlockType.codeBlock, '```\n\n```'),
+            child: Icon(
+              Icons.code_rounded,
+              size: 16,
+              color: activeType == WysiwygBlockType.codeBlock
+                  ? tokens.accentPrimary
+                  : tokens.textSecondary,
+            ),
+          ),
+        ];
+
     return Container(
       key: const Key('note_editor_toolbar'),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      height: kBlinkWindowChromeHeaderHeight,
       decoration: BoxDecoration(
         color: tokens.canvas,
         border: Border(
           bottom: BorderSide(color: tokens.borderHairline, width: 1),
         ),
       ),
-      child: Row(
-        children: <Widget>[
-          if (widget.showExpandSidebarButton &&
-              widget.onExpandSidebar != null) ...<Widget>[
-            IconButton(
-              key: const Key('notes_sidebar_expand_button'),
-              tooltip: '展开侧边栏 (Ctrl+\\)',
-              visualDensity: VisualDensity.compact,
-              onPressed: widget.onExpandSidebar,
-              icon: Icon(
-                Icons.menu_open_rounded,
-                size: 18,
-                color: tokens.textSecondary,
-              ),
-            ),
-            const SizedBox(width: 4),
-          ],
-          if (!_isTrashed)
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _isSaving
-                        ? tokens.accentPrimary
-                        : _isDirty
-                        ? tokens.statusWarn
-                        : tokens.statusOk,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  saveLabel,
-                  key: const Key('note_save_status'),
-                  style: BlinkTypography.metaLabel(
-                    tokens,
-                    color: tokens.textMuted,
-                  ),
-                ),
-              ],
-            ),
-          const SizedBox(width: 12),
-          if (!_isTrashed)
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_heading'),
-                      tooltip: '标题 (H1–H3)',
-                      active: activeType == WysiwygBlockType.heading,
-                      onPressed: _cycleHeadingFormat,
-                      child: Text(
-                        'H',
-                        style: BlinkTypography.controlLabel(tokens).copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: activeType == WysiwygBlockType.heading
-                              ? tokens.accentPrimary
-                              : tokens.textSecondary,
-                        ),
+      child: BlinkWindowDragArea(
+        enabled: !widget.isMobile,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(14, 0, trailingInset > 0 ? 4 : 14, 0),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final availableWidth = (constraints.maxWidth - trailingInset)
+                  .clamp(0.0, double.infinity);
+              final compactModeToggle = availableWidth < 660;
+              final compactPrivateToggle = availableWidth < 580;
+
+              final expandWidth =
+                  (widget.showExpandSidebarButton &&
+                      widget.onExpandSidebar != null)
+                  ? 36.0
+                  : 0.0;
+              final statusWidth = _isTrashed ? 0.0 : 76.0;
+              final privateWidth = compactPrivateToggle ? 32.0 : 64.0;
+              final modeToggleWidth = compactModeToggle ? 116.0 : 170.0;
+              final rightControlsWidth = _isTrashed
+                  ? 0.0
+                  : (8.0 +
+                        privateWidth +
+                        6.0 +
+                        32.0 +
+                        4.0 +
+                        modeToggleWidth +
+                        4.0 +
+                        32.0);
+              const double minDragSpace = 60.0;
+              const double btnWidth = 34.0;
+              const double overflowBtnWidth = 34.0;
+
+              final formatBudget =
+                  availableWidth -
+                  expandWidth -
+                  statusWidth -
+                  rightControlsWidth -
+                  minDragSpace;
+              final int visibleFormatCount;
+              if (formatBudget >= formatItems.length * btnWidth) {
+                visibleFormatCount = formatItems.length;
+              } else {
+                visibleFormatCount =
+                    ((formatBudget - overflowBtnWidth) / btnWidth)
+                        .floor()
+                        .clamp(0, formatItems.length - 1);
+              }
+              final visibleFormats = formatItems.sublist(0, visibleFormatCount);
+              final overflowFormats = formatItems.sublist(visibleFormatCount);
+
+              return Row(
+                children: <Widget>[
+                  if (widget.showExpandSidebarButton &&
+                      widget.onExpandSidebar != null) ...<Widget>[
+                    IconButton(
+                      key: const Key('notes_sidebar_expand_button'),
+                      tooltip: '展开侧边栏 (Ctrl+\\)',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      onPressed: widget.onExpandSidebar,
+                      icon: Icon(
+                        Icons.menu_open_rounded,
+                        size: 18,
+                        color: tokens.textSecondary,
                       ),
                     ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_bold'),
-                      tooltip: '加粗',
-                      onPressed: () => _applyInlineWrap('**', '**', '加粗文本'),
-                      child: Text(
-                        'B',
-                        style: BlinkTypography.controlLabel(tokens).copyWith(
-                          fontWeight: FontWeight.w600,
+                    const SizedBox(width: 4),
+                  ],
+                  if (!_isTrashed)
+                    IgnorePointer(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _isSaving
+                                  ? tokens.accentPrimary
+                                  : _isDirty
+                                  ? tokens.statusWarn
+                                  : tokens.statusOk,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            saveLabel,
+                            key: const Key('note_save_status'),
+                            style: BlinkTypography.metaLabel(
+                              tokens,
+                              color: tokens.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (!_isTrashed) ...<Widget>[
+                    const SizedBox(width: 12),
+                    for (final item in visibleFormats)
+                      formatBtn(
+                        buttonKey: item.buttonKey,
+                        tooltip: item.tooltip,
+                        active: item.active,
+                        onPressed: item.onPressed,
+                        child: item.child,
+                      ),
+                    if (overflowFormats.isNotEmpty)
+                      PopupMenuButton<String>(
+                        key: const Key('note_fmt_overflow'),
+                        tooltip: '更多格式',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 28,
+                          minHeight: 28,
+                        ),
+                        color: tokens.canvas,
+                        surfaceTintColor: Colors.transparent,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          side: BorderSide(
+                            color: tokens.borderHairline,
+                            width: 1,
+                          ),
+                        ),
+                        icon: Icon(
+                          Icons.text_format_rounded,
+                          size: 17,
                           color: tokens.textSecondary,
                         ),
+                        onSelected: (selectedId) {
+                          for (final item in overflowFormats) {
+                            if (item.id == selectedId) {
+                              item.onPressed();
+                              break;
+                            }
+                          }
+                        },
+                        itemBuilder: (_) => <PopupMenuEntry<String>>[
+                          for (final item in overflowFormats)
+                            PopupMenuItem<String>(
+                              key: Key('note_fmt_overflow_${item.id}'),
+                              value: item.id,
+                              child: Row(
+                                children: <Widget>[
+                                  SizedBox(
+                                    width: 22,
+                                    child: Center(child: item.child),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(item.label),
+                                ],
+                              ),
+                            ),
+                        ],
                       ),
-                    ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_italic'),
-                      tooltip: '斜体',
-                      onPressed: () => _applyInlineWrap('*', '*', '斜体文本'),
-                      child: Text(
-                        'I',
-                        style: BlinkTypography.controlLabel(tokens).copyWith(
-                          fontStyle: FontStyle.italic,
-                          color: tokens.textSecondary,
+                  ],
+                  const Spacer(),
+                  if (!_isTrashed) ...<Widget>[
+                    const SizedBox(width: 8),
+                    Tooltip(
+                      message: isPrivate ? '点击取消私密（当前仅存本机）' : '设为私密',
+                      child: InkWell(
+                        key: const Key('note_editor_private_toggle'),
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => unawaited(_togglePrivacy()),
+                        child: Container(
+                          constraints: compactPrivateToggle
+                              ? const BoxConstraints(
+                                  minWidth: 28,
+                                  minHeight: 28,
+                                )
+                              : null,
+                          padding: compactPrivateToggle
+                              ? const EdgeInsets.all(5)
+                              : const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                          decoration: BoxDecoration(
+                            color: isPrivate
+                                ? tokens.privacySubtle
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: isPrivate
+                                  ? tokens.privacyPrivate
+                                  : tokens.borderHairline,
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: <Widget>[
+                              Icon(
+                                isPrivate
+                                    ? Icons.lock_rounded
+                                    : Icons.lock_open_rounded,
+                                size: 14,
+                                color: isPrivate
+                                    ? tokens.privacyPrivate
+                                    : tokens.textSecondary,
+                              ),
+                              if (!compactPrivateToggle) ...<Widget>[
+                                const SizedBox(width: 4),
+                                Text(
+                                  '私密',
+                                  style: BlinkTypography.metaLabel(
+                                    tokens,
+                                    color: isPrivate
+                                        ? tokens.privacyPrivate
+                                        : tokens.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_highlight'),
-                      tooltip: '高亮',
-                      onPressed: () => _applyInlineWrap('==', '==', '高亮内容'),
-                      child: Text(
-                        '==',
-                        style: BlinkTypography.metaLabel(
-                          tokens,
-                          color: tokens.textSecondary,
+                    const SizedBox(width: 6),
+                    IconButton(
+                      key: const Key('note_editor_attach_button'),
+                      tooltip: '添加附件',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      onPressed: widget.workspace.hasOpenVault
+                          ? () => unawaited(_attachFile())
+                          : null,
+                      icon: Icon(
+                        Icons.attach_file_rounded,
+                        size: 18,
+                        color: tokens.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    _buildModeTogglePill(tokens, compact: compactModeToggle),
+                    const SizedBox(width: 4),
+                    PopupMenuButton<String>(
+                      key: const Key('note_editor_more_button'),
+                      tooltip: '更多操作',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      icon: Icon(
+                        Icons.more_horiz_rounded,
+                        size: 18,
+                        color: tokens.textSecondary,
+                      ),
+                      onSelected: (action) {
+                        if (action == 'copy') {
+                          unawaited(_copyMarkdown());
+                        } else if (action == 'delete') {
+                          unawaited(_softDeleteActiveNote());
+                        }
+                      },
+                      itemBuilder: (context) => const <PopupMenuEntry<String>>[
+                        PopupMenuItem<String>(
+                          value: 'copy',
+                          child: Text('复制 Markdown'),
                         ),
-                      ),
-                    ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_task'),
-                      tooltip: '待办清单',
-                      active: activeType == WysiwygBlockType.taskItem,
-                      onPressed: () => _toggleBlockFormat(
-                        WysiwygBlockType.taskItem,
-                        '- [ ] ',
-                      ),
-                      child: Icon(
-                        Icons.check_box_outlined,
-                        size: 16,
-                        color: activeType == WysiwygBlockType.taskItem
-                            ? tokens.accentPrimary
-                            : tokens.textSecondary,
-                      ),
-                    ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_bullet'),
-                      tooltip: '无序列表',
-                      active: activeType == WysiwygBlockType.bulletList,
-                      onPressed: () =>
-                          _toggleBlockFormat(WysiwygBlockType.bulletList, '- '),
-                      child: Icon(
-                        Icons.format_list_bulleted_rounded,
-                        size: 16,
-                        color: activeType == WysiwygBlockType.bulletList
-                            ? tokens.accentPrimary
-                            : tokens.textSecondary,
-                      ),
-                    ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_quote'),
-                      tooltip: '引用',
-                      active: activeType == WysiwygBlockType.blockquote,
-                      onPressed: () =>
-                          _toggleBlockFormat(WysiwygBlockType.blockquote, '> '),
-                      child: Icon(
-                        Icons.format_quote_rounded,
-                        size: 16,
-                        color: activeType == WysiwygBlockType.blockquote
-                            ? tokens.accentPrimary
-                            : tokens.textSecondary,
-                      ),
-                    ),
-                    formatBtn(
-                      buttonKey: const Key('note_fmt_code'),
-                      tooltip: '代码块',
-                      active: activeType == WysiwygBlockType.codeBlock,
-                      onPressed: () => _toggleBlockFormat(
-                        WysiwygBlockType.codeBlock,
-                        '```\n\n```',
-                      ),
-                      child: Icon(
-                        Icons.code_rounded,
-                        size: 16,
-                        color: activeType == WysiwygBlockType.codeBlock
-                            ? tokens.accentPrimary
-                            : tokens.textSecondary,
-                      ),
+                        PopupMenuItem<String>(
+                          value: 'delete',
+                          child: Text('移入回收站'),
+                        ),
+                      ],
                     ),
                   ],
-                ),
-              ),
-            )
-          else
-            const Spacer(),
-          const SizedBox(width: 8),
-          if (!_isTrashed) ...<Widget>[
-            Tooltip(
-              message: _privacyLocked ? '私密笔记（仅存本机）' : '设为私密',
-              child: InkWell(
-                key: const Key('note_editor_private_toggle'),
-                borderRadius: BorderRadius.circular(999),
-                onTap: () => unawaited(_togglePrivacy()),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _privacyLocked
-                        ? tokens.privacySubtle
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: _privacyLocked
-                          ? tokens.privacyPrivate
-                          : tokens.borderHairline,
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      Icon(
-                        _privacyLocked
-                            ? Icons.lock_rounded
-                            : Icons.lock_open_rounded,
-                        size: 14,
-                        color: _privacyLocked
-                            ? tokens.privacyPrivate
-                            : tokens.textSecondary,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '私密',
-                        style: BlinkTypography.metaLabel(
-                          tokens,
-                          color: _privacyLocked
-                              ? tokens.privacyPrivate
-                              : tokens.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            IconButton(
-              key: const Key('note_editor_attach_button'),
-              tooltip: '添加附件',
-              visualDensity: VisualDensity.compact,
-              onPressed: widget.workspace.hasOpenVault
-                  ? () => unawaited(_attachFile())
-                  : null,
-              icon: Icon(
-                Icons.attach_file_rounded,
-                size: 18,
-                color: tokens.textSecondary,
-              ),
-            ),
-            const SizedBox(width: 4),
-            _buildModeTogglePill(tokens, compact: false),
-            const SizedBox(width: 4),
-            PopupMenuButton<String>(
-              key: const Key('note_editor_more_button'),
-              tooltip: '更多操作',
-              icon: Icon(
-                Icons.more_horiz_rounded,
-                size: 18,
-                color: tokens.textSecondary,
-              ),
-              onSelected: (action) {
-                if (action == 'copy') {
-                  unawaited(_copyMarkdown());
-                } else if (action == 'delete') {
-                  unawaited(_softDeleteActiveNote());
-                }
-              },
-              itemBuilder: (context) => const <PopupMenuEntry<String>>[
-                PopupMenuItem<String>(
-                  value: 'copy',
-                  child: Text('复制 Markdown'),
-                ),
-                PopupMenuItem<String>(value: 'delete', child: Text('移入回收站')),
-              ],
-            ),
-          ],
-        ],
+                  if (trailingInset > 0) SizedBox(width: trailingInset),
+                ],
+              );
+            },
+          ),
+        ),
       ),
     );
   }
@@ -2213,6 +2466,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
     BuildContext context,
     BlinkColorTokens tokens,
   ) async {
+    final isPrivate = _isCurrentlyPrivate;
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: tokens.canvas,
@@ -2224,12 +2478,19 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
               ListTile(
                 key: const Key('note_editor_private_toggle'),
                 leading: Icon(
-                  _privacyLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
-                  color: _privacyLocked
+                  isPrivate ? Icons.lock_rounded : Icons.lock_open_rounded,
+                  color: isPrivate
                       ? tokens.privacyPrivate
                       : tokens.textSecondary,
                 ),
-                title: Text(_privacyLocked ? '已设为私密（仅存本机）' : '设为私密笔记'),
+                title: Text(isPrivate ? '取消私密' : '设为私密笔记'),
+                subtitle: Text(
+                  isPrivate ? '当前仅存本机，点击恢复常规笔记' : '仅存本机，不上传云端',
+                  style: BlinkTypography.metaLabel(
+                    tokens,
+                    color: tokens.textMuted,
+                  ),
+                ),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   unawaited(_togglePrivacy());
@@ -2406,7 +2667,7 @@ class _BlinkMarkdownEditorState extends State<BlinkMarkdownEditor> {
               ),
               const SizedBox(width: 6),
               Text(
-                '此笔记在回收站中（保留 30 天）',
+                '此笔记在回收站中，不清理将一直保留',
                 style: BlinkTypography.metaLabel(
                   tokens,
                   color: tokens.statusWarn,

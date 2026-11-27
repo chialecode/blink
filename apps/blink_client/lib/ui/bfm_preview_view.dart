@@ -24,6 +24,7 @@ class BfmPreviewView extends StatelessWidget {
     this.onToggleTaskLine,
     this.onTapTag,
     this.compact = false,
+    this.emptyPlaceholder,
     super.key,
   });
 
@@ -33,14 +34,19 @@ class BfmPreviewView extends StatelessWidget {
   final BfmTaskLineToggleCallback? onToggleTaskLine;
   final ValueChanged<String>? onTapTag;
   final bool compact;
+  final String? emptyPlaceholder;
 
   @override
   Widget build(BuildContext context) {
     final tokens = BlinkColorTokens.of(context);
     final normalized = bodyMd.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     if (normalized.trim().isEmpty) {
+      final placeholder = emptyPlaceholder ?? '（暂无正文）';
+      if (placeholder.isEmpty) {
+        return const SizedBox.shrink();
+      }
       return Text(
-        '开始输入内容，支持 Markdown 格式、#标签、#私密、[[双向链接]]、==高亮== 与待办清单。',
+        placeholder,
         style: BlinkTypography.body(tokens, color: tokens.textMuted),
       );
     }

@@ -477,7 +477,7 @@ void main() {
     );
 
     testWidgets(
-      'creates memo with #private, CJK FTS5 search, task sync, jump back, and 30-day trash restore/purge',
+      'creates memo with #private, CJK FTS5 search, task sync, jump back, and permanent local trash restore/purge',
       (tester) async {
         tester.view.physicalSize = const Size(1360, 800);
         tester.view.devicePixelRatio = 1.0;
@@ -937,12 +937,12 @@ void main() {
         await tester.pumpAndSettle();
 
         const secretDraft = '绝密草稿 #private 不能泄漏到新库';
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
         await tester.enterText(
           find.byKey(const Key('editor_text_field')),
           secretDraft,
         );
-        await tester.pump();
-        await tester.tap(find.byKey(const Key('composer_private_toggle')));
         await tester.pumpAndSettle();
 
         // Open search modal and set a query before switching vaults.
@@ -1118,5 +1118,400 @@ void main() {
         workspace.dispose();
       }
     });
+
+    testWidgets(
+      'memo composer & edit cancel private cleanly (with and without #private) and permanent local trash supports confirmed emptyTrash',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.memos,
+        );
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. New memo composer: typing `#private` activates lock; tapping toggle OFF strips `#private` & unlocks.
+        await tester.enterText(
+          find.byKey(const Key('editor_text_field')),
+          '临时草稿 #private 准备取消',
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+
+        final composerField = tester.widget<TextField>(
+          find.byKey(const Key('editor_text_field')),
+        );
+        expect(composerField.controller!.text, '临时草稿 准备取消');
+
+        // Submit -> must save as normal (non-private) memo!
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.memoEntries.length == 1,
+        );
+        expect(fixture.workspace.memoEntries.first.isPrivate, isFalse);
+        expect(fixture.workspace.privateMemoCount, 0);
+
+        // 2. Create a private memo with `#private` + task, then edit it -> toggle 私密 OFF -> save!
+        final privMemo = (await tester.runAsync(
+          () => fixture.workspace.createMemo(
+            bodyMd: '待解密小记 #private\n- [ ] 待解密待办',
+            isPrivate: true,
+          ),
+        ))!;
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.privateMemoCount, 1);
+        expect(
+          find.byKey(Key('memo_private_badge_${privMemo.id}')),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.byKey(Key('memo_bubble_${privMemo.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${privMemo.id}')));
+        await _drainRealIo(tester);
+
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.privateMemoCount == 0,
+        );
+
+        final downgradedMemo = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(privMemo.id),
+        ))!;
+        expect(downgradedMemo.isPrivate, isFalse);
+        expect(downgradedMemo.bodyMd, isNot(contains('#private')));
+        expect(
+          find.byKey(Key('memo_private_badge_${privMemo.id}')),
+          findsNothing,
+        );
+        final normalHits = (await tester.runAsync(
+          () => fixture.vault.search.search(
+            '待解密小记',
+            scope: PrivacyScope.normalOnly,
+          ),
+        ))!;
+        expect(normalHits.map((h) => h.docId), contains(privMemo.id));
+
+        // 3. Direct bubble menu: re-enable private -> cancel private in one click!
+        await tester.tap(find.byKey(Key('memo_more_${privMemo.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(Key('memo_menu_toggle_private_${privMemo.id}')),
+        );
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.privateMemoCount == 1,
+        );
+        expect(
+          (await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(privMemo.id),
+          ))!.isPrivate,
+          isTrue,
+        );
+
+        await tester.tap(find.byKey(Key('memo_more_${privMemo.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(Key('memo_menu_toggle_private_${privMemo.id}')),
+        );
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.privateMemoCount == 0,
+        );
+        expect(
+          (await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(privMemo.id),
+          ))!.isPrivate,
+          isFalse,
+        );
+
+        // 4. Permanent local trash: soft-delete memos & a note -> verify zero "30 天"/"清理已过期",
+        // confirm `清空回收站` in Memos empties only trashed memos and leaves trashed note intact,
+        // then confirm `清空回收站` in Notes empties trashed notes!
+        final noteToTrash = (await tester.runAsync(
+          () => fixture.workspace.createNote(bodyMd: '# 回收站永久保留测试笔记'),
+        ))!;
+        await tester.runAsync(() async {
+          await fixture.workspace.softDeleteEntry(privMemo.id);
+          await fixture.workspace.softDeleteEntry(noteToTrash.id);
+        });
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('filter_trash')));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('30 天'), findsNothing);
+        expect(find.textContaining('30天'), findsNothing);
+        expect(find.text('清理已过期'), findsNothing);
+        expect(find.text('回收站中的内容会一直保留，直到你手动还原或彻底删除'), findsOneWidget);
+        expect(find.byKey(const Key('trash_empty_button')), findsOneWidget);
+
+        // Open confirmation dialog and cancel first -> item stays in trash.
+        await tester.tap(find.byKey(const Key('trash_empty_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('trash_empty_cancel')));
+        await tester.pumpAndSettle();
+        expect(fixture.workspace.trashMemoCount, 1);
+
+        // Open confirmation dialog and confirm -> trashed memo purged, trashed note untouched!
+        await tester.tap(find.byKey(const Key('trash_empty_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('trash_empty_confirm')));
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.trashMemoCount == 0,
+        );
+        expect(
+          await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(
+              privMemo.id,
+              includeDeleted: true,
+            ),
+          ),
+          isNull,
+        );
+        expect(fixture.workspace.trashNoteCount, 1);
+
+        // Switch to Notes -> Trash -> verify zero "30 天" and confirm `清空回收站` empties trashed notes!
+        await tester.tap(find.byKey(const Key('nav_notes')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('notes_filter_trash')));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('30 天'), findsNothing);
+        expect(find.textContaining('30天'), findsNothing);
+        expect(find.text('清理已过期'), findsNothing);
+        expect(find.byKey(const Key('trash_empty_button')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('trash_empty_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('trash_empty_confirm')));
+        await _drainRealIo(
+          tester,
+          until: () => fixture.workspace.trashNoteCount == 0,
+        );
+        expect(
+          await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(
+              noteToTrash.id,
+              includeDeleted: true,
+            ),
+          ),
+          isNull,
+        );
+      },
+    );
+
+    testWidgets(
+      'P1 #2 & P2 #3: bubble cancel during active edit, cancelled/restored downgrade drafts, and #private-only memo with/without attachment',
+      (tester) async {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final fixture = await createFixture(
+          tester,
+          initialDestination: BlinkNavDestination.memos,
+        );
+        final blob = (await tester.runAsync(
+          () => fixture.vault.blobs.putBytes(
+            Uint8List.fromList('private-attachment-only'.codeUnits),
+            mimeType: 'text/plain',
+          ),
+        ))!;
+        final m1 = (await tester.runAsync(
+          () => fixture.workspace.createMemo(
+            bodyMd: '编辑中点菜单取消私密 #private',
+            isPrivate: true,
+          ),
+        ))!;
+        final m2 = (await tester.runAsync(
+          () => fixture.workspace.createMemo(
+            bodyMd: '草稿取消私密测试 #private',
+            isPrivate: true,
+          ),
+        ))!;
+        final mAttachOnly = (await tester.runAsync(
+          () => fixture.workspace.createMemo(
+            bodyMd: '#private',
+            isPrivate: true,
+            imageBlobSha256s: <String>[blob.sha256],
+          ),
+        ))!;
+        final mTagOnly = (await tester.runAsync(
+          () =>
+              fixture.workspace.createMemo(bodyMd: '#private', isPrivate: true),
+        ))!;
+        final mTabSwitch = (await tester.runAsync(
+          () => fixture.workspace.createMemo(
+            bodyMd: '跨标签切换测试 #private',
+            isPrivate: true,
+          ),
+        ))!;
+
+        await tester.pumpWidget(
+          BlinkApp(
+            controller: fixture.lifecycle,
+            workspaceController: fixture.workspace,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // P1 #2A: Open M1 in composer, then click bubble `⋯ → 取消私密` while editing.
+        // Composer must update immediately without stale draft re-locking on subsequent Save.
+        await tester.tap(find.byKey(Key('memo_bubble_${m1.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${m1.id}')));
+        await _drainRealIo(tester);
+
+        await tester.tap(find.byKey(Key('memo_more_${m1.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_menu_toggle_private_${m1.id}')));
+        await _drainRealIo(tester);
+
+        final composerAfterMenu = tester.widget<TextField>(
+          find.byKey(const Key('editor_text_field')),
+        );
+        expect(composerAfterMenu.controller!.text, '编辑中点菜单取消私密');
+
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(tester);
+        final m1AfterSave = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(m1.id),
+        ))!;
+        expect(m1AfterSave.isPrivate, isFalse);
+        expect(m1AfterSave.bodyMd, '编辑中点菜单取消私密');
+
+        // P1 #2B (part 1): Cancel edit discards stale edit draft cleanly.
+        await tester.tap(find.byKey(Key('memo_bubble_${m2.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${m2.id}')));
+        await _drainRealIo(tester);
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('memo_edit_cancel_button')));
+        await _drainRealIo(tester);
+        expect(
+          await tester.runAsync(
+            () => fixture.vault.raw.loadDraft('entry:${m2.id}'),
+          ),
+          isNull,
+        );
+
+        // P1 #2B (part 2): Restoring a saved draft (`privacyLocked: false`, `#private` stripped)
+        // for an existing private memo preserves explicit downgrade intent on Save!
+        await tester.runAsync(
+          () => fixture.vault.raw.saveDraft(
+            EditorDraft(
+              draftKey: 'entry:${m2.id}',
+              bodyMd: '草稿取消私密测试',
+              entryKind: EntryKind.blink,
+              privacyLocked: false,
+              updatedAtUtc: DateTime.now().toUtc(),
+            ),
+          ),
+        );
+        await tester.tap(find.byKey(Key('memo_bubble_${m2.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${m2.id}')));
+        await _drainRealIo(tester);
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(tester);
+
+        final m2AfterRestoredSave = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(m2.id),
+        ))!;
+        expect(m2AfterRestoredSave.isPrivate, isFalse);
+        expect(m2AfterRestoredSave.bodyMd, '草稿取消私密测试');
+
+        // P2 #3a & #3b: `#private`-only memo WITH attachment saves cleanly as normal
+        // and never renders empty-editor `#私密` placeholder text in the bubble.
+        await tester.tap(find.byKey(Key('memo_bubble_${mAttachOnly.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${mAttachOnly.id}')));
+        await _drainRealIo(tester);
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(tester);
+
+        final attachAfter = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(mAttachOnly.id),
+        ))!;
+        expect(attachAfter.isPrivate, isFalse);
+        expect(attachAfter.bodyMd, isEmpty);
+        expect(attachAfter.imageBlobSha256s, contains(blob.sha256));
+        expect(find.textContaining('开始输入内容'), findsNothing);
+        expect(find.textContaining('#私密'), findsNothing);
+
+        // P2 #3a & #3b: `#private`-only memo WITHOUT attachments shows honest error banner
+        // instead of silently ignoring or rendering composer hints.
+        fixture.workspace.clearBanner();
+        await tester.tap(find.byKey(Key('memo_more_${mTagOnly.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(Key('memo_menu_toggle_private_${mTagOnly.id}')),
+        );
+        await _drainRealIo(tester);
+        expect(fixture.workspace.bannerIsError, isTrue);
+        expect(fixture.workspace.bannerMessage, contains('正文为空'));
+        expect(
+          (await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(mTagOnly.id),
+          ))!.isPrivate,
+          isTrue,
+        );
+
+        fixture.workspace.clearBanner();
+        await tester.tap(find.byKey(Key('memo_bubble_${mTagOnly.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${mTagOnly.id}')));
+        await _drainRealIo(tester);
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(tester);
+        expect(fixture.workspace.bannerIsError, isTrue);
+        expect(fixture.workspace.bannerMessage, contains('正文为空'));
+        await tester.tap(find.byKey(const Key('memo_edit_cancel_button')));
+        await _drainRealIo(tester);
+
+        // P1 #2-B3: Edit private memo -> toggle 私密 OFF -> switch tab (Memos -> Notes -> Memos)
+        // -> click 保存 -> must preserve explicit downgrade intent and downgrade to normal!
+        await tester.tap(find.byKey(Key('memo_bubble_${mTabSwitch.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('memo_edit_${mTabSwitch.id}')));
+        await _drainRealIo(tester);
+        await tester.tap(find.byKey(const Key('composer_private_toggle')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('nav_notes')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('nav_memos')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
+        await _drainRealIo(tester);
+
+        final mTabSwitchAfter = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(mTabSwitch.id),
+        ))!;
+        expect(mTabSwitchAfter.isPrivate, isFalse);
+        expect(mTabSwitchAfter.bodyMd, '跨标签切换测试');
+      },
+    );
   });
 }

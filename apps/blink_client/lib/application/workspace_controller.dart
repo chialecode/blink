@@ -1154,7 +1154,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     if (_pendingMobileNoteOpenId == id) {
       _pendingMobileNoteOpenId = null;
     }
-    showBanner('已移入回收站（保留 30 天），可随时还原。');
+    showBanner('已移入回收站，可随时还原。');
     await refreshAll();
   }
 
@@ -1196,13 +1196,37 @@ class BlinkWorkspaceController extends ChangeNotifier {
     return purged;
   }
 
-  Future<int> purgeExpiredTrash() async {
+  /// Permanently purges all trashed entries (optionally scoped to [kinds])
+  /// and cleans up newly unreferenced blobs (`INV-12`).
+  Future<int> emptyTrash({List<EntryKind>? kinds}) async {
     final activeVault = _vault;
     if (activeVault == null || !activeVault.isOpen) {
       return 0;
     }
-    final count = await activeVault.raw.purgeExpiredTrash();
-    showBanner(count > 0 ? '已清理 $count 条超过 30 天的回收站内容。' : '当前没有超过 30 天的过期内容。');
+    final trashedBefore = await activeVault.raw.listEntries(
+      EntryQuery(kinds: kinds, onlyDeleted: true, limit: _metadataScanLimit),
+    );
+    final purgedIds = <String>{for (final entry in trashedBefore) entry.id};
+    final count = await activeVault.raw.emptyTrash(kinds: kinds);
+    if (_selectedEntryId != null && purgedIds.contains(_selectedEntryId)) {
+      _selectedEntryId = null;
+    }
+    if (_selectedMemoId != null && purgedIds.contains(_selectedMemoId)) {
+      _selectedMemoId = null;
+    }
+    if (_selectedNoteId != null && purgedIds.contains(_selectedNoteId)) {
+      _selectedNoteId = null;
+    }
+    if (_pendingMobileNoteOpenId != null &&
+        purgedIds.contains(_pendingMobileNoteOpenId)) {
+      _pendingMobileNoteOpenId = null;
+    }
+    if (purgedIds.isNotEmpty) {
+      final nextMap = Map<String, RawEntry>.of(_entriesById)
+        ..removeWhere((key, _) => purgedIds.contains(key));
+      _entriesById = nextMap;
+    }
+    showBanner(count > 0 ? '已清空回收站（共彻底删除 $count 条内容并清理未引用附件）。' : '回收站已是空的。');
     await refreshAll();
     return count;
   }

@@ -897,7 +897,8 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.byKey(const Key('note_trash_banner')), findsOneWidget);
-        expect(find.text('此笔记在回收站中（保留 30 天）'), findsOneWidget);
+        expect(find.text('此笔记在回收站中，不清理将一直保留'), findsOneWidget);
+        expect(find.textContaining('30 天'), findsNothing);
         expect(
           find.byKey(const Key('note_trash_restore_button')),
           findsOneWidget,
@@ -1114,6 +1115,106 @@ void main() {
           findsNothing,
         );
         expect(find.byKey(const Key('mobile_notes_header')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'note editor private toggle cancels privacy cleanly (strips #private, migrates FTS & tasks, updates sidebar count)',
+      (tester) async {
+        final fixture = await createWorkspaceFixture(tester);
+        final note = (await tester.runAsync(
+          () => fixture.workspace.createNote(
+            bodyMd: '# 私密设计稿 #private\n\n- [ ] 核对核心隐私链路',
+            isPrivate: true,
+          ),
+        ))!;
+        expect(note.isPrivate, isTrue);
+        expect(fixture.workspace.privateNoteCount, 1);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: BlinkTheme.day(),
+            home: Scaffold(
+              body: ListenableBuilder(
+                listenable: fixture.workspace,
+                builder: (context, _) => Row(
+                  children: <Widget>[
+                    SizedBox(
+                      width: 260,
+                      child: BlinkNotesSidebar(workspace: fixture.workspace),
+                    ),
+                    Expanded(
+                      child: BlinkMarkdownEditor(
+                        workspace: fixture.workspace,
+                        entry: fixture.workspace.selectedNote,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Initially hidden from normalOnly search.
+        expect(
+          await tester.runAsync(
+            () => fixture.vault.search.search(
+              '私密设计稿',
+              scope: PrivacyScope.normalOnly,
+            ),
+          ),
+          isEmpty,
+        );
+
+        // Toggle 私密 OFF -> strips `#private`, persists `isPrivate: false`, migrates FTS & tasks!
+        await tester.tap(find.byKey(const Key('note_editor_private_toggle')));
+        await _drainIo(tester);
+
+        final afterCancel = (await tester.runAsync(
+          () => fixture.vault.raw.getEntryById(note.id),
+        ))!;
+        expect(afterCancel.isPrivate, isFalse);
+        expect(afterCancel.bodyMd, isNot(contains('#private')));
+        expect(afterCancel.bodyMd, contains('私密设计稿'));
+        expect(afterCancel.bodyMd, contains('核对核心隐私链路'));
+        expect(fixture.workspace.privateNoteCount, 0);
+
+        final normalHits = (await tester.runAsync(
+          () => fixture.vault.search.search(
+            '私密设计稿',
+            scope: PrivacyScope.normalOnly,
+          ),
+        ))!;
+        expect(normalHits.map((h) => h.docId), contains(note.id));
+
+        final tasks = (await tester.runAsync(
+          () => fixture.vault.raw.listTasks(),
+        ))!;
+        expect(tasks, hasLength(1));
+        expect(tasks.first.isPrivate, isFalse);
+
+        // Toggle 私密 back ON (lock only, no `#private` token), then back OFF cleanly!
+        await tester.tap(find.byKey(const Key('note_editor_private_toggle')));
+        await _drainIo(tester);
+        expect(
+          (await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(note.id),
+          ))!.isPrivate,
+          isTrue,
+        );
+        expect(fixture.workspace.privateNoteCount, 1);
+
+        await tester.tap(find.byKey(const Key('note_editor_private_toggle')));
+        await _drainIo(tester);
+        expect(
+          (await tester.runAsync(
+            () => fixture.vault.raw.getEntryById(note.id),
+          ))!.isPrivate,
+          isFalse,
+        );
+        expect(fixture.workspace.privateNoteCount, 0);
       },
     );
   });

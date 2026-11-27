@@ -32,8 +32,8 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 | --- | --- | --- |
 | 数据性质 | 用户亲手输入的 **BFM v1** 闪念、日记、划词高亮、手写批注、原始录音/图片与原书二进制 | 外置 AI（CLI/MCP）或可选直连 AI 产出的意图标签、语音逐字稿与整理稿、书页 OCR 引文、待办候选、回响、双表面 HTML 综述与原则候选 |
 | 写入主体 | 用户本地事务（`RawRepository`）、纯 Dart 后台 Isolate 确定性文档解析（`raw_sources` / `raw_source_chapters` AST）、用户触发的只增不改伴读轮次（`raw_marginalia_turns`），及可选显式开启的只追加收件箱命令（`blink_capture_entry`，默认关闭） | 派生仓储（`AiIndexRepository` / `ExternalAiRepository`，对 `raw_*` 零 `UPDATE`/`DELETE` 接口），及用户对原则候选/待办候选的确认操作 |
-| 可变与删除策略 | 严禁任何 AI 流程覆写、润色替换或删除；用户删除采用带时间戳墓碑（`deleted_at`）与 30 天回收站 | 允许随时一键清空（`TRUNCATE` `ai_*`、删除重建 `index/fts.db` 与 `mirror/`）而不损失任何原文正本 |
-| 隐私隔离 | 每行显式携带不可降级的 `privacy_level`（`normal` \| `private`） | 严格继承源记录 `privacy_level`，配 `v_normal_*` 只读视图与分离 `fts_normal` / `fts_private` 物理阻断跨密级混排召回（`INV-03`） |
+| 可变与删除策略 | 严禁任何 AI 流程覆写、润色替换或删除；用户删除采用带时间戳墓碑（`deleted_at`）与本地永久保留回收站（不设自动清理期限，仅经用户手动还原、单条彻底删除或二次确认清空回收站后移除，见 [DEC-034](../decisions.md#dec-034)） | 允许随时一键清空（`TRUNCATE` `ai_*`、删除重建 `index/fts.db` 与 `mirror/`）而不损失任何原文正本 |
+| 隐私隔离 | 每行显式携带 `privacy_level`（`normal` \| `private`）；外置 AI、后台处理与多端同步绝不自动降级，仅允许用户界面显式传参 `allowPrivacyDowngrade = true` 主动取消私密状态并清除正文独立 `#private` 标签与迁移检索索引回 `fts_normal`（[DEC-034](../decisions.md#dec-034)） | 严格继承源记录 `privacy_level`，配 `v_normal_*` 只读视图与分离 `fts_normal` / `fts_private` 物理阻断跨密级混排召回（`INV-03`） |
 
 ### 1.2 原文正本层核心实体（`raw_*` 与 `media_blobs`）
 
@@ -78,7 +78,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 | --- | --- | --- | --- |
 | **1. 链接与引用** | `[[entry:<uuidv7>\|显示标题]]`<br>`[[ann:<uuidv7>\|批注名]]`<br>`[[book:<uuidv7>\|《书名》]]`<br>`[[book:<uuidv7>#p42\|P.42]]`<br>`[[book:<uuidv7>#ch-003/b-0001-9f2a1c04\|§3]]`<br>未绑定模糊名：`[[标题]]` | `<blink-ref id="<uuid>" kind="entry\|annotation\|source" anchor="...">Label</blink-ref>`（无前缀时 `kind="title_query"`，绝不静默改写原文） | 仅保留 `显示标题` / `《书名》`，剥离 UUID 与 `#anchor`；关系边写入 `ai_bfm_links` |
 | **2. 层级标签** | `#标签`、`#parent/child`（Unicode 中英文/数字/`_`/`-`） | `<blink-tag name="parent/child">#parent/child</blink-tag>` | 保留语义词 `parent child` 入 FTS5；忽略 URL 片段、十六进制色值与代码内 `#` |
-| **3. 隐私边界令牌** | `#private`（大小写不敏感独立词边界） | `<blink-tag name="private" data-privacy="private">🔒 #private</blink-tag>` | **从检索正文剥离**，单向锁存 `privacy_level = 'private'`（`INV-03`） |
+| **3. 隐私边界令牌** | `#private`（大小写不敏感独立词边界） | `<blink-tag name="private" data-privacy="private">🔒 #private</blink-tag>` | **从检索正文剥离**，置 `privacy_level = 'private'`（`INV-03`；同步与 AI 路径绝不自动降级，仅用户界面主动取消私密时一并移除正文独立 `#private` 标签并经 `allowPrivacyDowngrade = true` 迁回常规区） |
 | **4. 内生待办** | `- [ ]`（`open`）\| `- [x]`（`done`）\| `- [>]`（`deferred`）\| `- [-]`（`dropped`） | `<li class="task-item" data-task-status="open\|done\|deferred\|dropped">...</li>` | 剥离复选符号，正文入 FTS5，同步映射 `raw_tasks` |
 | **5. 书目与时间绑定** | `@book:<uuidv7>\|《书名》`（可选 `#p84`/`#ch-003`）<br>`@t[14:25]` 或 `@t[01:12:08]` | `<blink-ref id="<uuid>" kind="source" anchor="..." data-bind="context">《书名》</blink-ref>`<br>`<blink-time sec="865">14:25</blink-time>` | `@book:` 保留书名并写入 `source_ref_id`；`@t[...]` 从语义正文剥离，供语音跳转 |
 | **6. 提示块（Callout）** | `> [!note\|insight\|tension\|quote\|warning] 标题`<br>折叠态：`> [!insight]- 标题`（默认收起）/ `> [!insight]+` | `<aside class="callout callout-insight">...</aside>` 或 `<details class="callout callout-insight"><summary>标题</summary>...</details>` | 剥离 `[!insight]` 标记，保留标题与正文 |
@@ -250,7 +250,7 @@ BLINK 采用零 Docker、零外部数据库服务、零 Python 运行时的纯 D
 | --- | --- | --- |
 | 新建闪念、语音、剪藏、新批注、新伴读轮次 | 各端独立生成 UUIDv7，主键互不重叠 | 零冲突并集入库，按创建时间与 `hlc_ts` 稳定排序 |
 | 同一条 `raw_entries.body_md` 或 `raw_annotations.note_md` 双端同时编辑 | `base_revision < 当前 revision` 且正文哈希不同 | **双本保留**：按确定性全序 `(hlc_ts, device_id, client_op_id)` 接纳胜出分支为新 `revision`，同时将另一分支自动另存为带关联引用的冲突保护副本（首行标注 `[离线冲突副本 · <设备名> <UTC时间>]`），并在顶栏温和提示一键比对合并 |
-| `privacy_level` 密级变更 | 一端为 `normal`、另一端设为 `private`（或含 `#private`） | **高密级单向锁存（`private` 恒胜）**：合并结果必为 `private`，同时立即将其从公开中继队列与 `fts_normal` 中剔除 |
+| `privacy_level` 密级变更 | 一端为 `normal`、另一端并发设为 `private`（或含 `#private`） | **同步与 AI 绝不自动降级（并发冲突中 `private` 恒胜）**：冲突合并结果必为 `private`，同时立即将其从公开中继队列与 `fts_normal` 中剔除；仅用户在客户端界面显式操作取消私密（传入 `allowPrivacyDowngrade = true` 并清除正文独立 `#private` 标签）时方可将条目降为 `normal` 并迁回常规索引（[DEC-034](../decisions.md#dec-034)） |
 | 阅读进度 `reading_progress_json` 与待办状态 `raw_tasks.status` | 标量状态并发变更 | 按 `hlc_ts` 取最新状态；阅读器若检测到远端进度领先超过 1 页/5 块，底部弹出非阻塞“跳至另一设备最新位置”提示条 |
 | 删除墓碑 vs 正文编辑 | 一端删除，另一端离线新增编辑或批注 | **有新内容则复活保留**：编辑端胜出（清除 `deleted_at`），防止误删另一端刚写完的心得 |
 | 派生层 `ai_*`（综述、回响、富化）并发写入 | 同业务键并发重算 | 按 `(computed_at, hlc_ts)` 幂等覆盖派生投影，不产生干扰性正文冲突副本 |

@@ -10,6 +10,7 @@ import 'package:blink_client/application/editor_controller.dart';
 import 'package:blink_client/application/search_controller.dart';
 import 'package:blink_client/application/tasks_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 import 'package:blink_client/ui/files_page.dart';
 import 'package:blink_client/ui/memos_page.dart';
 import 'package:blink_client/ui/notes_page.dart';
@@ -244,16 +245,63 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                 final railWidth = isCompactTablet ? 52.0 : 60.0;
                 final sidebarWidth = isWideDesktop ? 260.0 : 232.0;
 
+                final lifecycle = widget.workspace.lifecycle;
+                final useImmersiveChrome =
+                    !isMobile && lifecycle.useImmersiveWindowChrome;
+                final showTrailingCaptionButtons =
+                    useImmersiveChrome &&
+                    lifecycle.showTrailingWindowCaptionButtons;
+                final trailingCaptionInset = showTrailingCaptionButtons
+                    ? kBlinkWindowCaptionWidth
+                    : 0.0;
+                final leadingTrafficLightInset =
+                    useImmersiveChrome &&
+                        lifecycle.usesLeadingSystemWindowControls
+                    ? kBlinkMacTrafficLightTopInset
+                    : 0.0;
+
                 final showGlobalSyncBanner =
                     BlinkSyncStatusCapsule.shouldShowGlobalBanner(
                       widget.workspace.sync.uiStatus,
                     );
+                final showBannerMessage =
+                    widget.workspace.bannerMessage != null;
                 final showVaultErrorBanner =
                     widget.workspace.vaultErrorMessage != null &&
                     (widget.workspace.destination !=
                             BlinkNavDestination.settings ||
                         widget.workspace.selectedSettingsCategory !=
                             SettingsCategory.storage);
+                final hasTopGlobalBanner =
+                    showGlobalSyncBanner ||
+                    showBannerMessage ||
+                    showVaultErrorBanner;
+
+                final syncBannerAtTop = showGlobalSyncBanner;
+                final statusBannerAtTop =
+                    !showGlobalSyncBanner && showBannerMessage;
+                final vaultErrorBannerAtTop =
+                    !showGlobalSyncBanner &&
+                    !showBannerMessage &&
+                    showVaultErrorBanner;
+
+                final onStartDrag = useImmersiveChrome
+                    ? () => unawaited(lifecycle.startWindowDrag())
+                    : null;
+                final onToggleMaximize = useImmersiveChrome
+                    ? () => unawaited(lifecycle.toggleMaximizeWindow())
+                    : null;
+                final onShowSystemMenu = useImmersiveChrome
+                    ? (Offset position) =>
+                          unawaited(lifecycle.showWindowSystemMenu(position))
+                    : null;
+
+                final activePage = _buildActivePage(
+                  isMobile: isMobile,
+                  isCompactTablet: isCompactTablet,
+                  showPersistentSidebar: showPersistentSidebar,
+                  showExpandSidebarButton: showExpandSidebarButton,
+                );
 
                 final workspaceContent = Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -262,16 +310,25 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                       BlinkSyncStatusCapsule(
                         sync: widget.workspace.sync,
                         compact: isMobile,
+                        trailingChromeInset: syncBannerAtTop
+                            ? trailingCaptionInset
+                            : 0.0,
+                        enableWindowDrag: syncBannerAtTop && useImmersiveChrome,
                         onOpenConflicts: () =>
                             unawaited(_openSyncConflictDialog()),
                         onOpenSyncSettings: () => widget.workspace
                             .openSettingsCategory(SettingsCategory.sync),
                       ),
-                    if (widget.workspace.bannerMessage != null)
+                    if (showBannerMessage)
                       _StatusBanner(
                         message: widget.workspace.bannerMessage!,
                         isError: widget.workspace.bannerIsError,
                         onDismiss: widget.workspace.clearBanner,
+                        trailingChromeInset: statusBannerAtTop
+                            ? trailingCaptionInset
+                            : 0.0,
+                        enableWindowDrag:
+                            statusBannerAtTop && useImmersiveChrome,
                       ),
                     if (showVaultErrorBanner)
                       _StatusBanner(
@@ -282,71 +339,115 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
                           SettingsCategory.storage,
                         ),
                         onDismiss: widget.workspace.clearVaultError,
+                        trailingChromeInset: vaultErrorBannerAtTop
+                            ? trailingCaptionInset
+                            : 0.0,
+                        enableWindowDrag:
+                            vaultErrorBannerAtTop && useImmersiveChrome,
                       ),
                     Expanded(
-                      child: _buildActivePage(
-                        isMobile: isMobile,
-                        isCompactTablet: isCompactTablet,
-                        showPersistentSidebar: showPersistentSidebar,
-                        showExpandSidebarButton: showExpandSidebarButton,
-                      ),
+                      child: hasTopGlobalBanner && showTrailingCaptionButtons
+                          ? BlinkWindowChromeScope(
+                              enabled: useImmersiveChrome,
+                              trailingCaptionInset: 0.0,
+                              onStartDrag: onStartDrag,
+                              onToggleMaximize: onToggleMaximize,
+                              onShowSystemMenu: onShowSystemMenu,
+                              child: activePage,
+                            )
+                          : activePage,
                     ),
                   ],
                 );
 
-                return Scaffold(
-                  key: _scaffoldKey,
-                  backgroundColor: tokens.canvas,
-                  drawer: (isCompactTablet || isMobile)
-                      ? Drawer(
-                          backgroundColor: tokens.sidebar,
-                          surfaceTintColor: Colors.transparent,
-                          child: SafeArea(
-                            child: _buildContextualSidebar(isDrawer: true),
-                          ),
-                        )
+                return BlinkWindowChromeScope(
+                  enabled: useImmersiveChrome,
+                  trailingCaptionInset: trailingCaptionInset,
+                  leadingTrafficLightInset: leadingTrafficLightInset,
+                  onStartDrag: onStartDrag,
+                  onToggleMaximize: onToggleMaximize,
+                  onShowSystemMenu: onShowSystemMenu,
+                  onMaximizeButtonBoundsChanged: showTrailingCaptionButtons
+                      ? lifecycle.updateMaximizeButtonBounds
                       : null,
-                  bottomNavigationBar:
-                      isMobile && MediaQuery.viewInsetsOf(context).bottom == 0
-                      ? _buildMobileBottomBar(tokens)
-                      : null,
-                  body: SafeArea(
-                    top: isMobile,
-                    bottom: false,
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        if (!isMobile) ...<Widget>[
-                          _buildNavigationRail(
-                            tokens,
-                            railWidth,
-                            isCompactTablet: isCompactTablet,
-                          ),
-                          VerticalDivider(
-                            key: const Key('pane_divider_rail'),
-                            width: 1,
-                            thickness: 1,
-                            color: tokens.borderHairline,
-                          ),
-                        ],
-                        if (showPersistentSidebar) ...<Widget>[
-                          SizedBox(
-                            key: const Key('resource_sidebar_pane'),
-                            width: sidebarWidth,
-                            child: ColoredBox(
-                              color: tokens.sidebar,
-                              child: _buildContextualSidebar(isDrawer: false),
+                  child: Scaffold(
+                    key: _scaffoldKey,
+                    backgroundColor: tokens.canvas,
+                    drawer: (isCompactTablet || isMobile)
+                        ? Drawer(
+                            backgroundColor: tokens.sidebar,
+                            surfaceTintColor: Colors.transparent,
+                            child: SafeArea(
+                              child: _buildContextualSidebar(isDrawer: true),
                             ),
+                          )
+                        : null,
+                    bottomNavigationBar:
+                        isMobile && MediaQuery.viewInsetsOf(context).bottom == 0
+                        ? _buildMobileBottomBar(tokens)
+                        : null,
+                    body: SafeArea(
+                      top: isMobile,
+                      bottom: false,
+                      child: Stack(
+                        children: <Widget>[
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: <Widget>[
+                              if (!isMobile) ...<Widget>[
+                                _buildNavigationRail(
+                                  tokens,
+                                  railWidth,
+                                  isCompactTablet: isCompactTablet,
+                                  leadingTrafficLightInset:
+                                      leadingTrafficLightInset,
+                                ),
+                                VerticalDivider(
+                                  key: const Key('pane_divider_rail'),
+                                  width: 1,
+                                  thickness: 1,
+                                  color: tokens.borderHairline,
+                                ),
+                              ],
+                              if (showPersistentSidebar) ...<Widget>[
+                                SizedBox(
+                                  key: const Key('resource_sidebar_pane'),
+                                  width: sidebarWidth,
+                                  child: ColoredBox(
+                                    color: tokens.sidebar,
+                                    child: _buildContextualSidebar(
+                                      isDrawer: false,
+                                    ),
+                                  ),
+                                ),
+                                VerticalDivider(
+                                  key: const Key('pane_divider_sidebar'),
+                                  width: 1,
+                                  thickness: 1,
+                                  color: tokens.borderHairline,
+                                ),
+                              ],
+                              Expanded(child: workspaceContent),
+                            ],
                           ),
-                          VerticalDivider(
-                            key: const Key('pane_divider_sidebar'),
-                            width: 1,
-                            thickness: 1,
-                            color: tokens.borderHairline,
-                          ),
+                          if (showTrailingCaptionButtons)
+                            Positioned(
+                              top: 0,
+                              right: 0,
+                              height: kBlinkWindowChromeHeaderHeight,
+                              child: BlinkWindowCaptionButtons(
+                                isMaximized: lifecycle.isWindowMaximized,
+                                onMinimize: () =>
+                                    unawaited(lifecycle.minimizeWindow()),
+                                onToggleMaximize: () =>
+                                    unawaited(lifecycle.toggleMaximizeWindow()),
+                                onClose: () => unawaited(
+                                  lifecycle.handleCloseButtonPressed(),
+                                ),
+                              ),
+                            ),
                         ],
-                        Expanded(child: workspaceContent),
-                      ],
+                      ),
                     ),
                   ),
                 );
@@ -413,6 +514,7 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
     BlinkColorTokens tokens,
     double width, {
     required bool isCompactTablet,
+    required double leadingTrafficLightInset,
   }) {
     final active = widget.workspace.destination;
     final itemWidth = width - (isCompactTablet ? 8 : 10);
@@ -495,11 +597,31 @@ class _BlinkWorkspaceShellState extends State<BlinkWorkspaceShell>
       key: const Key('desktop_nav_rail'),
       width: width,
       color: tokens.sidebar,
-      padding: const EdgeInsets.symmetric(vertical: 12),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Column(
         children: <Widget>[
-          const BlinkBrandMark(key: Key('rail_brand_mark'), size: 28),
-          const SizedBox(height: 10),
+          BlinkWindowDragArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (leadingTrafficLightInset > 0)
+                  SizedBox(height: leadingTrafficLightInset),
+                const SizedBox(
+                  height: kBlinkWindowChromeHeaderHeight,
+                  width: double.infinity,
+                  child: Center(
+                    child: IgnorePointer(
+                      child: BlinkBrandMark(
+                        key: Key('rail_brand_mark'),
+                        size: 28,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
           if (isCompactTablet) ...<Widget>[
             railIconAction(
               itemKey: const Key('open_sidebar_drawer_button'),
@@ -725,6 +847,8 @@ class _StatusBanner extends StatelessWidget {
     required this.onDismiss,
     this.actionLabel,
     this.onAction,
+    this.trailingChromeInset = 0.0,
+    this.enableWindowDrag = false,
   });
 
   final String message;
@@ -732,6 +856,8 @@ class _StatusBanner extends StatelessWidget {
   final VoidCallback onDismiss;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final double trailingChromeInset;
+  final bool enableWindowDrag;
 
   @override
   Widget build(BuildContext context) {
@@ -740,36 +866,55 @@ class _StatusBanner extends StatelessWidget {
     final fg = isError ? tokens.statusErr : tokens.accentPrimary;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      constraints: BoxConstraints(
+        minHeight: trailingChromeInset > 0 ? kBlinkWindowChromeHeaderHeight : 0,
+      ),
       decoration: BoxDecoration(
         color: bg,
         border: Border(
           bottom: BorderSide(color: tokens.borderHairline, width: 1),
         ),
       ),
-      child: Row(
-        children: <Widget>[
-          Icon(
-            isError ? Icons.error_outline_rounded : Icons.info_outline_rounded,
-            size: 16,
-            color: fg,
+      child: BlinkWindowDragArea(
+        enabled: enableWindowDrag,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            16,
+            8,
+            trailingChromeInset > 0 ? 8 + trailingChromeInset : 16,
+            8,
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: BlinkTypography.metaLabel(tokens, color: fg),
-            ),
+          child: Row(
+            children: <Widget>[
+              IgnorePointer(
+                child: Icon(
+                  isError
+                      ? Icons.error_outline_rounded
+                      : Icons.info_outline_rounded,
+                  size: 16,
+                  color: fg,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: IgnorePointer(
+                  child: Text(
+                    message,
+                    style: BlinkTypography.metaLabel(tokens, color: fg),
+                  ),
+                ),
+              ),
+              if (actionLabel != null && onAction != null)
+                TextButton(onPressed: onAction, child: Text(actionLabel!)),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: '关闭提示',
+                onPressed: onDismiss,
+                icon: Icon(Icons.close_rounded, size: 16, color: fg),
+              ),
+            ],
           ),
-          if (actionLabel != null && onAction != null)
-            TextButton(onPressed: onAction, child: Text(actionLabel!)),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            tooltip: '关闭提示',
-            onPressed: onDismiss,
-            icon: Icon(Icons.close_rounded, size: 16, color: fg),
-          ),
-        ],
+        ),
       ),
     );
   }

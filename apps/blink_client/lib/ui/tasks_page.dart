@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/tasks_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 /// Feishu-style Pane 2 resource sidebar for the Tasks (`待办`) module.
 class BlinkTasksSidebar extends StatefulWidget {
@@ -205,29 +206,42 @@ class _BlinkTasksSidebarState extends State<BlinkTasksSidebar> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      '待办',
-                      style: BlinkTypography.sectionHeading(tokens),
-                    ),
-                  ),
-                  if (!widget.isDrawer && widget.onCollapse != null)
-                    IconButton(
-                      key: const Key('tasks_sidebar_collapse_button'),
-                      tooltip: '收起侧边栏',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: widget.onCollapse,
-                      icon: Icon(
-                        Icons.keyboard_double_arrow_left_rounded,
-                        size: 18,
-                        color: tokens.textSecondary,
+            BlinkWindowDragArea(
+              enabled: !widget.isDrawer,
+              child: Container(
+                height: kBlinkWindowChromeHeaderHeight,
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: IgnorePointer(
+                        child: Text(
+                          '待办',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: BlinkTypography.sectionHeading(tokens),
+                        ),
                       ),
                     ),
-                ],
+                    if (!widget.isDrawer && widget.onCollapse != null)
+                      IconButton(
+                        key: const Key('tasks_sidebar_collapse_button'),
+                        tooltip: '收起侧边栏',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        onPressed: widget.onCollapse,
+                        icon: Icon(
+                          Icons.keyboard_double_arrow_left_rounded,
+                          size: 18,
+                          color: tokens.textSecondary,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             Divider(height: 1, color: tokens.borderHairline),
@@ -392,12 +406,14 @@ class BlinkTasksPage extends StatelessWidget {
         final doneTasks = controller.tasksForStatus(TaskStatus.done);
         final droppedTasks = controller.tasksForStatus(TaskStatus.dropped);
         final hPad = isMobile ? 14.0 : 20.0;
+        final trailingInset = isMobile
+            ? 0.0
+            : BlinkWindowChromeScope.trailingInsetOf(context);
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Container(
-              padding: EdgeInsets.fromLTRB(hPad, isMobile ? 10 : 14, hPad, 12),
               decoration: BoxDecoration(
                 color: tokens.canvas,
                 border: Border(
@@ -405,121 +421,147 @@ class BlinkTasksPage extends StatelessWidget {
                 ),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      if (showExpandSidebarButton &&
-                          onExpandSidebar != null) ...<Widget>[
-                        IconButton(
-                          key: const Key('tasks_sidebar_expand_button'),
-                          tooltip: '展开侧边栏',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: onExpandSidebar,
-                          icon: Icon(
-                            Icons.view_sidebar_outlined,
-                            size: 18,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ] else if (onOpenDrawer != null) ...<Widget>[
-                        IconButton(
-                          tooltip: '筛选待办',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: onOpenDrawer,
-                          icon: Icon(
-                            Icons.menu_rounded,
-                            size: 19,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                      ],
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(
-                              _headingForStatus(controller.statusFilter),
-                              style: BlinkTypography.heroHeading(tokens),
-                            ),
-                            if (!isMobile) ...<Widget>[
-                              const SizedBox(height: 2),
-                              Text(
-                                '自动收集小记和笔记中的清单项，勾选双向同步',
-                                style: BlinkTypography.metaLabel(tokens),
-                              ),
-                            ],
-                          ],
-                        ),
+                  BlinkWindowDragArea(
+                    enabled: !isMobile,
+                    child: Container(
+                      height: kBlinkWindowChromeHeaderHeight,
+                      padding: EdgeInsets.only(
+                        left: hPad,
+                        right: trailingInset > 0 ? 0 : hPad,
                       ),
-                      if (isMobile && onOpenSearch != null)
-                        IconButton(
-                          tooltip: '搜索',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: onOpenSearch,
-                          icon: Icon(
-                            Icons.search_rounded,
-                            size: 20,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                    ],
-                  ),
-                  if (showInlineFilters) ...<Widget>[
-                    const SizedBox(height: 10),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
                       child: Row(
                         children: <Widget>[
-                          _statusChip(
-                            tokens,
-                            null,
-                            '全部 (${controller.tasks.length})',
-                          ),
-                          const SizedBox(width: 6),
-                          _statusChip(tokens, TaskStatus.open, '待完成'),
-                          const SizedBox(width: 6),
-                          _statusChip(tokens, TaskStatus.deferred, '稍后处理'),
-                          const SizedBox(width: 6),
-                          _statusChip(tokens, TaskStatus.done, '已完成'),
-                          const SizedBox(width: 6),
-                          _statusChip(tokens, TaskStatus.dropped, '已取消'),
-                          const SizedBox(width: 6),
-                          FilterChip(
-                            label: const Text('🔒 仅私密'),
-                            selected:
-                                controller.privacyFilter ==
-                                PrivacyLevel.private,
-                            showCheckmark: false,
-                            backgroundColor: tokens.canvas,
-                            selectedColor: tokens.privacySubtle,
-                            side: BorderSide(
-                              color:
-                                  controller.privacyFilter ==
-                                      PrivacyLevel.private
-                                  ? tokens.privacyPrivate
-                                  : tokens.borderHairline,
+                          if (showExpandSidebarButton &&
+                              onExpandSidebar != null) ...<Widget>[
+                            IconButton(
+                              key: const Key('tasks_sidebar_expand_button'),
+                              tooltip: '展开侧边栏',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: onExpandSidebar,
+                              icon: Icon(
+                                Icons.view_sidebar_outlined,
+                                size: 18,
+                                color: tokens.textSecondary,
+                              ),
                             ),
-                            labelStyle: BlinkTypography.metaLabel(
-                              tokens,
-                              color:
-                                  controller.privacyFilter ==
-                                      PrivacyLevel.private
-                                  ? tokens.privacyPrivate
-                                  : tokens.textSecondary,
+                            const SizedBox(width: 6),
+                          ] else if (onOpenDrawer != null) ...<Widget>[
+                            IconButton(
+                              tooltip: '筛选待办',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: onOpenDrawer,
+                              icon: Icon(
+                                Icons.menu_rounded,
+                                size: 19,
+                                color: tokens.textSecondary,
+                              ),
                             ),
-                            onSelected: (selected) {
-                              controller.setPrivacyFilter(
-                                selected ? PrivacyLevel.private : null,
-                              );
-                            },
+                            const SizedBox(width: 4),
+                          ],
+                          IgnorePointer(
+                            child: Text(
+                              _headingForStatus(controller.statusFilter),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: BlinkTypography.heroHeading(tokens),
+                            ),
                           ),
+                          if (!isMobile) ...<Widget>[
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: IgnorePointer(
+                                child: Text(
+                                  '自动收集小记和笔记中的清单项，勾选双向同步',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: BlinkTypography.metaLabel(tokens),
+                                ),
+                              ),
+                            ),
+                          ] else
+                            const Spacer(),
+                          if (isMobile && onOpenSearch != null)
+                            IconButton(
+                              tooltip: '搜索',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: onOpenSearch,
+                              icon: Icon(
+                                Icons.search_rounded,
+                                size: 20,
+                                color: tokens.textSecondary,
+                              ),
+                            ),
+                          if (trailingInset > 0) SizedBox(width: trailingInset),
                         ],
                       ),
                     ),
-                  ],
+                  ),
+                  if (showInlineFilters)
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(hPad, 0, hPad, 10),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: <Widget>[
+                            _statusChip(
+                              tokens,
+                              null,
+                              '全部 (${controller.tasks.length})',
+                            ),
+                            const SizedBox(width: 6),
+                            _statusChip(tokens, TaskStatus.open, '待完成'),
+                            const SizedBox(width: 6),
+                            _statusChip(tokens, TaskStatus.deferred, '稍后处理'),
+                            const SizedBox(width: 6),
+                            _statusChip(tokens, TaskStatus.done, '已完成'),
+                            const SizedBox(width: 6),
+                            _statusChip(tokens, TaskStatus.dropped, '已取消'),
+                            const SizedBox(width: 6),
+                            FilterChip(
+                              label: const Text('🔒 仅私密'),
+                              selected:
+                                  controller.privacyFilter ==
+                                  PrivacyLevel.private,
+                              showCheckmark: false,
+                              backgroundColor: tokens.canvas,
+                              selectedColor: tokens.privacySubtle,
+                              side: BorderSide(
+                                color:
+                                    controller.privacyFilter ==
+                                        PrivacyLevel.private
+                                    ? tokens.privacyPrivate
+                                    : tokens.borderHairline,
+                              ),
+                              labelStyle: BlinkTypography.metaLabel(
+                                tokens,
+                                color:
+                                    controller.privacyFilter ==
+                                        PrivacyLevel.private
+                                    ? tokens.privacyPrivate
+                                    : tokens.textSecondary,
+                              ),
+                              onSelected: (selected) {
+                                controller.setPrivacyFilter(
+                                  selected ? PrivacyLevel.private : null,
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),

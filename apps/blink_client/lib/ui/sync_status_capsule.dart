@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/sync_controller.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 /// Quiet, accessible top-level sync status banner (`INV-11`, `docs/ui.md`).
 ///
@@ -15,6 +16,8 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
     required this.onOpenConflicts,
     required this.onOpenSyncSettings,
     this.compact = false,
+    this.trailingChromeInset = 0.0,
+    this.enableWindowDrag = false,
     super.key,
   });
 
@@ -22,6 +25,14 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
   final VoidCallback onOpenConflicts;
   final VoidCallback onOpenSyncSettings;
   final bool compact;
+
+  /// Optional trailing inset reserved for immersive desktop window caption
+  /// controls when this banner occupies the top `44px` strip of the main panel.
+  final double trailingChromeInset;
+
+  /// Enables dragging/double-clicking blank banner area to move/maximize the
+  /// desktop window when this banner sits at the top edge.
+  final bool enableWindowDrag;
 
   /// Returns whether the global top sync banner should occupy vertical space.
   ///
@@ -88,14 +99,16 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
       builder: (context, _) {
         final spec = _describeStatus(sync, tokens);
 
+        final hPad = compact ? 10.0 : 14.0;
         return Semantics(
           container: true,
           label: '同步状态：${spec.semanticsLabel}',
           child: Container(
             key: const Key('sync_status_capsule'),
-            padding: EdgeInsets.symmetric(
-              horizontal: compact ? 10 : 14,
-              vertical: 6,
+            constraints: BoxConstraints(
+              minHeight: trailingChromeInset > 0
+                  ? kBlinkWindowChromeHeaderHeight
+                  : 0,
             ),
             decoration: BoxDecoration(
               color: spec.background,
@@ -103,110 +116,132 @@ class BlinkSyncStatusCapsule extends StatelessWidget {
                 bottom: BorderSide(color: tokens.borderHairline, width: 1),
               ),
             ),
-            child: Row(
-              children: <Widget>[
-                if (sync.uiStatus == BlinkSyncUiStatus.syncing)
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: spec.foreground,
-                    ),
-                  )
-                else
-                  Icon(spec.icon, size: 16, color: spec.foreground),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    spec.label,
-                    key: const Key('sync_status_capsule_label'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: BlinkTypography.metaLabel(
-                      tokens,
-                      color: spec.foreground,
-                    ).copyWith(fontFeatures: BlinkTypography.tabularFigures),
-                  ),
+            child: BlinkWindowDragArea(
+              enabled: enableWindowDrag,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  hPad,
+                  6,
+                  trailingChromeInset > 0
+                      ? (compact ? 6.0 : 8.0) + trailingChromeInset
+                      : hPad,
+                  6,
                 ),
-                if (sync.openConflictCount > 0) ...<Widget>[
-                  const SizedBox(width: 6),
-                  TextButton.icon(
-                    key: const Key('sync_capsule_conflicts_button'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: tokens.statusErr,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: const Size(0, 30),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                child: Row(
+                  children: <Widget>[
+                    IgnorePointer(
+                      child: sync.uiStatus == BlinkSyncUiStatus.syncing
+                          ? SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: spec.foreground,
+                              ),
+                            )
+                          : Icon(spec.icon, size: 16, color: spec.foreground),
                     ),
-                    onPressed: onOpenConflicts,
-                    icon: const Icon(Icons.compare_arrows_rounded, size: 15),
-                    label: Text(
-                      '处理冲突 (${sync.openConflictCount})',
-                      style: BlinkTypography.metaLabel(
-                        tokens,
-                        color: tokens.statusErr,
-                      ),
-                    ),
-                  ),
-                ],
-                if (sync.isConfigured) ...<Widget>[
-                  const SizedBox(width: 4),
-                  TextButton.icon(
-                    key: const Key('sync_capsule_sync_now_button'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: tokens.accentPrimary,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: const Size(0, 30),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    onPressed: sync.isSyncing
-                        ? null
-                        : () => unawaited(sync.syncNow(manual: true)),
-                    icon: const Icon(Icons.sync_rounded, size: 15),
-                    label: Text(
-                      compact ? '同步' : '立即同步',
-                      style: BlinkTypography.metaLabel(
-                        tokens,
-                        color: sync.isSyncing
-                            ? tokens.textMuted
-                            : tokens.accentPrimary,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: IgnorePointer(
+                        child: Text(
+                          spec.label,
+                          key: const Key('sync_status_capsule_label'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              BlinkTypography.metaLabel(
+                                tokens,
+                                color: spec.foreground,
+                              ).copyWith(
+                                fontFeatures: BlinkTypography.tabularFigures,
+                              ),
+                        ),
                       ),
                     ),
-                  ),
-                ] else ...<Widget>[
-                  const SizedBox(width: 4),
-                  TextButton(
-                    key: const Key('sync_capsule_settings_button'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: tokens.textSecondary,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
+                    if (sync.openConflictCount > 0) ...<Widget>[
+                      const SizedBox(width: 6),
+                      TextButton.icon(
+                        key: const Key('sync_capsule_conflicts_button'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: tokens.statusErr,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: onOpenConflicts,
+                        icon: const Icon(
+                          Icons.compare_arrows_rounded,
+                          size: 15,
+                        ),
+                        label: Text(
+                          '处理冲突 (${sync.openConflictCount})',
+                          style: BlinkTypography.metaLabel(
+                            tokens,
+                            color: tokens.statusErr,
+                          ),
+                        ),
                       ),
-                      minimumSize: const Size(0, 30),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    onPressed: onOpenSyncSettings,
-                    child: Text(
-                      '同步设置',
-                      style: BlinkTypography.metaLabel(
-                        tokens,
-                        color: tokens.textSecondary,
+                    ],
+                    if (sync.isConfigured) ...<Widget>[
+                      const SizedBox(width: 4),
+                      TextButton.icon(
+                        key: const Key('sync_capsule_sync_now_button'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: tokens.accentPrimary,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: sync.isSyncing
+                            ? null
+                            : () => unawaited(sync.syncNow(manual: true)),
+                        icon: const Icon(Icons.sync_rounded, size: 15),
+                        label: Text(
+                          compact ? '同步' : '立即同步',
+                          style: BlinkTypography.metaLabel(
+                            tokens,
+                            color: sync.isSyncing
+                                ? tokens.textMuted
+                                : tokens.accentPrimary,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ],
-              ],
+                    ] else ...<Widget>[
+                      const SizedBox(width: 4),
+                      TextButton(
+                        key: const Key('sync_capsule_settings_button'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: tokens.textSecondary,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: onOpenSyncSettings,
+                        child: Text(
+                          '同步设置',
+                          style: BlinkTypography.metaLabel(
+                            tokens,
+                            color: tokens.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
         );

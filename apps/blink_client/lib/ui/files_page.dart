@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/workspace_controller.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 /// Category filter for the Attachments (`附件`) module.
 enum BlinkFileFilter { all, image, document, audio, other, unreferenced }
@@ -212,47 +213,60 @@ class BlinkFilesSidebar extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      '附件',
-                      style: BlinkTypography.sectionHeading(tokens),
-                    ),
-                  ),
-                  TextButton.icon(
-                    key: const Key('files_sidebar_import_button'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: tokens.accentPrimary,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: const Size(0, 30),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    onPressed: workspace.hasOpenVault
-                        ? () => unawaited(workspace.importFileFromPicker())
-                        : null,
-                    icon: const Icon(Icons.add_rounded, size: 16),
-                    label: const Text('导入'),
-                  ),
-                  if (!isDrawer && onCollapse != null)
-                    IconButton(
-                      key: const Key('files_sidebar_collapse_button'),
-                      tooltip: '收起侧边栏',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onCollapse,
-                      icon: Icon(
-                        Icons.keyboard_double_arrow_left_rounded,
-                        size: 18,
-                        color: tokens.textSecondary,
+            BlinkWindowDragArea(
+              enabled: !isDrawer,
+              child: Container(
+                height: kBlinkWindowChromeHeaderHeight,
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: IgnorePointer(
+                        child: Text(
+                          '附件',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: BlinkTypography.sectionHeading(tokens),
+                        ),
                       ),
                     ),
-                ],
+                    TextButton.icon(
+                      key: const Key('files_sidebar_import_button'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: tokens.accentPrimary,
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        minimumSize: const Size(0, 30),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: workspace.hasOpenVault
+                          ? () => unawaited(workspace.importFileFromPicker())
+                          : null,
+                      icon: const Icon(Icons.add_rounded, size: 16),
+                      label: const Text('导入'),
+                    ),
+                    if (!isDrawer && onCollapse != null)
+                      IconButton(
+                        key: const Key('files_sidebar_collapse_button'),
+                        tooltip: '收起侧边栏',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        onPressed: onCollapse,
+                        icon: Icon(
+                          Icons.keyboard_double_arrow_left_rounded,
+                          size: 18,
+                          color: tokens.textSecondary,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             Divider(height: 1, color: tokens.borderHairline),
@@ -446,17 +460,14 @@ class _BlinkFilesPageState extends State<BlinkFilesPage> {
           (sum, blob) => sum + blob.byteSize,
         );
         final hPad = widget.isMobile ? 14.0 : 20.0;
+        final trailingInset = widget.isMobile
+            ? 0.0
+            : BlinkWindowChromeScope.trailingInsetOf(context);
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Container(
-              padding: EdgeInsets.fromLTRB(
-                hPad,
-                widget.isMobile ? 10 : 14,
-                hPad,
-                12,
-              ),
               decoration: BoxDecoration(
                 color: tokens.canvas,
                 border: Border(
@@ -466,208 +477,270 @@ class _BlinkFilesPageState extends State<BlinkFilesPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      if (widget.onBack != null) ...<Widget>[
-                        IconButton(
-                          key: const Key('files_back_button'),
-                          tooltip: '返回',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onBack,
-                          icon: const Icon(
-                            Icons.arrow_back_ios_new_rounded,
-                            size: 18,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                      ] else if (widget.showExpandSidebarButton &&
-                          widget.onExpandSidebar != null) ...<Widget>[
-                        IconButton(
-                          key: const Key('files_sidebar_expand_button'),
-                          tooltip: '展开侧边栏',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onExpandSidebar,
-                          icon: Icon(
-                            Icons.view_sidebar_outlined,
-                            size: 18,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ] else if (widget.onOpenDrawer != null) ...<Widget>[
-                        IconButton(
-                          tooltip: '筛选附件',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onOpenDrawer,
-                          icon: Icon(
-                            Icons.menu_rounded,
-                            size: 19,
-                            color: tokens.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                      ],
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(
-                              _headingForFilter(controller.filter),
-                              style: BlinkTypography.heroHeading(tokens),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              '共 ${allBlobs.length} 个附件 · ${formatByteSize(totalBytes)} · 未引用 $unreferencedCount 个',
-                              style: BlinkTypography.metaLabel(tokens).copyWith(
-                                fontFeatures: BlinkTypography.tabularFigures,
-                              ),
-                            ),
-                          ],
-                        ),
+                  BlinkWindowDragArea(
+                    enabled: !widget.isMobile,
+                    child: Container(
+                      height: kBlinkWindowChromeHeaderHeight,
+                      padding: EdgeInsets.only(
+                        left: hPad,
+                        right: trailingInset > 0 ? 0 : hPad,
                       ),
-                      const SizedBox(width: 8),
-                      if (!widget.isMobile) ...<Widget>[
-                        OutlinedButton.icon(
-                          key: const Key('files_gc_button'),
-                          onPressed: widget.workspace.hasOpenVault
-                              ? () => unawaited(
-                                  widget.workspace.gcUnreferencedBlobs(),
-                                )
-                              : null,
-                          icon: const Icon(
-                            Icons.cleaning_services_outlined,
-                            size: 16,
-                          ),
-                          label: const Text('清理未引用'),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      FilledButton.icon(
-                        key: const Key('files_import_button'),
-                        onPressed: widget.workspace.hasOpenVault
-                            ? () => unawaited(
-                                widget.workspace.importFileFromPicker(),
-                              )
-                            : null,
-                        icon: const Icon(Icons.upload_file_rounded, size: 16),
-                        label: Text(widget.isMobile ? '导入' : '导入附件'),
-                      ),
-                    ],
-                  ),
-                  if (widget.isMobile && unreferencedCount > 0) ...<Widget>[
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        key: const Key('files_gc_button'),
-                        onPressed: widget.workspace.hasOpenVault
-                            ? () => unawaited(
-                                widget.workspace.gcUnreferencedBlobs(),
-                              )
-                            : null,
-                        icon: const Icon(
-                          Icons.cleaning_services_outlined,
-                          size: 15,
-                        ),
-                        label: Text('清理 $unreferencedCount 个未引用附件'),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  TextField(
-                    key: const Key('files_search_input'),
-                    controller: _searchController,
-                    style: BlinkTypography.body(tokens),
-                    decoration: InputDecoration(
-                      hintText: '搜索附件名称、类型或关联的小记与笔记…',
-                      hintStyle: BlinkTypography.body(
-                        tokens,
-                        color: tokens.textMuted,
-                      ),
-                      prefixIcon: Icon(
-                        Icons.search_rounded,
-                        size: 18,
-                        color: tokens.textSecondary,
-                      ),
-                      suffixIcon: controller.query.isNotEmpty
-                          ? IconButton(
-                              tooltip: '清空搜索',
-                              onPressed: () {
-                                _searchController.clear();
-                                controller.setQuery('');
-                              },
-                              icon: Icon(
-                                Icons.close_rounded,
-                                size: 16,
-                                color: tokens.textSecondary,
-                              ),
-                            )
-                          : null,
-                      isDense: true,
-                      filled: true,
-                      fillColor: tokens.sidebar,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: tokens.borderHairline),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: tokens.borderHairline),
-                      ),
-                    ),
-                    onChanged: controller.setQuery,
-                  ),
-                  if (widget.showInlineFilters) ...<Widget>[
-                    const SizedBox(height: 10),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
                       child: Row(
                         children: <Widget>[
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.all,
-                            '全部',
+                          if (widget.onBack != null) ...<Widget>[
+                            IconButton(
+                              key: const Key('files_back_button'),
+                              tooltip: '返回',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: widget.onBack,
+                              icon: const Icon(
+                                Icons.arrow_back_ios_new_rounded,
+                                size: 18,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                          ] else if (widget.showExpandSidebarButton &&
+                              widget.onExpandSidebar != null) ...<Widget>[
+                            IconButton(
+                              key: const Key('files_sidebar_expand_button'),
+                              tooltip: '展开侧边栏',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: widget.onExpandSidebar,
+                              icon: Icon(
+                                Icons.view_sidebar_outlined,
+                                size: 18,
+                                color: tokens.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ] else if (widget.onOpenDrawer != null) ...<Widget>[
+                            IconButton(
+                              tooltip: '筛选附件',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              onPressed: widget.onOpenDrawer,
+                              icon: Icon(
+                                Icons.menu_rounded,
+                                size: 19,
+                                color: tokens.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                          ],
+                          Expanded(
+                            child: IgnorePointer(
+                              child: Text(
+                                _headingForFilter(controller.filter),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: BlinkTypography.heroHeading(tokens),
+                              ),
+                            ),
                           ),
-                          const SizedBox(width: 6),
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.image,
-                            '图片',
+                          const SizedBox(width: 8),
+                          if (!widget.isMobile) ...<Widget>[
+                            OutlinedButton.icon(
+                              key: const Key('files_gc_button'),
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                minimumSize: const Size(0, 30),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onPressed: widget.workspace.hasOpenVault
+                                  ? () => unawaited(
+                                      widget.workspace.gcUnreferencedBlobs(),
+                                    )
+                                  : null,
+                              icon: const Icon(
+                                Icons.cleaning_services_outlined,
+                                size: 15,
+                              ),
+                              label: const Text('清理未引用'),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          FilledButton.icon(
+                            key: const Key('files_import_button'),
+                            style: FilledButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              minimumSize: const Size(0, 30),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: widget.workspace.hasOpenVault
+                                ? () => unawaited(
+                                    widget.workspace.importFileFromPicker(),
+                                  )
+                                : null,
+                            icon: const Icon(
+                              Icons.upload_file_rounded,
+                              size: 15,
+                            ),
+                            label: Text(widget.isMobile ? '导入' : '导入附件'),
                           ),
-                          const SizedBox(width: 6),
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.document,
-                            '文档',
-                          ),
-                          const SizedBox(width: 6),
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.audio,
-                            '音频',
-                          ),
-                          const SizedBox(width: 6),
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.other,
-                            '其他',
-                          ),
-                          const SizedBox(width: 6),
-                          _buildFilterChip(
-                            tokens,
-                            controller,
-                            BlinkFileFilter.unreferenced,
-                            '未引用 ($unreferencedCount)',
-                          ),
+                          if (trailingInset > 0) ...<Widget>[
+                            const SizedBox(width: 10),
+                            SizedBox(width: trailingInset),
+                          ],
                         ],
                       ),
                     ),
-                  ],
+                  ),
+                  Divider(height: 1, color: tokens.borderHairline),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(hPad, 10, hPad, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Text(
+                          '共 ${allBlobs.length} 个附件 · ${formatByteSize(totalBytes)} · 未引用 $unreferencedCount 个',
+                          style: BlinkTypography.metaLabel(tokens).copyWith(
+                            fontFeatures: BlinkTypography.tabularFigures,
+                          ),
+                        ),
+                        if (widget.isMobile &&
+                            unreferencedCount > 0) ...<Widget>[
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              key: const Key('files_gc_button'),
+                              onPressed: widget.workspace.hasOpenVault
+                                  ? () => unawaited(
+                                      widget.workspace.gcUnreferencedBlobs(),
+                                    )
+                                  : null,
+                              icon: const Icon(
+                                Icons.cleaning_services_outlined,
+                                size: 15,
+                              ),
+                              label: Text('清理 $unreferencedCount 个未引用附件'),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        TextField(
+                          key: const Key('files_search_input'),
+                          controller: _searchController,
+                          style: BlinkTypography.body(tokens),
+                          decoration: InputDecoration(
+                            hintText: '搜索附件名称、类型或关联的小记与笔记…',
+                            hintStyle: BlinkTypography.body(
+                              tokens,
+                              color: tokens.textMuted,
+                            ),
+                            prefixIcon: Icon(
+                              Icons.search_rounded,
+                              size: 18,
+                              color: tokens.textSecondary,
+                            ),
+                            suffixIcon: controller.query.isNotEmpty
+                                ? IconButton(
+                                    tooltip: '清空搜索',
+                                    onPressed: () {
+                                      _searchController.clear();
+                                      controller.setQuery('');
+                                    },
+                                    icon: Icon(
+                                      Icons.close_rounded,
+                                      size: 16,
+                                      color: tokens.textSecondary,
+                                    ),
+                                  )
+                                : null,
+                            isDense: true,
+                            filled: true,
+                            fillColor: tokens.sidebar,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                color: tokens.borderHairline,
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                color: tokens.borderHairline,
+                              ),
+                            ),
+                          ),
+                          onChanged: controller.setQuery,
+                        ),
+                        if (widget.showInlineFilters) ...<Widget>[
+                          const SizedBox(height: 10),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: <Widget>[
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.all,
+                                  '全部',
+                                ),
+                                const SizedBox(width: 6),
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.image,
+                                  '图片',
+                                ),
+                                const SizedBox(width: 6),
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.document,
+                                  '文档',
+                                ),
+                                const SizedBox(width: 6),
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.audio,
+                                  '音频',
+                                ),
+                                const SizedBox(width: 6),
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.other,
+                                  '其他',
+                                ),
+                                const SizedBox(width: 6),
+                                _buildFilterChip(
+                                  tokens,
+                                  controller,
+                                  BlinkFileFilter.unreferenced,
+                                  '未引用 ($unreferencedCount)',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),

@@ -6,7 +6,56 @@ import 'package:material_ui/material_ui.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/application/wysiwyg_document.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 import 'package:blink_client/ui/markdown_editor.dart';
+
+Future<void> _confirmAndEmptyNoteTrash(
+  BuildContext context,
+  BlinkWorkspaceController workspace,
+  int count,
+) async {
+  if (count <= 0) {
+    return;
+  }
+  final tokens = BlinkColorTokens.of(context);
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        backgroundColor: tokens.canvas,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: tokens.borderHairline, width: 1),
+        ),
+        title: Text('清空笔记回收站？', style: BlinkTypography.sectionHeading(tokens)),
+        content: Text(
+          '将彻底删除回收站中的 $count 篇笔记，删除后无法恢复，未被引用的附件也会一并清理。',
+          style: BlinkTypography.body(tokens, color: tokens.textSecondary),
+        ),
+        actions: <Widget>[
+          TextButton(
+            key: const Key('trash_empty_cancel'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('trash_empty_confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: tokens.statusErr,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('清空回收站'),
+          ),
+        ],
+      );
+    },
+  );
+  if (confirmed == true) {
+    await workspace.emptyTrash(kinds: BlinkWorkspaceController.noteEntryKinds);
+  }
+}
 
 /// Feishu-style contextual resource sidebar for Long-Form Notes (`笔记`).
 class BlinkNotesSidebar extends StatelessWidget {
@@ -38,31 +87,50 @@ class BlinkNotesSidebar extends StatelessWidget {
           key: const Key('notes_sidebar'),
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      '笔记',
-                      style: BlinkTypography.sectionHeading(tokens),
-                    ),
-                  ),
-                  if (!isDrawer && onCollapse != null)
-                    IconButton(
-                      key: const Key('notes_sidebar_collapse_button'),
-                      tooltip: '收起侧边栏 (Ctrl+\\)',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onCollapse,
-                      icon: Icon(
-                        Icons.keyboard_double_arrow_left_rounded,
-                        size: 18,
-                        color: tokens.textSecondary,
+            Container(
+              height: kBlinkWindowChromeHeaderHeight,
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(color: tokens.borderHairline, width: 1),
+                ),
+              ),
+              child: BlinkWindowDragArea(
+                enabled: !isDrawer,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: IgnorePointer(
+                          child: Text(
+                            '笔记',
+                            style: BlinkTypography.sectionHeading(tokens),
+                          ),
+                        ),
                       ),
-                    ),
-                ],
+                      if (!isDrawer && onCollapse != null)
+                        IconButton(
+                          key: const Key('notes_sidebar_collapse_button'),
+                          tooltip: '收起侧边栏 (Ctrl+\\)',
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          onPressed: onCollapse,
+                          icon: Icon(
+                            Icons.keyboard_double_arrow_left_rounded,
+                            size: 18,
+                            color: tokens.textSecondary,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
+            const SizedBox(height: 10),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: FilledButton.icon(
@@ -135,6 +203,57 @@ class BlinkNotesSidebar extends StatelessWidget {
                     ),
                     onDeleted: () =>
                         workspace.selectNoteFilter(NoteFilterKind.all),
+                  ),
+                ),
+              ),
+            ],
+            if (!isDrawer &&
+                workspace.selectedNoteFilter ==
+                    NoteFilterKind.trash) ...<Widget>[
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+                  decoration: BoxDecoration(
+                    color: tokens.canvas,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: tokens.borderHairline, width: 1),
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          '不清理将一直保留',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: BlinkTypography.metaLabel(
+                            tokens,
+                            color: tokens.textMuted,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        key: const Key('trash_empty_button'),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: tokens.statusErr,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                        ),
+                        onPressed:
+                            workspace.hasOpenVault &&
+                                workspace.trashNoteCount > 0
+                            ? () => unawaited(
+                                _confirmAndEmptyNoteTrash(
+                                  context,
+                                  workspace,
+                                  workspace.trashNoteCount,
+                                ),
+                              )
+                            : null,
+                        child: const Text('清空回收站'),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -356,36 +475,62 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
           );
         }
 
-        return _buildDesktopEmptyState(tokens);
+        return _buildDesktopEmptyState(context, tokens);
       },
     );
   }
 
-  Widget _buildDesktopEmptyState(BlinkColorTokens tokens) {
+  Widget _buildDesktopEmptyState(
+    BuildContext context,
+    BlinkColorTokens tokens,
+  ) {
     final isTrash = widget.workspace.selectedNoteFilter == NoteFilterKind.trash;
     final hasAnyInList = widget.workspace.noteEntries.isNotEmpty;
+    final trailingInset = BlinkWindowChromeScope.trailingInsetOf(context);
 
     return ColoredBox(
       color: tokens.canvas,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          if (widget.showExpandSidebarButton && widget.onExpandSidebar != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                key: const Key('notes_sidebar_expand_button'),
-                tooltip: '展开侧边栏 (Ctrl+\\)',
-                visualDensity: VisualDensity.compact,
-                onPressed: widget.onExpandSidebar,
-                icon: Icon(
-                  Icons.menu_open_rounded,
-                  size: 18,
-                  color: tokens.textSecondary,
+          SizedBox(
+            height: kBlinkWindowChromeHeaderHeight,
+            child: BlinkWindowDragArea(
+              enabled: !widget.isMobile,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  12,
+                  0,
+                  trailingInset > 0 ? 8 : 12,
+                  0,
+                ),
+                child: Row(
+                  children: <Widget>[
+                    if (widget.showExpandSidebarButton &&
+                        widget.onExpandSidebar != null)
+                      IconButton(
+                        key: const Key('notes_sidebar_expand_button'),
+                        tooltip: '展开侧边栏 (Ctrl+\\)',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        onPressed: widget.onExpandSidebar,
+                        icon: Icon(
+                          Icons.menu_open_rounded,
+                          size: 18,
+                          color: tokens.textSecondary,
+                        ),
+                      ),
+                    const Spacer(),
+                    if (trailingInset > 0) SizedBox(width: trailingInset),
+                  ],
                 ),
               ),
             ),
+          ),
           Expanded(
             child: Center(
               child: ConstrainedBox(
@@ -412,13 +557,39 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        isTrash ? '删除的笔记会在回收站保留 30 天，可随时还原。' : '也可以把小记一键转为长笔记',
+                        isTrash ? '回收站中的内容会一直保留，直到你手动还原或彻底删除' : '也可以把小记一键转为长笔记',
                         textAlign: TextAlign.center,
                         style: BlinkTypography.body(
                           tokens,
                           color: tokens.textSecondary,
                         ),
                       ),
+                      if (isTrash &&
+                          widget.showExpandSidebarButton &&
+                          hasAnyInList) ...<Widget>[
+                        const SizedBox(height: 18),
+                        OutlinedButton.icon(
+                          key: const Key('trash_empty_button'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: tokens.statusErr,
+                            side: BorderSide(color: tokens.statusErr, width: 1),
+                          ),
+                          onPressed: widget.workspace.hasOpenVault
+                              ? () => unawaited(
+                                  _confirmAndEmptyNoteTrash(
+                                    context,
+                                    widget.workspace,
+                                    widget.workspace.trashNoteCount,
+                                  ),
+                                )
+                              : null,
+                          icon: const Icon(
+                            Icons.delete_sweep_outlined,
+                            size: 16,
+                          ),
+                          label: const Text('清空回收站'),
+                        ),
+                      ],
                       if (!isTrash) ...<Widget>[
                         const SizedBox(height: 18),
                         FilledButton.icon(
@@ -553,6 +724,48 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
               ],
             ),
           ),
+          if (filter == NoteFilterKind.trash)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: tokens.sidebar,
+                border: Border(
+                  bottom: BorderSide(color: tokens.borderHairline, width: 1),
+                ),
+              ),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      '回收站中的内容会一直保留，直到你手动还原或彻底删除',
+                      style: BlinkTypography.metaLabel(
+                        tokens,
+                        color: tokens.textSecondary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    key: const Key('trash_empty_button'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: tokens.statusErr,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: widget.workspace.hasOpenVault && notes.isNotEmpty
+                        ? () => unawaited(
+                            _confirmAndEmptyNoteTrash(
+                              context,
+                              widget.workspace,
+                              notes.length,
+                            ),
+                          )
+                        : null,
+                    child: const Text('清空回收站'),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: notes.isEmpty
                 ? Center(
@@ -576,7 +789,7 @@ class _BlinkNotesPageState extends State<BlinkNotesPage> {
                           const SizedBox(height: 6),
                           Text(
                             filter == NoteFilterKind.trash
-                                ? '删除的笔记会在回收站保留 30 天。'
+                                ? '回收站中的内容会一直保留，直到你手动还原或彻底删除'
                                 : '也可以把小记一键转为长笔记',
                             textAlign: TextAlign.center,
                             style: BlinkTypography.body(

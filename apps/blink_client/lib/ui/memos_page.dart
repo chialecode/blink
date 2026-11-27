@@ -8,6 +8,7 @@ import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/editor_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/ui/bfm_preview_view.dart';
+import 'package:blink_client/ui/desktop_window_chrome.dart';
 
 /// Feishu-style contextual resource sidebar for Quick Memos (`小记`).
 class BlinkMemosSidebar extends StatelessWidget {
@@ -114,41 +115,48 @@ class BlinkMemosSidebar extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Container(
-                height: 44,
-                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                height: kBlinkWindowChromeHeaderHeight,
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(color: tokens.borderHairline, width: 1),
                   ),
                 ),
-                child: Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: Text(
-                        '小记',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: BlinkTypography.sectionHeading(tokens),
-                      ),
+                child: BlinkWindowDragArea(
+                  enabled: !isDrawer,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                    child: Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: IgnorePointer(
+                            child: Text(
+                              '小记',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: BlinkTypography.sectionHeading(tokens),
+                            ),
+                          ),
+                        ),
+                        if (!isDrawer && onCollapse != null)
+                          IconButton(
+                            key: const Key('sidebar_collapse_button'),
+                            tooltip: '收起侧边栏 (Ctrl+\\)',
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            onPressed: onCollapse,
+                            icon: Icon(
+                              Icons.keyboard_double_arrow_left_rounded,
+                              size: 18,
+                              color: tokens.textSecondary,
+                            ),
+                          ),
+                      ],
                     ),
-                    if (!isDrawer && onCollapse != null)
-                      IconButton(
-                        key: const Key('sidebar_collapse_button'),
-                        tooltip: '收起侧边栏 (Ctrl+\\)',
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 32,
-                          minHeight: 32,
-                        ),
-                        onPressed: onCollapse,
-                        icon: Icon(
-                          Icons.keyboard_double_arrow_left_rounded,
-                          size: 18,
-                          color: tokens.textSecondary,
-                        ),
-                      ),
-                  ],
+                  ),
                 ),
               ),
               Expanded(
@@ -521,6 +529,39 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
     );
   }
 
+  bool _composerHasPrivate() =>
+      _editor.privacyLocked ||
+      _markdown.parse(_editor.textController.text).hasPrivateToken;
+
+  void _toggleComposerPrivate() {
+    if (BlinkSyntaxTextController.isValueComposing(
+      _editor.textController.value,
+    )) {
+      return;
+    }
+    final currentlyPrivate = _composerHasPrivate();
+    if (currentlyPrivate) {
+      final currentText = _editor.textController.text;
+      final cleaned = _markdown.stripPrivateTokens(currentText);
+      if (cleaned != currentText) {
+        final nextOffset = _editor.textController.selection.isValid
+            ? _editor.textController.selection.baseOffset.clamp(
+                0,
+                cleaned.length,
+              )
+            : cleaned.length;
+        _editor.textController.value = TextEditingValue(
+          text: cleaned,
+          selection: TextSelection.collapsed(offset: nextOffset),
+          composing: TextRange.empty,
+        );
+      }
+      _editor.setPrivacyLocked(false);
+    } else {
+      _editor.setPrivacyLocked(true);
+    }
+  }
+
   Future<void> _submitComposer() async {
     if (BlinkSyntaxTextController.isValueComposing(
       _editor.textController.value,
@@ -528,7 +569,40 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
       return;
     }
     final wasEditing = _editor.isEditingExisting;
+    final editingId = _editor.editingEntryId;
+    final body = _editor.textController.text;
+    final hasAttachments = _editor.attachedBlobSha256s.isNotEmpty;
+    final shouldDowngrade =
+        wasEditing &&
+        editingId != null &&
+        (_editor.explicitPrivacyDowngrade ||
+            _editor.editingEntryOriginallyPrivate) &&
+        !_composerHasPrivate();
     try {
+      if (shouldDowngrade) {
+        if (body.trim().isEmpty && !hasAttachments) {
+          widget.workspace.showBanner(
+            '取消私密后正文为空，请补充内容或直接移入回收站。',
+            isError: true,
+          );
+          return;
+        }
+        final saved = await widget.workspace.updateMemo(
+          editingId,
+          bodyMd: body,
+          isPrivate: false,
+          imageBlobSha256s: List<String>.of(_editor.attachedBlobSha256s),
+          allowPrivacyDowngrade: true,
+        );
+        if (saved != null) {
+          widget.workspace.selectMemo(saved.id);
+          await _editor.resetIfEditingEntry(editingId);
+          await widget.workspace.refreshAll();
+          widget.workspace.showBanner('已取消私密，恢复为常规小记。');
+        }
+        return;
+      }
+
       final saved = await _editor.submit();
       if (saved != null) {
         if (wasEditing) {
@@ -594,10 +668,51 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
   }
 
   Future<void> _cancelEditingMemo() async {
-    await _editor.startNewEntry();
+    final editingId = _editor.editingEntryId;
+    if (editingId != null) {
+      await _editor.resetIfEditingEntry(editingId);
+    } else {
+      await _editor.startNewEntry();
+    }
     widget.workspace.selectMemo(null);
     if (mounted) {
       _focusNode.requestFocus();
+    }
+  }
+
+  Future<void> _toggleMemoPrivacy(RawEntry entry) async {
+    final nextPrivate = !entry.isPrivate;
+    final nextBody = nextPrivate
+        ? entry.bodyMd
+        : _markdown.stripPrivateTokens(entry.bodyMd);
+    final hasAttachments =
+        entry.imageBlobSha256s.isNotEmpty ||
+        (entry.audioBlobSha256 != null && entry.audioBlobSha256!.isNotEmpty);
+    if (!nextPrivate && nextBody.trim().isEmpty && !hasAttachments) {
+      widget.workspace.showBanner('取消私密后正文为空，请先编辑补充内容或直接移入回收站。', isError: true);
+      return;
+    }
+
+    final activeVault = widget.workspace.vault;
+    if (activeVault != null && activeVault.isOpen) {
+      try {
+        await activeVault.raw.clearDraft('entry:${entry.id}');
+      } catch (_) {}
+    }
+
+    final updated = await widget.workspace.updateMemo(
+      entry.id,
+      bodyMd: nextBody,
+      isPrivate: nextPrivate,
+      allowPrivacyDowngrade: !nextPrivate,
+    );
+    if (updated != null) {
+      if (_editor.editingEntryId == entry.id) {
+        await _editor.syncFromSavedEntry(updated);
+      }
+      widget.workspace.showBanner(
+        nextPrivate ? '已设为私密，仅存本机。' : '已取消私密，恢复为常规小记。',
+      );
     }
   }
 
@@ -613,6 +728,55 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
   Future<void> _softDeleteMemo(RawEntry entry) async {
     await _editor.resetIfEditingEntry(entry.id);
     await widget.workspace.softDeleteEntry(entry.id);
+  }
+
+  Future<void> _confirmAndEmptyMemoTrash(int count) async {
+    if (!mounted || count <= 0) {
+      return;
+    }
+    final tokens = BlinkColorTokens.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: tokens.canvas,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: tokens.borderHairline, width: 1),
+          ),
+          title: Text(
+            '清空小记回收站？',
+            style: BlinkTypography.sectionHeading(tokens),
+          ),
+          content: Text(
+            '将彻底删除回收站中的 $count 条小记，删除后无法恢复，未被引用的附件也会一并清理。',
+            style: BlinkTypography.body(tokens, color: tokens.textSecondary),
+          ),
+          actions: <Widget>[
+            TextButton(
+              key: const Key('trash_empty_cancel'),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: const Key('trash_empty_confirm'),
+              style: FilledButton.styleFrom(
+                backgroundColor: tokens.statusErr,
+                foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('清空回收站'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed == true) {
+      await widget.workspace.emptyTrash(
+        kinds: BlinkWorkspaceController.memoEntryKinds,
+      );
+    }
   }
 
   Future<void> _confirmAndPurgeMemo(RawEntry entry) async {
@@ -701,7 +865,11 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
     final tokens = BlinkColorTokens.of(context);
 
     return ListenableBuilder(
-      listenable: Listenable.merge(<Listenable>[widget.workspace, _editor]),
+      listenable: Listenable.merge(<Listenable>[
+        widget.workspace,
+        _editor,
+        _editor.textController,
+      ]),
       builder: (context, _) {
         final filter = widget.workspace.selectedMemoFilter;
         final isTrash = filter == MemoFilterKind.trash;
@@ -719,11 +887,13 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
                 _buildMobileHeader(tokens, filter: filter)
               else
                 _buildDesktopHeader(
+                  context,
                   tokens,
                   filter: filter,
                   count: entries.length,
                 ),
-              if (widget.isMobile && isTrash) _buildMobileTrashBanner(tokens),
+              if (widget.isMobile && isTrash)
+                _buildMobileTrashBanner(tokens, count: entries.length),
               Expanded(
                 child: entries.isEmpty
                     ? _buildEmptyState(tokens, filter: filter)
@@ -754,8 +924,7 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
                   onInsertTag: () => _insertSnippet('#'),
                   onInsertTask: _insertTaskSnippet,
                   onAttachFile: _attachFileToComposer,
-                  onTogglePrivate: () =>
-                      _editor.setPrivacyLocked(!_editor.privacyLocked),
+                  onTogglePrivate: _toggleComposerPrivate,
                 ),
             ],
           ),
@@ -765,6 +934,7 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
   }
 
   Widget _buildDesktopHeader(
+    BuildContext context,
     BlinkColorTokens tokens, {
     required MemoFilterKind filter,
     required int count,
@@ -772,126 +942,162 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
     final isTrash = filter == MemoFilterKind.trash;
     final isPrivate = filter == MemoFilterKind.privateOnly;
     final titleColor = isPrivate ? tokens.privacyPrivate : tokens.textPrimary;
+    final trailingInset = BlinkWindowChromeScope.trailingInsetOf(context);
 
     return Container(
-      height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: kBlinkWindowChromeHeaderHeight,
       decoration: BoxDecoration(
         color: tokens.canvas,
         border: Border(
           bottom: BorderSide(color: tokens.borderHairline, width: 1),
         ),
       ),
-      child: Row(
-        children: <Widget>[
-          if (widget.showExpandSidebarButton &&
-              widget.onExpandSidebar != null) ...<Widget>[
-            IconButton(
-              key: const Key('sidebar_expand_button'),
-              tooltip: '展开侧边栏 (Ctrl+\\)',
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              onPressed: widget.onExpandSidebar,
-              icon: Icon(
-                Icons.menu_rounded,
-                size: 18,
-                color: tokens.textSecondary,
-              ),
-            ),
-            const SizedBox(width: 6),
-          ],
-          if (isPrivate) ...<Widget>[
-            Icon(
-              Icons.lock_outline_rounded,
-              size: 15,
-              color: tokens.privacyPrivate,
-            ),
-            const SizedBox(width: 5),
-          ] else if (isTrash) ...<Widget>[
-            Icon(
-              Icons.delete_outline_rounded,
-              size: 15,
-              color: tokens.textSecondary,
-            ),
-            const SizedBox(width: 5),
-          ],
-          Text(
-            _activeFilterTitle(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: BlinkTypography.controlLabel(tokens)
-                .copyWith(color: titleColor, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
-            decoration: BoxDecoration(
-              color: tokens.sidebar,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              '$count',
-              style: BlinkTypography.metaLabel(
-                tokens,
-                color: tokens.textMuted,
-              ).copyWith(fontFeatures: BlinkTypography.tabularFigures),
-            ),
-          ),
-          if (filter == MemoFilterKind.tag) ...<Widget>[
-            const SizedBox(width: 8),
-            InkWell(
-              borderRadius: BorderRadius.circular(999),
-              onTap: () =>
-                  widget.workspace.selectMemoFilter(MemoFilterKind.all),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                child: Text(
-                  '查看全部',
-                  style: BlinkTypography.metaLabel(
-                    tokens,
-                    color: tokens.accentPrimary,
+      child: BlinkWindowDragArea(
+        enabled: !widget.isMobile,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(16, 0, trailingInset > 0 ? 8 : 16, 0),
+          child: Row(
+            children: <Widget>[
+              if (widget.showExpandSidebarButton &&
+                  widget.onExpandSidebar != null) ...<Widget>[
+                IconButton(
+                  key: const Key('sidebar_expand_button'),
+                  tooltip: '展开侧边栏 (Ctrl+\\)',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  onPressed: widget.onExpandSidebar,
+                  icon: Icon(
+                    Icons.menu_rounded,
+                    size: 18,
+                    color: tokens.textSecondary,
                   ),
                 ),
+                const SizedBox(width: 6),
+              ],
+              IgnorePointer(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    if (isPrivate) ...<Widget>[
+                      Icon(
+                        Icons.lock_outline_rounded,
+                        size: 15,
+                        color: tokens.privacyPrivate,
+                      ),
+                      const SizedBox(width: 5),
+                    ] else if (isTrash) ...<Widget>[
+                      Icon(
+                        Icons.delete_outline_rounded,
+                        size: 15,
+                        color: tokens.textSecondary,
+                      ),
+                      const SizedBox(width: 5),
+                    ],
+                    Text(
+                      _activeFilterTitle(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: BlinkTypography.controlLabel(tokens).copyWith(
+                        color: titleColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: tokens.sidebar,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        '$count',
+                        style:
+                            BlinkTypography.metaLabel(
+                              tokens,
+                              color: tokens.textMuted,
+                            ).copyWith(
+                              fontFeatures: BlinkTypography.tabularFigures,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
-          if (isTrash) ...<Widget>[
-            const SizedBox(width: 12),
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  '删除的小记保留 30 天，可随时还原',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: BlinkTypography.metaLabel(
-                    tokens,
-                    color: tokens.textMuted,
+              if (filter == MemoFilterKind.tag) ...<Widget>[
+                const SizedBox(width: 8),
+                InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () =>
+                      widget.workspace.selectMemoFilter(MemoFilterKind.all),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    child: Text(
+                      '查看全部',
+                      style: BlinkTypography.metaLabel(
+                        tokens,
+                        color: tokens.accentPrimary,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              key: const Key('trash_purge_expired_button'),
-              style: OutlinedButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
+              ],
+              if (isTrash) ...<Widget>[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: IgnorePointer(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        '回收站中的内容会一直保留，直到你手动还原或彻底删除',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: BlinkTypography.metaLabel(
+                          tokens,
+                          color: tokens.textMuted,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-                side: BorderSide(color: tokens.borderHairline, width: 1),
-              ),
-              onPressed: widget.workspace.hasOpenVault
-                  ? () => unawaited(widget.workspace.purgeExpiredTrash())
-                  : null,
-              icon: const Icon(Icons.delete_sweep_outlined, size: 15),
-              label: const Text('清理已过期'),
-            ),
-          ] else
-            const Spacer(),
-        ],
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  key: const Key('trash_empty_button'),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: tokens.statusErr,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    side: BorderSide(
+                      color: count > 0
+                          ? tokens.statusErr
+                          : tokens.borderHairline,
+                      width: 1,
+                    ),
+                  ),
+                  onPressed: widget.workspace.hasOpenVault && count > 0
+                      ? () => unawaited(_confirmAndEmptyMemoTrash(count))
+                      : null,
+                  icon: const Icon(Icons.delete_sweep_outlined, size: 15),
+                  label: const Text('清空回收站'),
+                ),
+              ] else
+                const Spacer(),
+              if (trailingInset > 0) SizedBox(width: trailingInset),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1014,7 +1220,10 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
     );
   }
 
-  Widget _buildMobileTrashBanner(BlinkColorTokens tokens) {
+  Widget _buildMobileTrashBanner(
+    BlinkColorTokens tokens, {
+    required int count,
+  }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
@@ -1027,7 +1236,7 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
         children: <Widget>[
           Expanded(
             child: Text(
-              '删除的小记保留 30 天，可随时还原',
+              '回收站中的内容会一直保留，直到你手动还原或彻底删除',
               style: BlinkTypography.metaLabel(
                 tokens,
                 color: tokens.textSecondary,
@@ -1036,15 +1245,16 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
           ),
           const SizedBox(width: 8),
           TextButton(
-            key: const Key('trash_purge_expired_button'),
+            key: const Key('trash_empty_button'),
             style: TextButton.styleFrom(
               visualDensity: VisualDensity.compact,
+              foregroundColor: tokens.statusErr,
               padding: const EdgeInsets.symmetric(horizontal: 8),
             ),
-            onPressed: widget.workspace.hasOpenVault
-                ? () => unawaited(widget.workspace.purgeExpiredTrash())
+            onPressed: widget.workspace.hasOpenVault && count > 0
+                ? () => unawaited(_confirmAndEmptyMemoTrash(count))
                 : null,
-            child: const Text('清理已过期'),
+            child: const Text('清空回收站'),
           ),
         ],
       ),
@@ -1087,6 +1297,7 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
               isBeingEdited: _editor.editingEntryId == entry.id,
               onSelect: () => widget.workspace.selectMemo(entry.id),
               onEdit: () => unawaited(_startEditingMemo(entry)),
+              onTogglePrivate: () => unawaited(_toggleMemoPrivacy(entry)),
               onPromote: () => unawaited(_promoteMemoToNote(entry)),
               onCopy: () => unawaited(_copyMemoBody(entry)),
               onSoftDelete: () => unawaited(_softDeleteMemo(entry)),
@@ -1187,7 +1398,7 @@ class _BlinkMemosPageState extends State<BlinkMemosPage>
         Icons.delete_outline_rounded,
         tokens.textMuted,
         '回收站为空',
-        '删除的小记会保留 30 天，期间可随时还原',
+        '回收站中的内容会一直保留，直到你手动还原或彻底删除',
       ),
       MemoFilterKind.all => (
         Icons.chat_bubble_outline_rounded,
@@ -1318,7 +1529,7 @@ class _DateSeparatorPill extends StatelessWidget {
   }
 }
 
-enum _MemoBubbleAction { edit, promote, copy, delete }
+enum _MemoBubbleAction { edit, togglePrivate, promote, copy, delete }
 
 class _MemoCapsuleBubble extends StatefulWidget {
   const _MemoCapsuleBubble({
@@ -1330,6 +1541,7 @@ class _MemoCapsuleBubble extends StatefulWidget {
     required this.isBeingEdited,
     required this.onSelect,
     required this.onEdit,
+    required this.onTogglePrivate,
     required this.onPromote,
     required this.onCopy,
     required this.onSoftDelete,
@@ -1347,6 +1559,7 @@ class _MemoCapsuleBubble extends StatefulWidget {
   final bool isBeingEdited;
   final VoidCallback onSelect;
   final VoidCallback onEdit;
+  final VoidCallback onTogglePrivate;
   final VoidCallback onPromote;
   final VoidCallback onCopy;
   final VoidCallback onSoftDelete;
@@ -1366,6 +1579,8 @@ class _MemoCapsuleBubbleState extends State<_MemoCapsuleBubble> {
     switch (action) {
       case _MemoBubbleAction.edit:
         widget.onEdit();
+      case _MemoBubbleAction.togglePrivate:
+        widget.onTogglePrivate();
       case _MemoBubbleAction.promote:
         widget.onPromote();
       case _MemoBubbleAction.copy:
@@ -1398,6 +1613,30 @@ class _MemoCapsuleBubbleState extends State<_MemoCapsuleBubble> {
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   widget.onEdit();
+                },
+              ),
+              ListTile(
+                key: Key('memo_toggle_private_$entryId'),
+                leading: Icon(
+                  widget.entry.isPrivate
+                      ? Icons.lock_open_rounded
+                      : Icons.lock_outline_rounded,
+                  color: tokens.privacyPrivate,
+                ),
+                title: Text(
+                  widget.entry.isPrivate ? '取消私密' : '设为私密',
+                  style: BlinkTypography.controlLabel(tokens),
+                ),
+                subtitle: Text(
+                  widget.entry.isPrivate ? '恢复为常规小记' : '仅存本机，不上传云端',
+                  style: BlinkTypography.metaLabel(
+                    tokens,
+                    color: tokens.textMuted,
+                  ),
+                ),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  widget.onTogglePrivate();
                 },
               ),
               ListTile(
@@ -1497,15 +1736,27 @@ class _MemoCapsuleBubbleState extends State<_MemoCapsuleBubble> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  BfmPreviewView(
-                    bodyMd: entry.bodyMd,
-                    compact: true,
-                    onTapLink: widget.onTapLink,
-                    onTapTag: widget.onTapTag,
-                    onToggleTaskLine: widget.onToggleTaskLine,
-                  ),
+                  if (entry.bodyMd.trim().isNotEmpty)
+                    BfmPreviewView(
+                      bodyMd: entry.bodyMd,
+                      compact: true,
+                      onTapLink: widget.onTapLink,
+                      onTapTag: widget.onTapTag,
+                      onToggleTaskLine: widget.onToggleTaskLine,
+                    )
+                  else if (entry.imageBlobSha256s.isEmpty &&
+                      (entry.audioBlobSha256 == null ||
+                          entry.audioBlobSha256!.isEmpty))
+                    Text(
+                      '（暂无正文）',
+                      style: BlinkTypography.body(
+                        tokens,
+                        color: tokens.textMuted,
+                      ),
+                    ),
                   if (entry.imageBlobSha256s.isNotEmpty) ...<Widget>[
-                    const SizedBox(height: 8),
+                    if (entry.bodyMd.trim().isNotEmpty)
+                      const SizedBox(height: 8),
                     Wrap(
                       spacing: 6,
                       runSpacing: 6,
@@ -1734,6 +1985,23 @@ class _MemoCapsuleBubbleState extends State<_MemoCapsuleBubble> {
                 ),
               ),
               PopupMenuItem<_MemoBubbleAction>(
+                key: Key('memo_menu_toggle_private_${entry.id}'),
+                value: _MemoBubbleAction.togglePrivate,
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      entry.isPrivate
+                          ? Icons.lock_open_rounded
+                          : Icons.lock_outline_rounded,
+                      size: 16,
+                      color: tokens.privacyPrivate,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(entry.isPrivate ? '取消私密' : '设为私密'),
+                  ],
+                ),
+              ),
+              PopupMenuItem<_MemoBubbleAction>(
                 key: Key('memo_menu_promote_${entry.id}'),
                 value: _MemoBubbleAction.promote,
                 child: Row(
@@ -1829,9 +2097,16 @@ class _TrashMemoCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          BfmPreviewView(bodyMd: entry.bodyMd, compact: true),
+          if (entry.bodyMd.trim().isNotEmpty)
+            BfmPreviewView(bodyMd: entry.bodyMd, compact: true)
+          else if (entry.imageBlobSha256s.isEmpty &&
+              (entry.audioBlobSha256 == null || entry.audioBlobSha256!.isEmpty))
+            Text(
+              '（暂无正文）',
+              style: BlinkTypography.body(tokens, color: tokens.textMuted),
+            ),
           if (entry.imageBlobSha256s.isNotEmpty) ...<Widget>[
-            const SizedBox(height: 8),
+            if (entry.bodyMd.trim().isNotEmpty) const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
@@ -1941,7 +2216,8 @@ class _MemoCapsuleComposer extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = BlinkColorTokens.of(context);
     final hasPrivate =
-        editor.privacyLocked || editor.parsedPreviewDoc.hasPrivateToken;
+        editor.privacyLocked ||
+        const BfmEngine().parse(editor.textController.text).hasPrivateToken;
     final isComposing = BlinkSyntaxTextController.isValueComposing(
       editor.textController.value,
     );
@@ -2122,16 +2398,19 @@ class _MemoCapsuleComposer extends StatelessWidget {
                             ? () => unawaited(onAttachFile())
                             : null,
                       ),
-                      actionPill(
-                        buttonKey: const Key('composer_private_toggle'),
-                        icon: hasPrivate
-                            ? Icons.lock_rounded
-                            : Icons.lock_open_rounded,
-                        label: '私密',
-                        active: hasPrivate,
-                        activeColor: tokens.privacyPrivate,
-                        activeBg: tokens.privacySubtle,
-                        onTap: onTogglePrivate,
+                      Tooltip(
+                        message: hasPrivate ? '点击取消私密（当前仅存本机）' : '设为私密（仅存本机）',
+                        child: actionPill(
+                          buttonKey: const Key('composer_private_toggle'),
+                          icon: hasPrivate
+                              ? Icons.lock_rounded
+                              : Icons.lock_open_rounded,
+                          label: '私密',
+                          active: hasPrivate,
+                          activeColor: tokens.privacyPrivate,
+                          activeBg: tokens.privacySubtle,
+                          onTap: onTogglePrivate,
+                        ),
                       ),
                     ],
                   ),
@@ -2517,7 +2796,7 @@ class _MemoCapsuleComposer extends StatelessWidget {
                   color: tokens.privacyPrivate,
                 ),
                 title: Text(
-                  hasPrivate ? '已设为私密' : '设为私密',
+                  hasPrivate ? '取消私密' : '设为私密',
                   style: BlinkTypography.controlLabel(tokens).copyWith(
                     color: hasPrivate
                         ? tokens.privacyPrivate
@@ -2525,7 +2804,7 @@ class _MemoCapsuleComposer extends StatelessWidget {
                   ),
                 ),
                 subtitle: Text(
-                  '私密内容仅存本机，不上传云端',
+                  hasPrivate ? '当前仅存本机，点击恢复常规小记' : '私密内容仅存本机，不上传云端',
                   style: BlinkTypography.metaLabel(
                     tokens,
                     color: tokens.textMuted,
