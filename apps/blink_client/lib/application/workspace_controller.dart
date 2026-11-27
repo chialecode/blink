@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:blink_core/blink_core.dart';
 import 'package:flutter/foundation.dart';
 
+import 'package:blink_client/application/sync_controller.dart';
 import 'package:blink_client/platform/android/android_platform.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
+import 'package:blink_client/platform/secret_store.dart';
 
 /// Fixed 4-entry primary navigation destinations (`docs/ui.md` §1).
 enum BlinkNavDestination { stream, files, tasks, settings }
@@ -16,21 +18,42 @@ enum BlinkNavDestination { stream, files, tasks, settings }
 enum StreamFilterKind { all, privateOnly, tag, trash }
 
 /// Coordinates active [VaultManager], navigation, entry/blob/trash operations,
-/// theme surface preference, and shutdown flushing (`INV-02`).
+/// theme surface preference, sync orchestration, and shutdown flushing (`INV-02`).
 class BlinkWorkspaceController extends ChangeNotifier {
   BlinkWorkspaceController({
     required this.lifecycle,
     BlinkFilePicker? filePicker,
     VaultManager? initialVault,
+    BlinkSyncController? syncController,
+    BlinkSecretStore? secretStore,
+    LanDiscovery? lanDiscovery,
     BlinkNavDestination initialDestination = BlinkNavDestination.stream,
     this.enableMirrorExporter = true,
   }) : filePicker = filePicker ?? createDefaultBlinkFilePicker(),
        _vault = initialVault,
-       _destination = initialDestination;
+       _destination = initialDestination,
+       _ownsSyncController = syncController == null {
+    _syncController =
+        syncController ??
+        BlinkSyncController(
+          paths: lifecycle.paths,
+          expectedChannel: lifecycle.buildInfo.isProductionChannel
+              ? BlinkChannel.blink
+              : BlinkChannel.blinkDev,
+          secretStore: secretStore,
+          lanDiscovery: lanDiscovery,
+          isQuiet: lifecycle.isQuiet,
+          onVaultDataChanged: () => unawaited(refreshAll()),
+        );
+  }
 
   final DesktopLifecycleController lifecycle;
   final BlinkFilePicker filePicker;
   final bool enableMirrorExporter;
+  late final BlinkSyncController _syncController;
+  final bool _ownsSyncController;
+
+  BlinkSyncController get sync => _syncController;
 
   VaultManager? _vault;
   BlinkNavDestination _destination;
@@ -101,7 +124,9 @@ class BlinkWorkspaceController extends ChangeNotifier {
   /// Opens the configured vault (if one was not pre-injected), subscribes to
   /// reactive streams, and hooks clean shutdown flush into [lifecycle].
   Future<void> initialize() async {
+    lifecycle.setSyncShutdownHook(_syncController.stopForShutdown);
     lifecycle.setShutdownFlushHook(flushAndCloseForShutdown);
+    await _syncController.initialize();
     if (_vault != null) {
       _ownsVault = false;
       await _attachVault(_vault!);
@@ -155,6 +180,7 @@ class BlinkWorkspaceController extends ChangeNotifier {
     }, onError: (_) {});
     _resubscribeEntries();
     await refreshAll();
+    await _syncController.attachVault(vault);
   }
 
   void _resubscribeEntries() {
@@ -800,10 +826,16 @@ class BlinkWorkspaceController extends ChangeNotifier {
   }
 
   /// Shutdown flush hook wired into [DesktopLifecycleController]:
-  /// flushes active editor draft, flushes debounced mirror exporter, and
-  /// checkpoints/closes SQLite WAL cleanly (`INV-07`).
+  /// stops embedded sync host/SSE cleanly, flushes active editor draft,
+  /// flushes debounced mirror exporter, and checkpoints/closes SQLite WAL
+  /// cleanly (`INV-07`).
   Future<void> flushAndCloseForShutdown() async {
     Object? firstError;
+    try {
+      await _syncController.stopForShutdown();
+    } catch (error) {
+      firstError ??= error;
+    }
     if (_onFlushDraftBeforeShutdown != null) {
       try {
         await _onFlushDraftBeforeShutdown!();
@@ -860,6 +892,9 @@ class BlinkWorkspaceController extends ChangeNotifier {
   void dispose() {
     _isDisposed = true;
     unawaited(_cancelSubscriptions());
+    if (_ownsSyncController) {
+      _syncController.dispose();
+    }
     if (_ownsVault && _vault != null && _vault!.isOpen) {
       unawaited(_vault!.checkpointAndClose());
     }

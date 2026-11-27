@@ -118,6 +118,7 @@ class DesktopLifecycleController extends ChangeNotifier {
     required this.windowAdapter,
     required this.trayAdapter,
     BusyCheck? isBusy,
+    this.onStopSyncBeforeShutdown,
     this.onFlushBeforeShutdown,
     this._onBeforeExit,
     ProcessExitFn? exitProcess,
@@ -133,11 +134,18 @@ class DesktopLifecycleController extends ChangeNotifier {
   final DesktopWindowAdapter windowAdapter;
   final DesktopTrayAdapter trayAdapter;
   final BusyCheck _isBusy;
+  CleanupHook? onStopSyncBeforeShutdown;
   CleanupHook? onFlushBeforeShutdown;
   final CleanupHook? _onBeforeExit;
   final ProcessExitFn _exitProcess;
   final DateTime Function() _nowUtc;
   final Duration _deferredExitDelay;
+
+  /// Registers or replaces the embedded sync host shutdown callback executed
+  /// BEFORE mirror flush and SQLite WAL checkpoint (`INV-07`).
+  void setSyncShutdownHook(CleanupHook? hook) {
+    onStopSyncBeforeShutdown = hook;
+  }
 
   /// Registers or replaces the vault/draft shutdown flush callback executed
   /// before `lifecycle.json` is written and before process exit.
@@ -355,6 +363,16 @@ class DesktopLifecycleController extends ChangeNotifier {
       }
     } catch (error) {
       _lastShutdownPersistenceError = error;
+    }
+
+    // Stop embedded sync server & mDNS advertising BEFORE flushing mirror
+    // exporter and running SQLite WAL checkpoint (`INV-07`).
+    if (onStopSyncBeforeShutdown != null) {
+      try {
+        await onStopSyncBeforeShutdown!();
+      } catch (error) {
+        _lastShutdownPersistenceError ??= error;
+      }
     }
 
     // Flush active drafts, mirror exporter, and SQLite WAL checkpoint BEFORE

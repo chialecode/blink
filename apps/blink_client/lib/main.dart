@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:blink_core/blink_core.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_app.dart';
+import 'package:blink_client/application/sync_controller.dart';
 import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/android/android_platform.dart';
 import 'package:blink_client/platform/build_info.dart';
@@ -14,6 +16,7 @@ import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
 import 'package:blink_client/platform/paths.dart';
+import 'package:blink_client/platform/secret_store.dart';
 import 'package:blink_client/platform/tray.dart';
 import 'package:blink_client/platform/window_adapter.dart';
 import 'package:blink_client/platform/windows/control_pipe.dart';
@@ -100,6 +103,9 @@ Future<void> main(List<String> args) async {
     trayAdapter: trayAdapter,
     isBusy: () async =>
         workspaceController?.vault?.isCriticalOperationRunning ?? false,
+    onStopSyncBeforeShutdown: () async {
+      await workspaceController?.sync.stopForShutdown();
+    },
     onFlushBeforeShutdown: () async {
       await workspaceController?.flushAndCloseForShutdown();
     },
@@ -123,9 +129,27 @@ Future<void> main(List<String> args) async {
 
   await controller.initializeStartup(options);
 
+  final expectedChannel = buildInfo.isProductionChannel
+      ? BlinkChannel.blink
+      : BlinkChannel.blinkDev;
+  final secretStore = createDefaultBlinkSecretStore(
+    paths: paths,
+    channel: expectedChannel,
+    quietOverride: options.quiet,
+  );
+  final syncController = BlinkSyncController(
+    paths: paths,
+    expectedChannel: expectedChannel,
+    secretStore: secretStore,
+    lanDiscovery: LanDiscovery(enabled: !options.quiet),
+    isQuiet: options.quiet,
+    onVaultDataChanged: () => unawaited(workspaceController?.refreshAll()),
+  );
+
   workspaceController = BlinkWorkspaceController(
     lifecycle: controller,
     filePicker: createDefaultBlinkFilePicker(quietOverride: options.quiet),
+    syncController: syncController,
     enableMirrorExporter:
         !options.quiet && !Platform.isAndroid && !Platform.isIOS,
   );

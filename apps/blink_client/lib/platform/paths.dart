@@ -463,6 +463,24 @@ class BlinkPaths {
   File get desktopSettingsFile =>
       File(_joinPath(settingsDir.path, 'desktop.json', Platform.pathSeparator));
 
+  /// Non-secret sync configuration file (`<dataRoot>/settings/sync.json`).
+  File get syncSettingsFile {
+    final sep = (_isWindowsContext ?? Platform.isWindows) ? r'\' : '/';
+    return File(_joinPath(settingsDir.path, 'sync.json', sep));
+  }
+
+  /// Channel-isolated encrypted credentials directory (`INV-08`, `INV-06`).
+  ///
+  /// On Android, placed under `<noBackupFilesDir>/blink[-dev]/credentials` so
+  /// encrypted credentials live strictly outside the vault directory and are
+  /// excluded from Android backup. On desktop, placed under
+  /// `<dataRoot>/credentials` (separate from `<BLINK_VAULT_DIR>`).
+  Directory get credentialsDir {
+    final sep = (_isWindowsContext ?? Platform.isWindows) ? r'\' : '/';
+    final base = noBackupDir ?? dataRoot;
+    return Directory(_joinPath(base.path, 'credentials', sep));
+  }
+
   /// Runtime state directory (`<dataRoot>/run`).
   Directory get runDir =>
       Directory(_joinPath(dataRoot.path, 'run', Platform.pathSeparator));

@@ -9,9 +9,9 @@ BLINK 采用**“纯 Flutter/Dart 五端自包含本地优先应用 + 单文件�
 
 - **五端 100% 离线优先闭环**：桌面端（`Windows / macOS / Linux`）与移动端（`Android / iOS`）共享同一套纯 Dart `packages/blink_core`（`drift 2.35.4` + `sqlite3 3.9.1` Native Assets），全部 BFM v1 流式录入、日记书写、待办核销、CJK `unicode61` 全文检索、网页/EPUB/PDF 后台 `Isolate` 解析及划词伴读均在本地单事务内 0ms 完成，完全不依赖任何远端服务器。
 - **单文件夹便携知识库（`<BLINK_VAULT_DIR>`）**：桌面端将全部资产收敛在单个目录（`vault.json`、`db/blink.db`、`db/backups/`、`index/fts.db`、`blobs/`、`mirror/`），拷贝该目录即完成整库备份与跨机迁移；桌面后台 `Isolate` 以 **5 秒防抖**单向增量导出纯文本 UTF-8 Markdown 与独立自适应 `insights/*.html` 只读开放镜像。移动端在应用沙盒内运行完全一致的 SQLite 结构与按需 LRU 媒体缓存池。
-- **统一混合多端同步（`SyncTransport`，M4 一次交付）**：
-  1. **直连高速同步（`DirectShelfTransport`）**：桌面端托盘在后台 `Isolate` 内嵌纯 Dart `shelf` HTTP 同步服务，通过局域网 `bonsoir`（MIT）自动发现优先高速直连，离家后无缝回退 Tailscale / Headscale（WireGuard，`100.64.0.0/10`）虚拟私网；若需 24/7 无头节点，可直接将同一套 `packages/blink_cli` 以 `dart build cli` 编译为单一原生目录包运行 `blink sync serve` 挂载便携库；
-  2. **端到端加密异步中继（`EncryptedObjectStoreTransport`）**：当主力电脑休眠时，支持经 WebDAV 或 S3 兼容存储同步不可变、按设备分前缀的追加式密文 OpLog 段与去重密文附件（客户端 `cryptography` `XChaCha20-Poly1305` 强制 E2EE，远端零明文，且可勾选“禁止经云中继同步 `#private`”）。
+- **统一混合多端同步（`SyncTransport`，M4 已落地，[DEC-032](../decisions.md#dec-032)）**：
+  1. **直连高速同步（`DirectShelfTransport`）**：桌面端内嵌纯 Dart `shelf` HTTP/SSE 同步服务，通过局域网纯 Dart `mdns_dart`（MIT，零传递依赖）自动发现优先高速直连，离家后无缝回退 Tailscale / Headscale（WireGuard，`100.64.0.0/10`）虚拟私网；若需 24/7 无头节点，可直接将同一套 `packages/blink_cli` 以 `dart build cli` 编译为单一原生目录包运行 `blink sync serve` 挂载便携库；
+  2. **端到端加密异步中继（`EncryptedRelayTransport`）**：当主力电脑休眠时，支持经纯 Dart WebDAV 或 S3（SigV4）兼容存储同步不可变、按设备分前缀的追加式密文 OpLog 段与去重密文附件（客户端 `cryptography` `XChaCha20-Poly1305` 强制 E2EE，远端零明文，且默认开启“禁止经云中继同步 `#private`”）。
 - **双轨无服务端 AI 扩展（M6 交付）**：
   1. **Track 1 外置 AI 主轨（CLI / MCP Server / `agentskills.io` Skills）**：由统一原生捆绑包 `packages/blink_cli`（`dart build cli` + `mcp_dart`）对外提供命令行、MCP Stdio 与回环 Streamable HTTP 接口；桌面运行态经 OS 运行目录 `0600` 令牌 `ipc.json` 向桌面回环端点提交衍生写入（毫秒级驱动 `drift.watch()` 刷新 UI 并分配单调 `seq_id`），桌面关闭态经 `BEGIN IMMEDIATE` WAL 冷写落库；默认强制 `--scope normal_only`；
   2. **Track 2 可选内置直连 OpenAI 兼容客户端（`OpenAiCompatClient`）**：在 `packages/blink_core` 基于既有 `dio` 预留轻量 `/v1/chat/completions` SSE 客户端，不依赖任何 BLINK 服务端即可从五端直连外部云 API、本地 `Ollama /v1` 或通用 AI 网关，按 `normal` / `private_local` 分流配置严格守卫 `#private`（`INV-03`）。
@@ -30,13 +30,13 @@ BLINK 采用**“纯 Flutter/Dart 五端自包含本地优先应用 + 单文件�
 │   ├─ RawRepository / AiIndexRepository / ExternalAiRepository (drift + sqlite3 WAL)    │
 │   ├─ 后台 Isolate 管线: BFM v1 · CJK Readability(SSRF) · EPUB(.runes) · pdfrx_engine   │
 │   ├─ 桌面后台 Isolate: 5s 防抖开放镜像导出 (.md + insights/*.html)                      │
-│   ├─ 桌面后台 Isolate: 内嵌 shelf 同步服务 (LAN/bonsoir + Tailscale) & 回环 IPC 端点     │
-│   └─ 可选直连 OpenAiCompatClient (dio + SSE，normal / private_local 硬分流)             │
+│   ├─ 桌面内嵌 shelf 同步服务 (LAN mdns_dart + Tailscale) & 后续回环 IPC 端点             │
+│   └─ 可选直连 OpenAiCompatClient (normal / private_local 硬分流)                        │
 └───────────────────┬──────────────────────────────────────────────┬─────────────────────┘
                     │                                              │
      [本地单文件夹便携库 <BLINK_VAULT_DIR>]             [双轨多端同步 & 外置 AI 接入]
      ├─ vault.json (通道戳)                             ├─ 直连: 桌面 shelf / 无头 blink sync serve
-     ├─ db/blink.db (WAL + backups/)                    │        (LAN bonsoir <-> Tailscale)
+     ├─ db/blink.db (WAL + backups/)                    │        (LAN mdns_dart <-> Tailscale)
      ├─ index/fts.db (fts_normal / fts_private)         ├─ 中继: E2EE XChaCha20-Poly1305 WebDAV/S3
      ├─ blobs/<sha256 分桶原件>                         └─ 外置 AI: packages/blink_cli (CLI/MCP)
      └─ mirror/ (.md + insights/*.html + 0700 private/)    + packages/blink_skills (SKILL.md)
@@ -74,18 +74,18 @@ blink/
 │   └── test_*.py                      # 上述门禁、依赖与打包脚本的零依赖 unittest 回归测试（已实现）
 ├── packages/
 │   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M3 核心已实现 / M6 完整）
-│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：sqlite3 WAL、BFM v1、CJK FTS5、BlobStore、Mirror（M3 已实现；同步与文档解析 M4～M5 待实现）
-│   ├── blink_cli/                     # 统一原生 CLI / MCP Server (mcp_dart) / 无头同步 (blink sync serve)，由 dart build cli 捆绑 libsqlite3（M4 同步 / M6 完整）
+│   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：sqlite3 WAL、BFM v1、CJK FTS5、BlobStore、Mirror、M4 因果同步/直连/E2EE 中继（M3～M4 已实现；文档解析 M5 待实现）
+│   ├── blink_cli/                     # 统一原生 CLI / 无头同步 (blink sync serve，M4 已实现) / MCP Server（M6 待实现），由 dart build cli 捆绑 libsqlite3
 │   └── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M6）
 └── apps/
-    └── blink_client/                  # 五端 Flutter 本地优先应用（Windows M3 桌面工作区与按用户打包已实现，同步/伴读/AI 与其余四端待实现）
+    └── blink_client/                  # 五端 Flutter 本地优先应用（Windows + Android 工作区、OS 原生密钥库与 M4 同步/冲突界面已实现；伴读、AI 与其余三端待实现）
         ├── pubspec.yaml
         ├── assets/icons/              # 运行期托盘多尺寸 .ico（blink.ico、blink-dev.ico）
         ├── lib/
         │   ├── app/                   # 应用入口、日/纸/夜视觉令牌、品牌标识与壳层装配（已实现）
-        │   ├── ui/                    # 四档自适应外壳、BFM v1 编辑器与分栏预览、CJK 搜索、文件/附件、内生待办与设置页（M3 已实现；伴读与双表面 AI 视图待实现）
-        │   ├── application/           # 纯 Flutter ChangeNotifier 控制器、CJK IME 保护与自动补全（M3 已实现）
-        │   └── platform/              # 编译期信息、双通道路径与便携库解析、原子写入、桌面设置、原生文件选择、单实例锁、控制管道、托盘与生命周期（Windows 已实现，其余平台与密钥仓待实现）
+        │   ├── ui/                    # 四档自适应外壳、BFM v1 编辑器与分栏预览、CJK 搜索、文件/附件、内生待办、设置页与 M4 同步状态胶囊/设置/冲突裁定界面（M3～M4 已实现；伴读与双表面 AI 视图待实现）
+        │   ├── application/           # 纯 Flutter ChangeNotifier 控制器、CJK IME 保护与自动补全、BlinkSyncController 同步编排（M3～M4 已实现）
+        │   └── platform/              # 编译期信息、双通道路径与便携库解析、原子写入、桌面设置、原生文件选择、Windows DPAPI / Android Keystore 密钥库、单实例锁、控制管道、托盘与生命周期（Windows + Android 已实现，其余平台待实现）
         ├── windows/ macos/ linux/ android/ ios/   # windows/packaging/blink.nsi 为 NSIS 3.13 按用户安装脚本（已实现，DEC-029）
         └── test/                      # 单元、组件、CJK IME 保护、Win32 IPC 与无焦点生命周期测试（已实现）
 ```
@@ -130,9 +130,9 @@ blink/
 | --- | --- | --- | --- | --- |
 | **Windows（已安装）** | `<Documents>\blink`（经 Win32 `SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, null)` 查询真实目录，回退 `%USERPROFILE%\Documents\blink`，再回退 `<dataRoot>\vault`；程序装于 `%LOCALAPPDATA%\Programs\blink`） | `<Documents>\blink-dev`（装于 `%LOCALAPPDATA%\Programs\blink-dev`） | `%LOCALAPPDATA%\blink[-dev]`（`settings/`、`run/ipc.json`、`run/lifecycle.json`、`app.lock`、`webview2/`、`logs/`、`cache/`） | `%LOCALAPPDATA%\blink[-dev]\credentials\`，经当前用户范围 Windows DPAPI（`CryptProtectData`）加通道专属熵加密；不写 `%APPDATA%` 与主目录 `.blink` |
 | **macOS（已安装）** | `~/Documents/blink`（支持自定义便携目录） | `~/Documents/blink-dev` | 应用本地态 `~/Library/Application Support/blink[-dev]`；运行态/缓存 `~/Library/Caches/blink[-dev]` | macOS Keychain，按独立 Bundle ID `io.github.chialecode.blink` 与 `io.github.chialecode.blink.dev` 隔离 |
-| **Linux（已安装）** | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink` | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink-dev` | 应用本地态 `${XDG_DATA_HOME:-~/.local/share}/blink[-dev]`；运行态 `$XDG_RUNTIME_DIR/blink[-dev]/ipc.json`（权限 `0600`）、`app.lock` | `libsecret`（Secret Service API），按属性 `application = blink` / `blink-dev` 隔离 |
-| **桌面源码构建** | 默认拒绝；仅当同时设置 `BLINK_ALLOW_SOURCE_PROD=1` 与隔离的 `BLINK_DATA_DIR`（不与真实 `blink` 根目录重叠）时放行至 `<BLINK_DATA_DIR>/vault` | `<repoRoot>/.local/blink-dev/vault`（仓库外回退 `<systemTemp>/blink-source-dev/vault`） | `<repoRoot>/.local/blink-dev/app`（仓库外回退 `<systemTemp>/blink-source-dev/app`）；不注册单实例互斥量与控制管道 | 仅存于独立沙盒目录或内存桩，绝不触碰本机已安装的 `blink` / `blink-dev` |
-| **Android** | 私有沙盒 `<AppFilesDir>/blink`（包名 `io.github.chialecode.blink`），LRU 媒体缓存 `<AppCacheDir>/media` | 私有沙盒 `<AppFilesDir>/blink-dev`（包名 `io.github.chialecode.blink.dev`） | 沙盒内应用独占运行（无桌面 IPC） | Android Keystore 硬件支持密钥加密存储，双包名天然隔离 |
+| **Linux（已安装）** | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink` | `${XDG_DOCUMENTS_DIR:-~/Documents}/blink-dev` | 应用本地态 `${XDG_DATA_HOME:-~/.local/share}/blink[-dev]`；运行态 `$XDG_RUNTIME_DIR/blink[-dev]/ipc.json`（权限 `0600`）、`app.lock` | `<dataRoot>/credentials/` 通道隔离作用域存储（`0700`/`0600`，避免引入 `libsecret-1-dev` 依赖，见 [DEC-032](../decisions.md#dec-032)） |
+| **桌面源码构建** | 默认拒绝；仅当同时设置 `BLINK_ALLOW_SOURCE_PROD=1` 与隔离的 `BLINK_DATA_DIR`（不与真实 `blink` 根目录重叠）时放行至 `<BLINK_DATA_DIR>/vault` | `<repoRoot>/.local/blink-dev/vault`（仓库外回退 `<systemTemp>/blink-source-dev/vault`） | `<repoRoot>/.local/blink-dev/app`（仓库外回退 `<systemTemp>/blink-source-dev/app`）；不注册单实例互斥量与控制管道 | 仅存于独立沙盒 `<dataRoot>/credentials/` 或安静测试内存桩，绝不触碰本机已安装的 `blink` / `blink-dev` |
+| **Android** | 私有沙盒 `<AppFilesDir>/blink`（包名 `io.github.chialecode.blink`），LRU 媒体缓存 `<AppCacheDir>/media` | 私有沙盒 `<AppFilesDir>/blink-dev`（包名 `io.github.chialecode.blink.dev`） | 沙盒内应用独占运行（无桌面 IPC，`android:allowBackup="false"`） | Android Keystore AES-256-GCM 硬件支持密钥（`blink_secret_key_<channel>`）加密存至 `<noBackupFilesDir>/blink[-dev]/credentials/`，双包名与通道隔离（[DEC-032](../decisions.md#dec-032)） |
 | **iOS** | 沙盒 `Application Support/blink`（Bundle ID `io.github.chialecode.blink`），缓存 `Library/Caches/media` 标 `isExcludedFromBackup = true` | 沙盒 `Application Support/blink-dev`（Bundle ID `io.github.chialecode.blink.dev`） | 沙盒内应用独占运行 | iOS Keychain（`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`），按独立 Bundle ID 隔离 |
 | **无头 `blink sync serve` / CLI** | `--vault <BLINK_VAULT_DIR>`（或 `$BLINK_VAULT_DIR`） | `--vault` 默认 `.local/blink-dev/vault`（通道戳强制为 `blink-dev`） | `$XDG_RUNTIME_DIR/blink[-dev]/`（`0600`） | 设备令牌仅存 `SHA-256` 哈希于 `blink.db`；凭据经 OS 密钥库或独立权限 `0600` 宿主机外部密钥文件提供，严禁放入 `<BLINK_VAULT_DIR>` |
 

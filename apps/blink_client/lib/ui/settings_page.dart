@@ -8,6 +8,8 @@ import 'package:blink_client/application/workspace_controller.dart';
 import 'package:blink_client/platform/build_info.dart';
 import 'package:blink_client/platform/desktop_settings.dart';
 import 'package:blink_client/platform/paths.dart';
+import 'package:blink_client/ui/sync_conflict_dialog.dart';
+import 'package:blink_client/ui/sync_settings_section.dart';
 
 /// Flat hairline Settings page (`docs/ui.md` §4.4):
 /// 1. Single-Folder Portable Vault & Open Mirror controls (desktop) or
@@ -458,6 +460,22 @@ class _BlinkSettingsPageState extends State<BlinkSettingsPage> {
                         ],
                       ),
                     ),
+                  ),
+                  const SizedBox(height: 16),
+                  BlinkSyncSettingsSection(
+                    sync: widget.workspace.sync,
+                    isMobilePlatform: isMobilePlatform,
+                    compactPadding: isCompactWidth,
+                    labelWidth: labelWidth,
+                    onOpenConflicts: () {
+                      showDialog<void>(
+                        context: context,
+                        barrierDismissible: true,
+                        builder: (_) => BlinkSyncConflictDialog(
+                          sync: widget.workspace.sync,
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(height: 16),
                   _AboutCard(

@@ -160,6 +160,53 @@ class AndroidPlatformBridge {
       return false;
     }
   }
+
+  /// Reads an Android Keystore AES-256-GCM encrypted secret from
+  /// `<noBackupFilesDir>/<channel>/credentials/<key>.enc`.
+  Future<String?> secretRead({
+    required String channel,
+    required String key,
+  }) async {
+    return this.channel.invokeMethod<String>('secretRead', <String, Object?>{
+      'channel': channel,
+      'key': key,
+    });
+  }
+
+  /// Encrypts and atomically writes a secret using Android Keystore
+  /// AES-256-GCM (`blink_secret_key_<channel>`).
+  Future<bool> secretWrite({
+    required String channel,
+    required String key,
+    required String value,
+  }) async {
+    return await this.channel.invokeMethod<bool>(
+          'secretWrite',
+          <String, Object?>{'channel': channel, 'key': key, 'value': value},
+        ) ??
+        false;
+  }
+
+  /// Deletes a single secret stored under [channel] and [key].
+  Future<bool> secretDelete({
+    required String channel,
+    required String key,
+  }) async {
+    return await this.channel.invokeMethod<bool>(
+          'secretDelete',
+          <String, Object?>{'channel': channel, 'key': key},
+        ) ??
+        false;
+  }
+
+  /// Deletes all encrypted secret files and key material for [channel].
+  Future<bool> secretDeleteAllForChannel({required String channel}) async {
+    return await this.channel.invokeMethod<bool>(
+          'secretDeleteAllForChannel',
+          <String, Object?>{'channel': channel},
+        ) ??
+        false;
+  }
 }
 
 /// Android Storage Access Framework implementation of [BlinkFilePicker] built
