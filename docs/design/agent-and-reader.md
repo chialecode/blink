@@ -162,16 +162,24 @@ DNS 解析后固定校验目标 IP：   按用户设置直连云端 OpenAI 兼�
 
 | 输入模态 | 端侧离线采集表现 | 纯 Dart 后台 `Isolate` 解析管线（`packages/blink_core`） | 落库正本与五端伴读形态 |
 | --- | --- | --- | --- |
-| **网页长文 URL**（M5） | 系统分享面板或粘贴链接秒存 `raw_sources(ingest_state='queued')`，可附随手批注 | 防 SSRF 抓取 → 基于 `package:html 0.15.7` 的 CJK 调优 Readability 抽正文 → 图片去重入 `blobs/` → `packages/blink_sanitizer` 净化为双轨 Block AST | `super_sliver_list` + `flutter_widget_from_html_core` 纯原生块阅读、合并单元格表格与图文离线复读、`ast_range`（`.runes`）零漂移边注 |
+| **网页长文 URL**（M5～M7） | 手机零切屏系统分享（`share_inbox/`）、桌面 MV3 扩展实时捕获或应用内粘贴，秒存 `raw_sources(ingest_state='queued')`，可附随手小记 | 纯 Dart 防 SSRF 抓取 + CJK Readability（或前端 MV3/WebView 实时 DOM 提取）→ 图片去重入 `blobs/` 并登记 `raw_source_blobs` → `packages/blink_sanitizer` 产出双轨 Block AST 与可选零 JS 离线快照 | `super_sliver_list` + `flutter_widget_from_html_core` 纯原生块阅读、可选 Surface 2 离线网页原貌查看、`ast_range`（`.runes`）零漂移边注 |
 | **重排 EPUB 电子书**（M5） | 选择本地 `.epub` 计算 `sha256` 入 `blobs/`，零等待建档 | `archive 4.6.0` 安全解压（防 Zip-Slip/Zip-Bomb）→ `xml 7.1.0` 读 OPF/NCX/Nav → `html 0.15.7` + `packages/blink_sanitizer` 逐章转双轨 Block AST | 五端像素级一致纯原生虚拟滚动阅读器、目录跳章、跨段划词与锚定伴读 |
 | **PDF 文献与书籍**（M5） | 本地立即用 `pdfrx 3.1.0` 打开阅读与划词高亮 | 无 UI 依赖的 `pdfrx_engine 0.9.6` 提取目录大纲、封面缩略图与逐页文本入 `index/fts.db`；扫描无字页诚实标 `missing_ocr` | 五端 `pdfrx` 原生分瓦硬件加速缩放、`pdf_bbox` 归一化矩形高亮、双栏/半屏边注与按需缓存释放 |
 | **语音闪念与纸质书页拍照**（M7） | `record 6.2.x` 按住说话离线直录 Opus/AAC；相机拍书页配语音感悟，0ms 入时间流 | 原件字节按 `sha256` 永久只读存入 `blobs/`；转写原稿（`verbatim_transcript_text`）、整理稿（`clean_transcript_md`）与书页 OCR 引文（`ocr_extracted_quote`）由外置 AI 经 CLI/MCP 或可选直连 API 写入派生表 `ai_entry_enrichments` | 离线立即可回放原声与查看原图；派生转写/引文就绪后无感呈现并支持一键对照原声与原图，绝不篡改原文层 |
 
-### 3.1 网页长文剪藏管线（防 SSRF + CJK Readability + `packages/blink_sanitizer`）
+<a id="web-clipping"></a>
+### 3.1 网页长文剪藏管线（双层存档 + 桌面 MV3 扩展 + 手机四层捕获）
 
-1. **防内网探测与 DNS 重绑定（SSRF Guard）**：剪藏专用 `dio` 适配器在首次连接与每一次 HTTP 重定向前（最多跟随 5 跳、响应体上限 15 MiB、仅放行 `https://` 与 `http://`）调用 `InternetAddress.lookup` 校验解析结果，硬性拒绝回环地址（`127.0.0.0/8`、`::1`）、RFC1918 私网段、链路本地与云元数据段（`169.254.0.0/16`、`fe80::/10`）及 Tailscale 地址段（`100.64.0.0/10`），并直接锁定已验 IP 发起请求防 DNS 重绑定；绝不读取系统浏览器 Cookie 数据库。
-2. **CJK 调优正文提取与静态资源固化**：在后台 `Isolate` 使用基于 `package:html 0.15.7`（MIT/BSD-3-Clause）的自研 Readability 算法（针对中文标点密度与字符权重调优，规避含 MPL-2.0 组件的第三方提取包）剥离导航与广告并提取标题、作者与正文 DOM；正文图片经同一 SSRF 校验器下载（核验文件头魔数并剥离追踪查询串），按 `sha256` 落入 `<BLINK_VAULT_DIR>/blobs/` 并重写为 `blink-blob://<sha256>`，再经 `packages/blink_sanitizer` 清洗输出 `ast_version: 1` 双轨 Block AST（`plain_text` + `html_sanitized`）。
-3. **诚实降级处理（`INV-11`）**：遇到登录墙、付费墙、反机器人验证挑战（严守不绕过验证码与访问控制底线）或依赖重度客户端 JS 动态渲染的 SPA 页面时，立即停止抓取并将 `ingest_state` 标为 `failed`（`anti_bot_or_paywall`），向用户提供“在系统浏览器打开”“粘贴剪贴板正文导入”或由外置 CLI/MCP 投递清洗结果的兜底路径。
+完整选型查证、协议帧与国内生态细则见[网页分享与剪藏全端选型与细化方案](../research/2026-11-28-web-clipper-and-share.md#overview)，核心管线契约如下：
+
+1. **双层存档形态（`INV-01`、`INV-13`）**：采用“不可变离线视觉快照 + 派生清晰块级 AST”双层模型。可选整页离线快照剥离脚本、将图片全部重写为内容寻址 `blink-blob://<sha256>`（消除 Base64 膨胀与外链失效）并经 `SanitizeProfile.webSnapshot` 净化后存入 `blobs/`（由 `raw_sources.file_blob_sha256` 指向）；清晰阅读层存入 `raw_source_chapters`（`ch-001`、`ast_version: 1`）服务于五端原生阅读、`.runes` 批注、CJK FTS5 与开放镜像，所有正文与快照图片统一登记 `raw_source_blobs` 防 GC 误删并受 `#private` 云中继过滤保护（`INV-03`）。
+2. **纯 Dart 后台 `Isolate` 抓取与防 SSRF（全端基础）**：剪藏专用 HTTP 适配器在首次连接与每次重定向前（最多 5 跳、响应上限 15 MiB、仅放行 `https://` 与 `http://`）校验解析 IP，硬拒回环（`127.0.0.0/8`、`::1`）、RFC1918 私网、链路本地（`169.254.0.0/16`、`fe80::/10`）与 Tailscale（`100.64.0.0/10`）网段并锁定已验 IP 防 DNS 重绑定；绝不读取系统浏览器 Cookie 库。在后台 `Isolate` 中完成国内分享短链展开清洗（覆盖 `xhslink.(com|cn)`、`b23.tv` 并保留原始 `raw_share_text`）、基于 `package:html 0.15.7` 的 CJK 调优 Readability 与防盗链图片魔数校验本地化（含微信 `data-src` / `mmbiz.qpic.cn` 规范 `Referer` 拉取），经 `packages/blink_sanitizer` 生成双轨 Block AST。
+3. **电脑端 MV3 浏览器扩展与 `blink clip ingest-native`（M6）**：共享扩展包 `packages/blink_clipper_web`（宽松许可：`defuddle` MIT + `@mozilla/readability` Apache-2.0 + 自研 Apache-2.0 快照内联器）在用户已登录、已水合的实时标签页捕获 DOM、CSSOM 与防盗链原图（SW 临时作用域 DNR `Referer` + SHA-256 去重），经 Native Messaging 四步分块协议调用 `blink clip ingest-native` 落盘，复用 `ipc.json` 在线刷新与冷 WAL 写入双模路径，规避 Chrome Local Network Access 回环拦截（[电脑端细化方案](../research/2026-11-28-web-clipper-and-share.md#desktop-clipper)）。
+4. **手机端四层捕获、内置浏览器与诚实降级（M5/M7、`INV-11`、`INV-03`）**：
+   - **Tier 0（`<10ms` 零切屏秒存）**：Android 零额外插件透明 Kotlin `ShareReceiverActivity`（`ACTION_SEND`/`ACTION_PROCESS_TEXT`/`EXTRA_STREAM`）与 iOS 原生 Swift Share Extension（不启 Flutter 引擎、严守 ~120 MiB 内存红线）原子落盘各自隔离的 `share_inbox/`；
+   - **Tier 1（分享/点击即抓实时 DOM）**：iOS 打包共享 TS 核心的 **iOS Safari Web Extension（`.appex`）** + Share Extension `NSExtensionJavaScriptPreprocessingFile` / `.webarchive`，Android 接收 Chrome 离线 `.mhtml`；
+   - **Tier 2（端侧静默抓取）**：后台 `WorkManager`/Isolate 仅跑纯 Dart 防 SSRF HTTP；纯 CSR/SPA 由前台活跃态受控 `HeadlessInAppWebView`（`flutter_inappwebview 6.1.5`，10–15s 硬超时 + 强制 `.dispose()`）渲染提取，**并在加载前与 `shouldOverrideUrlLoading` / `shouldInterceptRequest` 补齐 WebView 层 SSRF 与 Scheme 拦截**（硬拒 `file://`/`content://`/回环/私网 IP，防恶意分享链接探测本机同步与 IPC 端口）；
+   - **Tier 3（合规交互与跨端补全）**：遇到登录墙、付费墙、微信 `wappoc_appmsgcaptcha` 或知乎 `40362` 时严禁绕过验证，诚实标记 `ingest_state = 'failed'`（`ingest_error = 'needs_interactive_clip'` 或 `'anti_bot_or_paywall'`），提供“在内置浏览器一次登录并一键保存”及经 M4 同步至电脑插件补全回传闭环；Android 端因 `android.webkit.CookieManager` 为进程级全局单例，`#private` 网页剪藏在 `SPK-WC-02` 验证多 Profile 隔离前禁止共享普通 WebView 会话。
 
 ### 3.2 EPUB 重排电子书归一化管线（`archive` + `xml` + `html` + `.runes`）
 

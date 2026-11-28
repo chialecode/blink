@@ -75,8 +75,9 @@ blink/
 ├── packages/
 │   ├── blink_sanitizer/               # 纯 Dart HTML5/SVG + W3C CSS Syntax L3 净化与诊断包（M3 核心已实现 / M6 完整）
 │   ├── blink_core/                    # 纯 Dart 唯一核心与契约包：sqlite3 WAL、BFM v1、CJK FTS5、BlobStore、Mirror、M4 因果同步/直连/E2EE 中继（M3～M4 已实现；文档解析 M5 待实现）
-│   ├── blink_cli/                     # 统一原生 CLI / 无头同步 (blink sync serve，M4 已实现) / MCP Server（M6 待实现），由 dart build cli 捆绑 libsqlite3
-│   └── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M6）
+│   ├── blink_cli/                     # 统一原生 CLI / 无头同步 (blink sync serve，M4 已实现) / 剪藏桥接 (blink clip ingest-native) 与 MCP Server（M6 待实现），由 dart build cli 捆绑 libsqlite3
+│   ├── blink_skills/                  # agentskills.io 规范的 5 项标准 SKILL.md、manifest.json 与多客户端一键安装/导出器（M6）
+│   └── blink_clipper_web/             # 共享 TypeScript MV3 浏览器扩展与 macOS/iOS Safari .appex 捕获核心（M6/M7，独立于纯 Dart 包 INV-02）
 └── apps/
     └── blink_client/                  # 五端 Flutter 本地优先应用（Windows + Android 工作区、OS 原生密钥库与 M4 同步/冲突界面已实现；伴读、AI 与其余三端待实现）
         ├── pubspec.yaml
@@ -104,6 +105,7 @@ blink/
 | **桌面回环 IPC 端点（本地派生写入）**<br>`POST http://127.0.0.1:<port>/ipc/v1/*`（含 `/ipc/v1/derived/*` 与显式启用的 `/ipc/v1/capture`） | 严格绑定 `127.0.0.1` 随机端口；每次桌面启动生成随机高熵令牌写入 OS 运行目录 `0600` 的 `ipc.json`（不在 `<BLINK_VAULT_DIR>` 内），请求须携带 `X-Blink-IPC-Token` 且硬性拒绝任何带 HTTP `Origin` 头的跨源请求 | 仅暴露 `ExternalAiRepository` 派生写入（`ai_*`）、校验动作及显式启用的只增收件箱采集；单事务 `BEGIN IMMEDIATE` 写入并分配 `seq_id`、实时刷新 UI | 桌面未运行时，`packages/blink_cli` 自动切换冷库 WAL `BEGIN IMMEDIATE` 直写路径，行为与安全校验 100% 一致 |
 | **外置 AI CLI 与 MCP Server（`packages/blink_cli`）**<br>Stdio & `POST http://127.0.0.1:<port>/mcp`（Streamable HTTP） | 默认硬锁定 `--scope normal_only`（查询 `v_normal_*` 视图与 `fts_normal`）；`local_with_private` 须经用户显式开启 + OS 密钥库独立令牌 + 本地回环三道门控 | 对 `raw_*` 严格只读（`blink_capture_entry` 仅在 `--allow-capture` 显式开启时允许只增不改）；写入 HTML 必经 `packages/blink_sanitizer` 净化与 `<blink-ref>` 校验，失败返回结构化诊断码供 AI 自修 | `normal_only` 模式下查询私密 ID 统一返回不透明 `not_found`，防止存在性侧信道探测（`INV-03`） |
 | **可选内置直连 OpenAI 兼容接口（`OpenAiCompatClient`）**<br>`POST <BaseURL>/v1/chat/completions`（SSE） | 客户端 `dio` 直接请求外部 API、内网 `Ollama /v1` 或通用网关；API Key 仅存单机 OS 密钥库 | 按 `normal` 与 `private_local` 两套独立端点画像分流；对话总结仅生成 `ai_*` 卡片或经用户确认的新建 `raw_entries` | `#private` 请求若未配置合规局域网/回环 `private_local` 端点，立即闭锁返回 `privacy_blocked`，绝不回退云端 |
+| **桌面浏览器扩展 Native Messaging 与移动端分享队列（M5～M7）**<br>`blink clip ingest-native` / `share_inbox/` | 桌面端走 OS 标准管道注册双通道无连字符主机名 `io.github.chialecode.blink` 与 `io.github.chialecode.blink_dev`（`INV-06`；Windows 集成 `blink.nsi` HKCU 零管理员注册，macOS Safari 用 `.appex`，零 Chrome LNA 与 `ipc.json` `Origin` 冲突；Linux Flatpak 可选独立隔离回环 HTTP 兜底）；移动端经各自隔离目录原子落盘（Android 透明 `ShareReceiverActivity` 写 `<filesDir>/<channel>/share_inbox/`，iOS Swift Share Extension / Safari `.appex` 写 App Group `group.io.github.chialecode.blink[.dev]`） | 桌面四步分块协议（`clip.begin`/`clip.need_blobs`/`clip.blob_chunk`/`clip.commit`）按 `SHA-256` 去重传图，复用 `blink_cli` 在线 `ipc.json` 与离线冷 WAL 双模写入；仅创建或升级 `raw_sources`/`raw_source_chapters`/`raw_source_blobs`，绝不覆写手写 `raw_entries`/`raw_annotations`（`INV-01`） | 桌面 GUI 关闭时仍可直接写 WAL 落盘（无需常驻同步助手）；移动端 `<10ms` 不切屏落盘队列，断网与登录墙均不丢链接（细化见[剪藏桥接与移动协议](../research/2026-11-28-web-clipper-and-share.md#desktop-clipper)） |
 
 ### 3.2 统一错误分类（Error Taxonomy）
 
@@ -113,7 +115,7 @@ blink/
 - `privacy_blocked`：涉及 `#private` 的内置直连请求目标非受控内网地址、外置 MCP 作用域未放行，或策略阻断云中继；
 - `peer_asleep`：直连同步对端（如休眠中的主力电脑）暂时离线，本地变更已安全排队等待唤醒或中继；
 - `missing_ocr`：扫描版 PDF 无内嵌文本层，可正常框选批注并等待外置 OCR 补全派生文本；
-- `anti_bot_or_paywall` / `unsupported_media`：外部网页需登录/触发反爬挑战（遵守不绕过挑战红线，立即停止）或文档加密损坏；
+- `anti_bot_or_paywall` / `needs_interactive_clip` / `unsupported_media`：外部网页需登录、触发反爬/人机验证或重度 CSR 需用户在内置浏览器/桌面插件中查看后一键保存（遵守零绕过底线，立即停止），或文档加密损坏；
 - `webview_unavailable`：Linux 宿主机缺失 `libwebkit2gtk-4.1-0`，Surface 2 自动平滑降级至纯 Flutter Surface 1 展示并温和提示；
 - `html_sanitize_rejected`：外置 AI 写入的 HTML/SVG 触犯白名单、存在外联 URL、硬编码色值或伪造 `<blink-ref>`，附带精确诊断码供自修；
 - `conflict_preserved`：离线并发编辑同一正文产生冲突，已完整保留双本并生成冲突副本供用户比对合并；
