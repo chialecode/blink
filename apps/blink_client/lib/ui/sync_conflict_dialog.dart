@@ -4,14 +4,13 @@ import 'package:material_ui/material_ui.dart';
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/sync_controller.dart';
 
-/// Responsive dual-copy sync conflict resolution dialog (`INV-01`, `INV-05`,
-/// `docs/ui.md` §4.5).
+/// Responsive dual-copy sync conflict resolution dialog (`INV-01`, `INV-05`).
 ///
 /// Renders side-by-side (`>= 600px`) or stacked (`< 600px`) comparison panes
 /// and offers:
 /// - **保留本机** (`localBodyMd`)
 /// - **采用远端** (`remoteBodyMd`)
-/// - **合并保存后确认** (custom merged BFM text)
+/// - **合并保存后确认** (custom merged Markdown text)
 class BlinkSyncConflictDialog extends StatefulWidget {
   const BlinkSyncConflictDialog({
     required this.sync,
@@ -118,7 +117,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
     } catch (error) {
       if (mounted) {
         setState(() {
-          _errorText = '保存冲突裁定失败：$error';
+          _errorText = '保存冲突处理结果失败：$error';
         });
       }
     } finally {
@@ -126,6 +125,16 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
         setState(() => _resolving = false);
       }
     }
+  }
+
+  static String _formatLocalTime(DateTime utc) {
+    final local = utc.toLocal();
+    final y = local.year.toString().padLeft(4, '0');
+    final m = local.month.toString().padLeft(2, '0');
+    final d = local.day.toString().padLeft(2, '0');
+    final hh = local.hour.toString().padLeft(2, '0');
+    final mm = local.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
   }
 
   @override
@@ -160,7 +169,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      '同步冲突裁定',
+                      '同步冲突处理',
                       style: BlinkTypography.sectionHeading(tokens),
                     ),
                     const SizedBox(height: 12),
@@ -203,12 +212,12 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
                             Text(
-                              '同步冲突裁定（${safeIndex + 1} / ${conflicts.length}）',
+                              '同步冲突处理（${safeIndex + 1} / ${conflicts.length}）',
                               style: BlinkTypography.sectionHeading(tokens),
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              '对端设备：${conflict.remoteDeviceName} · 裁定前双本全文完整保留，绝不静默丢字',
+                              '来源设备：${conflict.remoteDeviceName} · 处理前双方全文均完整保留，不会丢失内容',
                               style: BlinkTypography.metaLabel(tokens),
                             ),
                           ],
@@ -260,15 +269,14 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                         final localCard = _ConflictCopyPane(
                           key: const Key('conflict_local_pane'),
                           title: '本机版本',
-                          subtitle: '当前设备离线正文',
+                          subtitle: '当前设备保存的内容',
                           body: conflict.localBodyMd,
                           accentColor: tokens.accentPrimary,
                         );
                         final remoteCard = _ConflictCopyPane(
                           key: const Key('conflict_remote_pane'),
                           title: '远端版本（${conflict.remoteDeviceName}）',
-                          subtitle:
-                              'UTC ${conflict.createdAtUtc.toIso8601String().substring(0, 19)}',
+                          subtitle: _formatLocalTime(conflict.createdAtUtc),
                           body: conflict.remoteBodyMd,
                           accentColor: tokens.statusWarn,
                         );
@@ -298,7 +306,7 @@ class _BlinkSyncConflictDialogState extends State<BlinkSyncConflictDialog> {
                               ),
                             const SizedBox(height: 14),
                             Text(
-                              '手动合并正文（点击“合并保存后确认”时将以此内容更新主条目）',
+                              '手动合并内容（点击“合并保存后确认”后将保存为最新内容）',
                               style: BlinkTypography.controlLabel(tokens),
                             ),
                             const SizedBox(height: 8),
@@ -435,7 +443,11 @@ class _ConflictCopyPane extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 2),
-          Text(subtitle, style: BlinkTypography.metaLabel(tokens)),
+          Text(
+            subtitle,
+            style: BlinkTypography.metaLabel(tokens)
+                .copyWith(fontFeatures: BlinkTypography.tabularFigures),
+          ),
           const SizedBox(height: 8),
           Divider(height: 1, color: tokens.borderHairline),
           const SizedBox(height: 8),

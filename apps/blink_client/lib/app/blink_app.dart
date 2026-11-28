@@ -10,14 +10,16 @@ import 'package:blink_client/platform/file_picker.dart';
 import 'package:blink_client/platform/lifecycle.dart';
 import 'package:blink_client/ui/blink_workspace_shell.dart';
 
-/// Root Flutter application for BLINK's M3 adaptive workspace (`INV-02`).
+/// Root Flutter application for BLINK's adaptive workspace (`INV-02`).
 class BlinkApp extends StatefulWidget {
   const BlinkApp({
     required this.controller,
     this.workspaceController,
     this.initialVault,
     this.filePicker,
-    this.initialDestination = BlinkNavDestination.stream,
+    this.initialDestination = BlinkNavDestination.memos,
+    this.initialSettingsCategory = SettingsCategory.general,
+    this.initialNoteEditorMode,
     this.enableMirrorExporter = true,
     this.themeMode = ThemeMode.system,
     super.key,
@@ -28,6 +30,8 @@ class BlinkApp extends StatefulWidget {
   final VaultManager? initialVault;
   final BlinkFilePicker? filePicker;
   final BlinkNavDestination initialDestination;
+  final SettingsCategory initialSettingsCategory;
+  final NoteEditorMode? initialNoteEditorMode;
   final bool enableMirrorExporter;
   final ThemeMode themeMode;
 
@@ -51,6 +55,10 @@ class _BlinkAppState extends State<BlinkApp> {
         filePicker: widget.filePicker,
         initialVault: widget.initialVault,
         initialDestination: widget.initialDestination,
+        initialSettingsCategory: widget.initialSettingsCategory,
+        initialNoteEditorMode:
+            widget.initialNoteEditorMode ??
+            widget.controller.settings.defaultNoteEditorMode,
         enableMirrorExporter: widget.enableMirrorExporter,
       );
       _ownsWorkspace = true;

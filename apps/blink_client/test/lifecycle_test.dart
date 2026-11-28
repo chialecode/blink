@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show Offset, Rect;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -70,6 +72,70 @@ class _FakeWindowAdapter implements DesktopWindowAdapter {
   Future<void> destroy() async {
     destroyCalls++;
     visible = false;
+  }
+}
+
+class _FakeChromeWindowAdapter extends _FakeWindowAdapter
+    implements DesktopWindowChromeAdapter {
+  _FakeChromeWindowAdapter({
+    this.supportsCustomWindowChrome = true,
+    this.usesLeadingSystemWindowControls = false,
+  });
+
+  @override
+  final bool supportsCustomWindowChrome;
+
+  @override
+  final bool usesLeadingSystemWindowControls;
+
+  final StreamController<bool> _maximizedController =
+      StreamController<bool>.broadcast();
+  bool maximized = false;
+  int startDraggingCalls = 0;
+  int toggleMaximizeCalls = 0;
+  final List<Offset> systemMenuPositions = <Offset>[];
+  final List<Rect?> maximizeButtonBoundsHistory = <Rect?>[];
+
+  void emitMaximized(bool value) {
+    maximized = value;
+    if (!_maximizedController.isClosed) {
+      _maximizedController.add(value);
+    }
+  }
+
+  @override
+  Stream<bool> get maximizedChanges => _maximizedController.stream;
+
+  @override
+  Future<void> startDragging() async {
+    startDraggingCalls++;
+  }
+
+  @override
+  Future<void> toggleMaximize() async {
+    toggleMaximizeCalls++;
+    maximized = !maximized;
+  }
+
+  @override
+  Future<bool> isMaximized() async => maximized;
+
+  @override
+  Future<void> showSystemMenu(Offset position) async {
+    systemMenuPositions.add(position);
+  }
+
+  @override
+  void setMaximizeButtonBounds(Rect? bounds) {
+    maximizeButtonBoundsHistory.add(bounds);
+  }
+
+  @override
+  Future<void> destroy() async {
+    await super.destroy();
+    if (!_maximizedController.isClosed) {
+      await _maximizedController.close();
+    }
   }
 }
 
@@ -435,5 +501,138 @@ void main() {
         expect(controller.lastShutdownPersistenceError, isA<StateError>());
       },
     );
+
+    test('immersive window chrome delegates drag, minimize, maximize, snap bounds, and close policy', () async {
+      final chromeWindow = _FakeChromeWindowAdapter();
+      final controller = DesktopLifecycleController(
+        buildInfo: buildInfo,
+        paths: paths,
+        settingsStore: store,
+        windowAdapter: chromeWindow,
+        trayAdapter: tray,
+        exitProcess: exitCodes.add,
+        nowUtc: () => fixedUtc,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.initializeStartup(
+        const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+      );
+
+      expect(controller.useImmersiveWindowChrome, isTrue);
+      expect(controller.usesLeadingSystemWindowControls, isFalse);
+      expect(controller.showTrailingWindowCaptionButtons, isTrue);
+      expect(controller.isWindowMaximized, isFalse);
+
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+
+      await controller.startWindowDrag();
+      expect(chromeWindow.startDraggingCalls, 1);
+
+      await controller.minimizeWindow();
+      expect(chromeWindow.minimizeCalls, 1);
+
+      await controller.toggleMaximizeWindow();
+      expect(chromeWindow.toggleMaximizeCalls, 1);
+      expect(controller.isWindowMaximized, isTrue);
+      expect(notifications, 1);
+
+      // Native restore event (e.g. Aero Snap drag-away) stays in sync.
+      chromeWindow.emitMaximized(false);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.isWindowMaximized, isFalse);
+      expect(notifications, 2);
+
+      await controller.showWindowSystemMenu(const Offset(120, 18));
+      expect(chromeWindow.systemMenuPositions, const <Offset>[Offset(120, 18)]);
+
+      const bounds = Rect.fromLTWH(800, 0, 46, 44);
+      controller.updateMaximizeButtonBounds(bounds);
+      expect(chromeWindow.maximizeButtonBoundsHistory, const <Rect?>[bounds]);
+
+      // Custom close button respects hide-to-tray default without exiting.
+      await controller.handleCloseButtonPressed();
+      expect(chromeWindow.hideToTrayCalls, 1);
+      expect(exitCodes, isEmpty);
+
+      // Switching to exitApp routes custom close button through shutdown.
+      controller.updateCloseButtonBehavior(CloseButtonBehavior.exitApp);
+      await controller.handleCloseButtonPressed();
+      expect(exitCodes, const <int>[0]);
+      expect(chromeWindow.destroyCalls, 1);
+    });
+
+    test('BLINK_QUIET=1 disables immersive chrome actions and macOS uses leading controls', () async {
+      final quietChromeWindow = _FakeChromeWindowAdapter();
+      final quietController = DesktopLifecycleController(
+        buildInfo: buildInfo,
+        paths: paths,
+        settingsStore: store,
+        windowAdapter: quietChromeWindow,
+        trayAdapter: tray,
+        exitProcess: exitCodes.add,
+        nowUtc: () => fixedUtc,
+      );
+      addTearDown(quietController.dispose);
+
+      await quietController.initializeStartup(
+        const LaunchOptions(mode: LaunchMode.normal, quiet: true),
+      );
+
+      expect(quietController.useImmersiveWindowChrome, isFalse);
+      expect(quietController.showTrailingWindowCaptionButtons, isFalse);
+      await quietController.startWindowDrag();
+      await quietController.toggleMaximizeWindow();
+      await quietController.showWindowSystemMenu(const Offset(10, 10));
+      quietController.updateMaximizeButtonBounds(
+        const Rect.fromLTWH(0, 0, 46, 44),
+      );
+      expect(quietChromeWindow.startDraggingCalls, 0);
+      expect(quietChromeWindow.toggleMaximizeCalls, 0);
+      expect(quietChromeWindow.systemMenuPositions, isEmpty);
+      expect(quietChromeWindow.maximizeButtonBoundsHistory, isEmpty);
+
+      final macChromeWindow = _FakeChromeWindowAdapter(
+        usesLeadingSystemWindowControls: true,
+      );
+      final macController = DesktopLifecycleController(
+        buildInfo: buildInfo,
+        paths: paths,
+        settingsStore: store,
+        windowAdapter: macChromeWindow,
+        trayAdapter: _FakeTrayAdapter(),
+        exitProcess: exitCodes.add,
+        nowUtc: () => fixedUtc,
+      );
+      addTearDown(macController.dispose);
+
+      await macController.initializeStartup(
+        const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+      );
+      expect(macController.useImmersiveWindowChrome, isTrue);
+      expect(macController.usesLeadingSystemWindowControls, isTrue);
+      expect(macController.showTrailingWindowCaptionButtons, isFalse);
+
+      final unsupportedWindow = _FakeChromeWindowAdapter(
+        supportsCustomWindowChrome: false,
+      );
+      final unsupportedController = DesktopLifecycleController(
+        buildInfo: buildInfo,
+        paths: paths,
+        settingsStore: store,
+        windowAdapter: unsupportedWindow,
+        trayAdapter: _FakeTrayAdapter(),
+        exitProcess: exitCodes.add,
+        nowUtc: () => fixedUtc,
+      );
+      addTearDown(unsupportedController.dispose);
+
+      await unsupportedController.initializeStartup(
+        const LaunchOptions(mode: LaunchMode.normal, quiet: false),
+      );
+      expect(unsupportedController.useImmersiveWindowChrome, isFalse);
+      expect(unsupportedController.showTrailingWindowCaptionButtons, isFalse);
+    });
   });
 }

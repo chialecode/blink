@@ -50,6 +50,29 @@ enum CloseButtonBehavior {
   }
 }
 
+/// Preferred editing mode for long-form Markdown notes.
+enum NoteEditorMode {
+  wysiwyg('wysiwyg', '所见即所得'),
+  source('source', '源代码');
+
+  const NoteEditorMode(this.wireValue, this.label);
+
+  final String wireValue;
+  final String label;
+
+  static NoteEditorMode? tryParse(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+    for (final item in NoteEditorMode.values) {
+      if (item.wireValue == value) {
+        return item;
+      }
+    }
+    return null;
+  }
+}
+
 /// Persisted desktop shell settings stored at `<dataRoot>/settings/desktop.json`.
 class DesktopSettings {
   const DesktopSettings({
@@ -59,6 +82,7 @@ class DesktopSettings {
     this.windowMaximized,
     this.surfaceMode,
     this.customVaultPath,
+    this.defaultNoteEditorMode = NoteEditorMode.wysiwyg,
   });
 
   final CloseButtonBehavior closeButtonBehavior;
@@ -73,6 +97,9 @@ class DesktopSettings {
   /// default portable vault directory under Documents or the active sandbox).
   final String? customVaultPath;
 
+  /// Preferred default editor mode for long-form notes (`wysiwyg` or `source`).
+  final NoteEditorMode defaultNoteEditorMode;
+
   DesktopSettings copyWith({
     CloseButtonBehavior? closeButtonBehavior,
     double? windowWidth,
@@ -82,6 +109,7 @@ class DesktopSettings {
     bool clearSurfaceMode = false,
     String? customVaultPath,
     bool clearCustomVaultPath = false,
+    NoteEditorMode? defaultNoteEditorMode,
   }) {
     return DesktopSettings(
       closeButtonBehavior: closeButtonBehavior ?? this.closeButtonBehavior,
@@ -92,6 +120,8 @@ class DesktopSettings {
       customVaultPath: clearCustomVaultPath
           ? null
           : (customVaultPath ?? this.customVaultPath),
+      defaultNoteEditorMode:
+          defaultNoteEditorMode ?? this.defaultNoteEditorMode,
     );
   }
 
@@ -104,6 +134,7 @@ class DesktopSettings {
       if (surfaceMode != null) 'surfaceMode': surfaceMode!.wireValue,
       if (customVaultPath != null && customVaultPath!.trim().isNotEmpty)
         'customVaultPath': customVaultPath!.trim(),
+      'defaultNoteEditorMode': defaultNoteEditorMode.wireValue,
     };
   }
 
@@ -167,6 +198,16 @@ class DesktopSettings {
       customVaultPath = trimmed.isEmpty ? null : trimmed;
     }
 
+    NoteEditorMode defaultNoteEditorMode = NoteEditorMode.wysiwyg;
+    if (json.containsKey('defaultNoteEditorMode') &&
+        json['defaultNoteEditorMode'] != null) {
+      final parsed = NoteEditorMode.tryParse(json['defaultNoteEditorMode']);
+      if (parsed == null) {
+        return null;
+      }
+      defaultNoteEditorMode = parsed;
+    }
+
     return DesktopSettings(
       closeButtonBehavior: behavior,
       windowWidth: width,
@@ -174,6 +215,7 @@ class DesktopSettings {
       windowMaximized: maximized,
       surfaceMode: surfaceMode,
       customVaultPath: customVaultPath,
+      defaultNoteEditorMode: defaultNoteEditorMode,
     );
   }
 
@@ -188,7 +230,8 @@ class DesktopSettings {
         other.windowHeight == windowHeight &&
         other.windowMaximized == windowMaximized &&
         other.surfaceMode == surfaceMode &&
-        other.customVaultPath == customVaultPath;
+        other.customVaultPath == customVaultPath &&
+        other.defaultNoteEditorMode == defaultNoteEditorMode;
   }
 
   @override
@@ -199,6 +242,7 @@ class DesktopSettings {
     windowMaximized,
     surfaceMode,
     customVaultPath,
+    defaultNoteEditorMode,
   );
 }
 

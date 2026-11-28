@@ -279,6 +279,7 @@ void main() {
             name: 'settings_desktop',
             isMobile: false,
           );
+          desktop.workspace.selectSettingsCategory(SettingsCategory.sync);
 
           await tester.pumpWidget(
             MaterialApp(
@@ -334,7 +335,7 @@ void main() {
           );
           expect(tester.takeException(), isNull);
 
-          // 2. Mobile < 600px viewport
+          // 2. Mobile < 600px viewport (2-level Settings -> Sync category)
           tester.view.physicalSize = const Size(390, 844);
           final mobile = await createFixture(
             tester,
@@ -347,11 +348,15 @@ void main() {
               home: Scaffold(
                 body: BlinkSettingsPage(
                   workspace: mobile.workspace,
+                  isMobile: true,
                   isMobilePlatform: true,
                 ),
               ),
             ),
           );
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byKey(const Key('mobile_settings_sync')));
           await tester.pumpAndSettle();
 
           expect(

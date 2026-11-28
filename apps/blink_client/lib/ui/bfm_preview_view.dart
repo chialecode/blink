@@ -12,7 +12,7 @@ typedef BfmTaskLineToggleCallback = void Function(
   TaskStatus nextStatus,
 );
 
-/// Native Flutter renderer for BFM v1 split preview & entry display (`docs/ui.md` §2.2, §3.1).
+/// Native Flutter renderer for Markdown preview & entry display (`docs/ui.md` §2.2, §3.1).
 ///
 /// Strictly uses [BlinkColorTokens.of] (zero hardcoded hex color literals) so
 /// Day, Sepia, and Dark surfaces switch cleanly without flicker.
@@ -22,7 +22,9 @@ class BfmPreviewView extends StatelessWidget {
     this.compiledHtml,
     this.onTapLink,
     this.onToggleTaskLine,
+    this.onTapTag,
     this.compact = false,
+    this.emptyPlaceholder,
     super.key,
   });
 
@@ -30,15 +32,21 @@ class BfmPreviewView extends StatelessWidget {
   final String? compiledHtml;
   final BfmLinkTapCallback? onTapLink;
   final BfmTaskLineToggleCallback? onToggleTaskLine;
+  final ValueChanged<String>? onTapTag;
   final bool compact;
+  final String? emptyPlaceholder;
 
   @override
   Widget build(BuildContext context) {
     final tokens = BlinkColorTokens.of(context);
     final normalized = bodyMd.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     if (normalized.trim().isEmpty) {
+      final placeholder = emptyPlaceholder ?? '（暂无正文）';
+      if (placeholder.isEmpty) {
+        return const SizedBox.shrink();
+      }
       return Text(
-        '开始输入 BFM v1 内容，此处将实时渲染预览（支持 #标签、#private、[[引用]]、==高亮==、- [ ] 待办、> [!callout] 与 :::fold）。',
+        placeholder,
         style: BlinkTypography.body(tokens, color: tokens.textMuted),
       );
     }
@@ -62,23 +70,128 @@ class BfmPreviewView extends StatelessWidget {
   ) {
     switch (block) {
       case _HeadingBlock(:final level, :final text):
-        final style = level <= 1
-            ? BlinkTypography.heroHeading(tokens)
-            : level == 2
-            ? BlinkTypography.sectionHeading(tokens)
-            : BlinkTypography.controlLabel(tokens);
-        return _BfmInlineRichText(
+        final style = compact
+            ? (level <= 1
+                  ? BlinkTypography.heroHeading(tokens)
+                  : level == 2
+                  ? BlinkTypography.sectionHeading(tokens)
+                  : BlinkTypography.controlLabel(tokens))
+            : BlinkTypography.headingForLevel(tokens, level);
+        return BlinkMarkdownInlineText(
           text: text,
           baseStyle: style,
           onTapLink: onTapLink,
+          onTapTag: onTapTag,
         );
       case _ParagraphBlock(:final text):
-        return _BfmInlineRichText(
+        return BlinkMarkdownInlineText(
           text: text,
           baseStyle: compact
               ? BlinkTypography.body(tokens)
               : BlinkTypography.editorBody(tokens),
           onTapLink: onTapLink,
+          onTapTag: onTapTag,
+        );
+      case _BulletListBlock(:final text, :final indentLevel):
+        return Padding(
+          padding: EdgeInsets.only(left: indentLevel * 16.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              SizedBox(
+                width: 20,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(
+                    '•',
+                    style:
+                        (compact
+                                ? BlinkTypography.body(tokens)
+                                : BlinkTypography.editorBody(tokens))
+                            .copyWith(
+                              color: tokens.textSecondary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: BlinkMarkdownInlineText(
+                  text: text,
+                  baseStyle: compact
+                      ? BlinkTypography.body(tokens)
+                      : BlinkTypography.editorBody(tokens),
+                  onTapLink: onTapLink,
+                  onTapTag: onTapTag,
+                ),
+              ),
+            ],
+          ),
+        );
+      case _OrderedListBlock(:final ordinal, :final text, :final indentLevel):
+        return Padding(
+          padding: EdgeInsets.only(left: indentLevel * 16.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 24),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text(
+                    '$ordinal.',
+                    style:
+                        (compact
+                                ? BlinkTypography.body(tokens)
+                                : BlinkTypography.editorBody(tokens))
+                            .copyWith(
+                              color: tokens.textSecondary,
+                              fontFeatures: BlinkTypography.tabularFigures,
+                            ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: BlinkMarkdownInlineText(
+                  text: text,
+                  baseStyle: compact
+                      ? BlinkTypography.body(tokens)
+                      : BlinkTypography.editorBody(tokens),
+                  onTapLink: onTapLink,
+                  onTapTag: onTapTag,
+                ),
+              ),
+            ],
+          ),
+        );
+      case _BlockquoteBlock(:final lines):
+        return IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Container(
+                width: 3,
+                decoration: BoxDecoration(
+                  color: tokens.borderHairline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: BlinkMarkdownInlineText(
+                  text: lines.join('\n'),
+                  baseStyle: BlinkTypography.blockquote(tokens),
+                  onTapLink: onTapLink,
+                  onTapTag: onTapTag,
+                ),
+              ),
+            ],
+          ),
+        );
+      case _DividerBlock():
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Divider(height: 1, thickness: 1, color: tokens.borderHairline),
         );
       case _TaskBlock(:final lineIndex, :final status, :final title):
         final isDone = status == TaskStatus.done;
@@ -117,7 +230,7 @@ class BfmPreviewView extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: _BfmInlineRichText(
+                  child: BlinkMarkdownInlineText(
                     text: title,
                     baseStyle:
                         BlinkTypography.body(
@@ -131,6 +244,7 @@ class BfmPreviewView extends StatelessWidget {
                               : null,
                         ),
                     onTapLink: onTapLink,
+                    onTapTag: onTapTag,
                   ),
                 ),
               ],
@@ -173,10 +287,11 @@ class BfmPreviewView extends StatelessWidget {
                           ),
                           if (bodyLines.isNotEmpty) ...<Widget>[
                             const SizedBox(height: 6),
-                            _BfmInlineRichText(
+                            BlinkMarkdownInlineText(
                               text: bodyLines.join('\n'),
                               baseStyle: BlinkTypography.body(tokens),
                               onTapLink: onTapLink,
+                              onTapTag: onTapTag,
                             ),
                           ],
                         ],
@@ -193,6 +308,7 @@ class BfmPreviewView extends StatelessWidget {
           title: title.isEmpty ? '展开详情' : title,
           bodyMd: bodyMd,
           onTapLink: onTapLink,
+          onTapTag: onTapTag,
         );
       case _CodeBlock(:final language, :final code):
         return Container(
@@ -219,7 +335,7 @@ class BfmPreviewView extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: SelectableText(
                   code,
-                  style: BlinkTypography.monoValue(tokens),
+                  style: BlinkTypography.codeBlock(tokens),
                 ),
               ),
             ],
@@ -296,12 +412,12 @@ class BfmPreviewView extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      label.isEmpty ? '✦ AI 派生只读嵌入槽' : '✦ AI 派生 · $label',
+                      label.isEmpty ? '✦ AI 派生只读视图' : '✦ AI 派生 · $label',
                       style: BlinkTypography.controlLabel(tokens),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'ai:$aiId（原文仅存不可变指针）',
+                      '只读引用 · $aiId',
                       style: BlinkTypography.monoValue(
                         tokens,
                         tabular: true,
@@ -322,11 +438,13 @@ class _BfmFoldCard extends StatefulWidget {
     required this.title,
     required this.bodyMd,
     this.onTapLink,
+    this.onTapTag,
   });
 
   final String title;
   final String bodyMd;
   final BfmLinkTapCallback? onTapLink;
+  final ValueChanged<String>? onTapTag;
 
   @override
   State<_BfmFoldCard> createState() => _BfmFoldCardState();
@@ -376,10 +494,11 @@ class _BfmFoldCardState extends State<_BfmFoldCard> {
             Divider(height: 1, color: tokens.borderHairline),
             Padding(
               padding: const EdgeInsets.all(12),
-              child: _BfmInlineRichText(
+              child: BlinkMarkdownInlineText(
                 text: widget.bodyMd,
                 baseStyle: BlinkTypography.body(tokens),
                 onTapLink: widget.onTapLink,
+                onTapTag: widget.onTapTag,
               ),
             ),
           ],
@@ -389,19 +508,24 @@ class _BfmFoldCardState extends State<_BfmFoldCard> {
   }
 }
 
-class _BfmInlineRichText extends StatelessWidget {
-  const _BfmInlineRichText({
+/// Shared native Flutter inline Markdown renderer used by [BfmPreviewView] and
+/// inactive WYSIWYG blocks.
+class BlinkMarkdownInlineText extends StatelessWidget {
+  const BlinkMarkdownInlineText({
     required this.text,
     required this.baseStyle,
     this.onTapLink,
+    this.onTapTag,
+    super.key,
   });
 
   final String text;
   final TextStyle baseStyle;
   final BfmLinkTapCallback? onTapLink;
+  final ValueChanged<String>? onTapTag;
 
   static final RegExp _inlinePattern = RegExp(
-    r'(\[\[[^\]]+\]\]|==[^=\n]+==|\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|@t\[[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\]|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*))',
+    r'(`[^`\n]+`|\[\[[^\]]+\]\]|\[[^\]\n]+\]\([^\)\n]+\)|==[^=\n]+==|\*\*[^*\n]+\*\*|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|@t\[[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\]|(?<![\w/#])#(?:private\b|[\p{L}\p{N}_][\p{L}\p{N}_/\-]*))',
     unicode: true,
   );
 
@@ -416,7 +540,14 @@ class _BfmInlineRichText extends StatelessWidget {
         spans.add(TextSpan(text: text.substring(cursor, match.start)));
       }
       final raw = match.group(0)!;
-      if (raw.startsWith('[[')) {
+      if (raw.startsWith('`') && raw.endsWith('`') && raw.length >= 2) {
+        spans.add(
+          TextSpan(
+            text: raw.substring(1, raw.length - 1),
+            style: BlinkTypography.inlineCode(tokens),
+          ),
+        );
+      } else if (raw.startsWith('[[')) {
         final inner = raw.substring(2, raw.length - 2);
         final parsed = _parseInlineLink(inner);
         spans.add(
@@ -445,6 +576,20 @@ class _BfmInlineRichText extends StatelessWidget {
             ),
           ),
         );
+      } else if (raw.startsWith('[') && raw.contains('](')) {
+        final splitIdx = raw.indexOf('](');
+        final label = raw.substring(1, splitIdx);
+        spans.add(
+          TextSpan(
+            text: label,
+            style: baseStyle.copyWith(
+              color: tokens.accentPrimary,
+              fontWeight: FontWeight.w500,
+              decoration: TextDecoration.underline,
+              decorationColor: tokens.accentPrimary,
+            ),
+          ),
+        );
       } else if (raw.startsWith('==')) {
         spans.add(
           TextSpan(
@@ -459,19 +604,21 @@ class _BfmInlineRichText extends StatelessWidget {
             style: baseStyle.copyWith(fontWeight: FontWeight.w600),
           ),
         );
+      } else if (raw.startsWith('~~')) {
+        spans.add(
+          TextSpan(
+            text: raw.substring(2, raw.length - 2),
+            style: baseStyle.copyWith(
+              color: tokens.textMuted,
+              decoration: TextDecoration.lineThrough,
+            ),
+          ),
+        );
       } else if (raw.startsWith('*')) {
         spans.add(
           TextSpan(
             text: raw.substring(1, raw.length - 1),
             style: baseStyle.copyWith(fontStyle: FontStyle.italic),
-          ),
-        );
-      } else if (raw.startsWith('`')) {
-        spans.add(
-          TextSpan(
-            text: raw.substring(1, raw.length - 1),
-            style: BlinkTypography.monoValue(tokens)
-                .copyWith(backgroundColor: tokens.sidebar),
           ),
         );
       } else if (raw.startsWith('@t[')) {
@@ -517,7 +664,7 @@ class _BfmInlineRichText extends StatelessWidget {
                   ),
                   const SizedBox(width: 3),
                   Text(
-                    '#private',
+                    '私密',
                     style: BlinkTypography.badge(color: tokens.privacyPrivate),
                   ),
                 ],
@@ -526,15 +673,38 @@ class _BfmInlineRichText extends StatelessWidget {
           ),
         );
       } else if (raw.startsWith('#')) {
-        spans.add(
-          TextSpan(
-            text: raw,
-            style: baseStyle.copyWith(
-              color: tokens.accentPrimary,
-              fontWeight: FontWeight.w500,
+        final tagName = raw.substring(1).toLowerCase();
+        if (onTapTag != null) {
+          spans.add(
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 1),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => onTapTag!(tagName),
+                  child: Text(
+                    raw,
+                    style: baseStyle.copyWith(
+                      color: tokens.accentPrimary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          spans.add(
+            TextSpan(
+              text: raw,
+              style: baseStyle.copyWith(
+                color: tokens.accentPrimary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          );
+        }
       }
       cursor = match.end;
     }
@@ -602,6 +772,31 @@ class _ParagraphBlock extends _BfmBlock {
   final String text;
 }
 
+class _BulletListBlock extends _BfmBlock {
+  const _BulletListBlock(this.text, this.indentLevel);
+
+  final String text;
+  final int indentLevel;
+}
+
+class _OrderedListBlock extends _BfmBlock {
+  const _OrderedListBlock(this.ordinal, this.text, this.indentLevel);
+
+  final int ordinal;
+  final String text;
+  final int indentLevel;
+}
+
+class _BlockquoteBlock extends _BfmBlock {
+  const _BlockquoteBlock(this.lines);
+
+  final List<String> lines;
+}
+
+class _DividerBlock extends _BfmBlock {
+  const _DividerBlock();
+}
+
 class _TaskBlock extends _BfmBlock {
   const _TaskBlock(this.lineIndex, this.status, this.title);
 
@@ -647,17 +842,31 @@ class _AiEmbedBlock extends _BfmBlock {
 }
 
 final RegExp _headingRe = RegExp(r'^(#{1,6})\s+(.*)$');
-final RegExp _taskRe = RegExp(r'^[ \t]*[-*][ \t]+\[([ xX>\-])\][ \t]+(.*)$');
+final RegExp _taskRe = RegExp(
+  r'^[ \t]*[-*][ \t]+\[([ xX>\-])\](?:[ \t]+(.*)|[ \t]*)$',
+);
+final RegExp _bulletRe = RegExp(r'^([ \t]*)[-*][ \t]+(.*)$');
+final RegExp _orderedRe = RegExp(r'^([ \t]*)(\d+)\.[ \t]+(.*)$');
 final RegExp _calloutRe = RegExp(r'^[ \t]*>[ \t]*\[!([A-Za-z]+)\][ \t]*(.*)$');
+final RegExp _blockquoteRe = RegExp(r'^[ \t]*>[ \t]?(.*)$');
+final RegExp _dividerRe = RegExp(r'^[ \t]*(?:---+|\*\*\*+)[ \t]*$');
 final RegExp _foldOpenRe = RegExp(r'^[ \t]*:::fold[ \t]*(.*)$');
 final RegExp _foldCloseRe = RegExp(r'^[ \t]*:::[ \t]*$');
-final RegExp _fenceRe = RegExp(r'^[ \t]*```([A-Za-z0-9_\-]*)[ \t]*$');
+final RegExp _fenceRe = RegExp(r'^[ \t]*```([A-Za-z0-9_+-]*)[ \t]*$');
 final RegExp _aiEmbedLineRe = RegExp(
   r'^[ \t]*!\[\[ai:([^\]|]+)(?:\|([^\]]*))?\]\][ \t]*$',
 );
 final RegExp _tableSepRe = RegExp(
-  r'^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*$',
+  r'^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$',
 );
+
+int _indentLevelOf(String prefix) {
+  var spaces = 0;
+  for (var i = 0; i < prefix.length; i++) {
+    spaces += prefix[i] == '\t' ? 2 : 1;
+  }
+  return (spaces ~/ 2).clamp(0, 4);
+}
 
 List<_BfmBlock> _parseBlocks(String normalized) {
   final lines = normalized.split('\n');
@@ -712,11 +921,28 @@ List<_BfmBlock> _parseBlocks(String normalized) {
       final title = (calloutMatch.group(2) ?? '').trim();
       final bodyLines = <String>[];
       i++;
-      while (i < lines.length && lines[i].trimLeft().startsWith('>')) {
+      while (i < lines.length &&
+          lines[i].trimLeft().startsWith('>') &&
+          !_calloutRe.hasMatch(lines[i])) {
         bodyLines.add(lines[i].replaceFirst(RegExp(r'^[ \t]*>[ \t]?'), ''));
         i++;
       }
       blocks.add(_CalloutBlock(kind, title, bodyLines));
+      continue;
+    }
+
+    // Plain blockquote (> ...).
+    final quoteMatch = _blockquoteRe.firstMatch(line);
+    if (quoteMatch != null) {
+      final quoteLines = <String>[quoteMatch.group(1)!];
+      i++;
+      while (i < lines.length &&
+          _blockquoteRe.hasMatch(lines[i]) &&
+          !_calloutRe.hasMatch(lines[i])) {
+        quoteLines.add(_blockquoteRe.firstMatch(lines[i])!.group(1)!);
+        i++;
+      }
+      blocks.add(_BlockquoteBlock(quoteLines));
       continue;
     }
 
@@ -729,6 +955,13 @@ List<_BfmBlock> _parseBlocks(String normalized) {
           (aiMatch.group(2) ?? '').trim(),
         ),
       );
+      i++;
+      continue;
+    }
+
+    // Horizontal rule (--- or ***).
+    if (_dividerRe.hasMatch(line)) {
+      blocks.add(const _DividerBlock());
       i++;
       continue;
     }
@@ -748,7 +981,34 @@ List<_BfmBlock> _parseBlocks(String normalized) {
     if (taskMatch != null) {
       final status =
           TaskStatus.fromBfmMarker(taskMatch.group(1)!) ?? TaskStatus.open;
-      blocks.add(_TaskBlock(i, status, taskMatch.group(2)!));
+      blocks.add(_TaskBlock(i, status, taskMatch.group(2) ?? ''));
+      i++;
+      continue;
+    }
+
+    // Unordered list item (- / *).
+    final bulletMatch = _bulletRe.firstMatch(line);
+    if (bulletMatch != null) {
+      blocks.add(
+        _BulletListBlock(
+          bulletMatch.group(2)!,
+          _indentLevelOf(bulletMatch.group(1)!),
+        ),
+      );
+      i++;
+      continue;
+    }
+
+    // Ordered list item (1. / 2. ...).
+    final orderedMatch = _orderedRe.firstMatch(line);
+    if (orderedMatch != null) {
+      blocks.add(
+        _OrderedListBlock(
+          int.tryParse(orderedMatch.group(2)!) ?? 1,
+          orderedMatch.group(3)!,
+          _indentLevelOf(orderedMatch.group(1)!),
+        ),
+      );
       i++;
       continue;
     }
@@ -777,6 +1037,10 @@ List<_BfmBlock> _parseBlocks(String normalized) {
         lines[i].trim().isNotEmpty &&
         !_headingRe.hasMatch(lines[i]) &&
         !_taskRe.hasMatch(lines[i]) &&
+        !_bulletRe.hasMatch(lines[i]) &&
+        !_orderedRe.hasMatch(lines[i]) &&
+        !_dividerRe.hasMatch(lines[i]) &&
+        !_blockquoteRe.hasMatch(lines[i]) &&
         !_calloutRe.hasMatch(lines[i]) &&
         !_foldOpenRe.hasMatch(lines[i]) &&
         !_fenceRe.hasMatch(lines[i]) &&

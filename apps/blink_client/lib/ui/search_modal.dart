@@ -1,20 +1,28 @@
+import 'dart:async';
+
 import 'package:blink_core/blink_core.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:blink_client/app/blink_theme.dart';
 import 'package:blink_client/application/search_controller.dart';
+import 'package:blink_client/application/workspace_controller.dart';
 
-/// Live CJK FTS5 search modal opened via `Ctrl+K` or top-bar search button.
+/// Live full-text search modal opened via `Ctrl+K` or the rail search button.
 class BlinkSearchModal extends StatefulWidget {
   const BlinkSearchModal({
     required this.controller,
-    required this.onSelectHit,
     required this.onClose,
+    this.workspace,
+    this.onSelectHit,
     super.key,
-  });
+  }) : assert(
+         workspace != null || onSelectHit != null,
+         'Either workspace or onSelectHit must be provided.',
+       );
 
   final BlinkSearchController controller;
-  final ValueChanged<FtsSearchHit> onSelectHit;
+  final BlinkWorkspaceController? workspace;
+  final ValueChanged<FtsSearchHit>? onSelectHit;
   final VoidCallback onClose;
 
   @override
@@ -26,10 +34,14 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
     text: widget.controller.query,
   );
   final FocusNode _focusNode = FocusNode();
+  final Map<String, EntryKind> _entryKindCache = <String, EntryKind>{};
+  final Set<String> _resolvingIds = <String>{};
 
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_resolveHitKinds);
+    _resolveHitKinds();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _focusNode.requestFocus();
@@ -38,10 +50,119 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
   }
 
   @override
+  void didUpdateWidget(covariant BlinkSearchModal oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller.removeListener(_resolveHitKinds);
+      widget.controller.addListener(_resolveHitKinds);
+      _resolveHitKinds();
+    }
+  }
+
+  @override
   void dispose() {
+    widget.controller.removeListener(_resolveHitKinds);
     _inputController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _resolveHitKinds() {
+    final vault = widget.workspace?.vault ?? widget.controller.vaultProvider();
+    if (vault == null || !vault.isOpen) {
+      return;
+    }
+    final toResolve = <String>[];
+    for (final hit in widget.controller.hits) {
+      if (hit.docKind != 'entry') {
+        continue;
+      }
+      if (_entryKindCache.containsKey(hit.docId) ||
+          _resolvingIds.contains(hit.docId)) {
+        continue;
+      }
+      if (_lookupKnownEntryKind(hit.docId) != null) {
+        continue;
+      }
+      _resolvingIds.add(hit.docId);
+      toResolve.add(hit.docId);
+    }
+    if (toResolve.isEmpty) {
+      return;
+    }
+    unawaited(_fetchEntryKinds(vault, toResolve));
+  }
+
+  Future<void> _fetchEntryKinds(VaultManager vault, List<String> ids) async {
+    var updated = false;
+    for (final id in ids) {
+      try {
+        final entry = await vault.raw.getEntryById(id, includeDeleted: true);
+        if (entry != null) {
+          _entryKindCache[id] = entry.entryKind;
+          updated = true;
+        }
+      } catch (_) {
+      } finally {
+        _resolvingIds.remove(id);
+      }
+    }
+    if (updated && mounted) {
+      setState(() {});
+    }
+  }
+
+  EntryKind? _lookupKnownEntryKind(String entryId) {
+    final cached = _entryKindCache[entryId];
+    if (cached != null) {
+      return cached;
+    }
+    final ws = widget.workspace;
+    if (ws == null) {
+      return null;
+    }
+    for (final note in ws.noteEntries) {
+      if (note.id == entryId) {
+        return note.entryKind;
+      }
+    }
+    for (final memo in ws.memoEntries) {
+      if (memo.id == entryId) {
+        return memo.entryKind;
+      }
+    }
+    return null;
+  }
+
+  void _handleSelectHit(FtsSearchHit hit) {
+    if (widget.onSelectHit != null) {
+      widget.onSelectHit!(hit);
+      return;
+    }
+    widget.onClose();
+    final ws = widget.workspace;
+    if (ws == null) {
+      return;
+    }
+    if (hit.docKind == 'entry') {
+      unawaited(ws.openEntryById(hit.docId));
+    } else if (hit.docKind == 'task') {
+      ws.setDestination(BlinkNavDestination.tasks);
+    }
+  }
+
+  ({String label, Color fg, Color bg}) _badgeForHit(
+    FtsSearchHit hit,
+    BlinkColorTokens tokens,
+  ) {
+    if (hit.docKind == 'task') {
+      return (label: '待办', fg: tokens.statusWarn, bg: tokens.statusWarnSubtle);
+    }
+    final kind = _lookupKnownEntryKind(hit.docId);
+    if (kind != null && BlinkWorkspaceController.isNoteKind(kind)) {
+      return (label: '笔记', fg: tokens.accentPrimary, bg: tokens.accentSubtle);
+    }
+    return (label: '小记', fg: tokens.accentPrimary, bg: tokens.accentSubtle);
   }
 
   @override
@@ -87,7 +208,7 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                           focusNode: _focusNode,
                           style: BlinkTypography.editorBody(tokens),
                           decoration: InputDecoration(
-                            hintText: '全局 CJK 全文搜索（单字、词组、中英混排）…',
+                            hintText: '搜索笔记、小记与待办…',
                             hintStyle: BlinkTypography.body(
                               tokens,
                               color: tokens.textMuted,
@@ -108,7 +229,7 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                           );
                         },
                         child: Text(
-                          includePrivate ? '含 #private' : '仅常规范围',
+                          includePrivate ? '含私密内容' : '不含私密',
                           style: BlinkTypography.metaLabel(
                             tokens,
                             color: includePrivate
@@ -147,7 +268,7 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                       child: Padding(
                         padding: const EdgeInsets.all(24),
                         child: Text(
-                          '输入关键词实时检索本地 index/fts.db（支持中文单字、双字与长词召回）。',
+                          '输入关键词即可实时搜索本地笔记、小记与待办。',
                           textAlign: TextAlign.center,
                           style: BlinkTypography.body(
                             tokens,
@@ -190,9 +311,10 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                         final hit = hits[index];
                         final isPrivate =
                             hit.privacyLevel == PrivacyLevel.private;
+                        final badge = _badgeForHit(hit, tokens);
                         return InkWell(
                           key: Key('search_hit_${hit.docId}'),
-                          onTap: () => widget.onSelectHit(hit),
+                          onTap: () => _handleSelectHit(hit),
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 16,
@@ -203,19 +325,30 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                               children: <Widget>[
                                 Row(
                                   children: <Widget>[
-                                    Text(
-                                      hit.docKind == 'task' ? '待办' : '记录',
-                                      style: BlinkTypography.metaLabel(
-                                        tokens,
-                                        color: tokens.accentPrimary,
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: badge.bg,
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        badge.label,
+                                        style: BlinkTypography.badge(
+                                          color: badge.fg,
+                                        ),
                                       ),
                                     ),
                                     if (isPrivate) ...<Widget>[
-                                      const SizedBox(width: 8),
+                                      const SizedBox(width: 6),
                                       Container(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 6,
-                                          vertical: 1,
+                                          vertical: 2,
                                         ),
                                         decoration: BoxDecoration(
                                           color: tokens.privacySubtle,
@@ -245,7 +378,7 @@ class _BlinkSearchModalState extends State<BlinkSearchModal> {
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 4),
+                                const SizedBox(height: 5),
                                 Text(
                                   hit.snippet,
                                   maxLines: 3,

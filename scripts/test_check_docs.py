@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -233,16 +234,29 @@ class HygieneTests(FixtureCase):
 
 class ReferenceNameTests(FixtureCase):
     def test_sibling_repository_name(self) -> None:
-        sibling = self.workspace / "zetaquill"
+        sibling = self.workspace / "zeta-quill"
         (sibling / ".git").mkdir(parents=True)
-        self.write("docs/guide.md", GOOD_GUIDE + "\nBorrowed from zetaquill.\n")
-        self.assertFlags("forbidden reference or sibling repository name (zetaquill)", self.run_check())
+        self.write("docs/guide.md", GOOD_GUIDE + "\nBorrowed from zeta-quill.\n")
+        self.assertFlags("forbidden reference or sibling repository name (zeta-quill)", self.run_check())
 
     def test_sibling_name_inside_external_url_is_ignored(self) -> None:
-        sibling = self.workspace / "zetaquill"
-        (sibling / ".git").mkdir(parents=True)
-        self.write("docs/guide.md", GOOD_GUIDE + "\n[x](https://example.org/zetaquill/docs)\n")
+        for name in ("zeta-quill", "offset"):
+            ((self.workspace / name) / ".git").mkdir(parents=True)
+        self.write(
+            "docs/guide.md",
+            GOOD_GUIDE
+            + "\n[a](https://example.org/zeta-quill/docs)\n"
+            + "[b](https://example.org/other/offset)\n",
+        )
         self.assertEqual(self.run_check(), [])
+
+    def test_owner_github_url_is_not_stripped(self) -> None:
+        for name in ("zeta-quill", "offset"):
+            ((self.workspace / name) / ".git").mkdir(parents=True)
+        self.write("docs/guide.md", GOOD_GUIDE + "\n[a](https://github.com/chialecode/offset)\n")
+        self.assertFlags("forbidden reference or sibling repository name (offset)", self.run_check())
+        self.write("docs/guide.md", GOOD_GUIDE + "\n[b](https://github.com/chialecode/zeta-quill)\n")
+        self.assertFlags("forbidden reference or sibling repository name (zeta-quill)", self.run_check())
 
     def test_reference_index_names(self) -> None:
         ref_dir = self.workspace / "ref-index"
@@ -259,6 +273,274 @@ class ReferenceNameTests(FixtureCase):
         (ref_dir / "INDEX.md").write_text("# Index\n\n## someorg/betakit\n", encoding="utf-8", newline="\n")
         self.write("docs/guide.md", GOOD_GUIDE + "\nUses someorg/betakit ideas.\n")
         self.assertFlags("(someorg/betakit)", self.run_check())
+
+    def test_reference_index_single_word_stays_strict_even_if_sibling_git_exists(self) -> None:
+        ref_dir = self.workspace / "reference" / self.root.name
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "README.md").write_text(
+            "# Index\n\n### someorg/offset\n### someorg/cipher\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (self.workspace / "offset" / ".git").mkdir(parents=True)
+        self.write("lib/sample.dart", "void main() { final offset = 1; }\n")
+        self.assertFlags("(offset)", self.run_check())
+        (self.root / "lib" / "sample.dart").unlink()
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\nHandles invalid cipher header safely.\n")
+        self.assertFlags("(cipher)", self.run_check())
+
+    def test_reference_subdir_inside_repo_ref_stays_strict_over_sibling_git_repo(self) -> None:
+        (self.workspace / "reference" / self.root.name / "offset").mkdir(parents=True)
+        (self.workspace / "offset" / ".git").mkdir(parents=True)
+        self.write("lib/sample.dart", "void f() { final offset = 2; }\n")
+        self.assertFlags("(offset)", self.run_check())
+
+    def test_reference_root_dir_single_word_stays_strict_in_md_and_dart(self) -> None:
+        (self.workspace / "reference" / "offset").mkdir(parents=True)
+        (self.workspace / "reference" / "cipher").mkdir(parents=True)
+
+        self.write("lib/sample.dart", "const html = '<blink-metric offset=\"+18%\"></blink-metric>';\n")
+        self.assertFlags("(offset)", self.run_check())
+        (self.root / "lib" / "sample.dart").unlink()
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\nChecks cipher header bytes.\n")
+        self.assertFlags("(cipher)", self.run_check())
+
+    def test_reference_root_git_repo_overrides_same_named_sibling_git_repo(self) -> None:
+        (self.workspace / "reference" / self.root.name).mkdir(parents=True)
+        (self.workspace / "reference" / "offset" / ".git").mkdir(parents=True)
+        (self.workspace / "offset" / ".git").mkdir(parents=True)
+        self.write("lib/sample.dart", "void f() { final offset = 2; }\n")
+        self.assertFlags("(offset)", self.run_check())
+
+    def test_sibling_reference_buckets_in_per_project_ref_root_use_context_match(self) -> None:
+        # Mirrors the real workspace layout: `reference/<this_repo>/` alongside
+        # sibling project buckets (sibling dir under `root.parent`, empty placeholder,
+        # or bucket with `PROPOSALS.md`).
+        (self.workspace / "reference" / self.root.name).mkdir(parents=True)
+        ((self.workspace / "offset") / ".git").mkdir(parents=True)
+        (self.workspace / "reference" / "offset").mkdir(parents=True)
+        (self.workspace / "reference" / "offset" / "README.md").write_text(
+            "# Sibling Index\n", encoding="utf-8", newline="\n"
+        )
+        # Empty placeholder bucket (not checked out under root.parent)
+        (self.workspace / "reference" / "cipher").mkdir(parents=True)
+        # Sibling bucket identified by PROPOSALS.md
+        (self.workspace / "reference" / "quartz").mkdir(parents=True)
+        (self.workspace / "reference" / "quartz" / "PROPOSALS.md").write_text(
+            "# Proposals\n", encoding="utf-8", newline="\n"
+        )
+        # Distinctive name stays strict even in a sibling bucket
+        (self.workspace / "reference" / "sibling-app").mkdir(parents=True)
+
+        self.write(
+            "lib/sample.dart",
+            "void f() { final offset = 1; const msg = 'invalid cipher quartz header'; }\n",
+        )
+        self.assertEqual(self.run_check(), [])
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\n参考 offset 项目。\n")
+        self.assertFlags("(offset)", self.run_check())
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\nSee cipher repo for details.\n")
+        self.assertFlags("(cipher)", self.run_check())
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\n参考项目：quartz。\n")
+        self.assertFlags("(quartz)", self.run_check())
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\nMentioning sibling-app directly.\n")
+        self.assertFlags("(sibling-app)", self.run_check())
+
+    def test_unpacked_third_party_reference_dir_stays_strict_even_with_repo_ref_dir(self) -> None:
+        # Non-.git unpacked third-party reference directory containing files/subdirs,
+        # not present under root.parent and without PROPOSALS.md, must stay strict!
+        (self.workspace / "reference" / self.root.name).mkdir(parents=True)
+        unpacked = self.workspace / "reference" / "cipher"
+        (unpacked / "src").mkdir(parents=True)
+        (unpacked / "README.md").write_text("# Unpacked Reference Source\n", encoding="utf-8", newline="\n")
+
+        self.write("lib/sample.dart", "const msg = 'invalid cipher header';\n")
+        self.assertFlags("(cipher)", self.run_check())
+        (self.root / "lib" / "sample.dart").unlink()
+
+        self.write("docs/guide.md", GOOD_GUIDE + "\nUses cipher framing.\n")
+        self.assertFlags("(cipher)", self.run_check())
+
+    def test_explicit_ref_dir_subdir_without_index_stays_strict(self) -> None:
+        ref_dir = self.workspace / "custom-ref"
+        (ref_dir / "offset").mkdir(parents=True)
+        self.write("lib/sample.dart", "void f() { final offset = 1; }\n")
+        self.assertFlags("(offset)", self.run_check(ref_dir=str(ref_dir)))
+
+    def test_distinctive_sibling_repo_names_stay_strict(self) -> None:
+        for name in ("sibling-app", "tool_2", "kit2"):
+            ((self.workspace / name) / ".git").mkdir(parents=True)
+
+        cases = (
+            ("docs/guide.md", GOOD_GUIDE + "\nMentioning sibling-app directly.\n", "sibling-app"),
+            ("lib/sample.dart", "// uses tool_2 helper\n", "tool_2"),
+            ("docs/guide.md", GOOD_GUIDE + "\nSee kit2 notes.\n", "kit2"),
+        )
+        for rel, content, expected in cases:
+            with self.subTest(name=expected, rel=rel):
+                self.write("docs/guide.md", GOOD_GUIDE)
+                sample_dart = self.root / "lib" / "sample.dart"
+                if sample_dart.exists():
+                    sample_dart.unlink()
+                self.write(rel, content)
+                self.assertFlags(f"({expected})", self.run_check())
+
+    def test_single_word_sibling_repo_allows_ordinary_code_and_prose(self) -> None:
+        for name in ("offset", "cipher"):
+            ((self.workspace / name) / ".git").mkdir(parents=True)
+
+        self.write(
+            "lib/sample.dart",
+            "\n".join(
+                [
+                    "export 'src/offset/exporter.dart';",
+                    "/// Flushes incremental offset immediately.",
+                    "/// Throws on cipher/version mismatch.",
+                    "int apply(int pos, int step) {",
+                    "  final offset = step;",
+                    "  const endpoint = 'POST /api/v1/offset';",
+                    "  const mode = 'full/offset sync and replication/offset';",
+                    "  const channelPath = 'blink-dev/offset';",
+                    "  const msg = 'Encrypted relay object has invalid cipher header';",
+                    '  const metric = \'<blink-metric label="Reading" offset="+18%"></blink-metric>\';',
+                    "  // Non-matching identifier/extension/call variants:",
+                    "  // foo/offset.dart ../offset_utils my_offset repo offset(client)",
+                    "  return pos + offset + endpoint.length + mode.length + channelPath.length + msg.length + metric.length;",
+                    "}",
+                    "",
+                ]
+            ),
+        )
+        self.write(
+            "docs/guide.md",
+            GOOD_GUIDE
+            + "\n### 相关参考\n\noffset 增量说明。\n\n项目概况\n\n"
+            + "incremental offset\n\nproject overview\n\n"
+            + "支持 full/offset 增量与 `src/offset/exporter.dart`、`POST /api/v1/offset`、`blink-dev/offset`。\n"
+            + "应用 offset 更新，将 offset 应用到本地库。\n"
+            + "参考 offset_v2 与 offset.dart 说明。\n"
+            + "Handles invalid cipher header and `<blink-metric offset=\"+18%\">`.\n",
+        )
+        self.assertEqual(self.run_check(), [])
+
+    def test_single_word_sibling_repo_flags_software_repo_and_path_mentions(self) -> None:
+        for name in ("offset", "cipher"):
+            ((self.workspace / name) / ".git").mkdir(parents=True)
+
+        cases = (
+            ("docs/guide.md", "See chialecode/offset for code.", "offset"),
+            ("docs/guide.md", "See chialecode/offset.", "offset"),
+            ("docs/guide.md", "See https://github.com/chialecode/offset", "offset"),
+            ("docs/guide.md", "Clone https://github.com/chialecode/offset.git", "offset"),
+            ("docs/guide.md", "Remote git@github.com:chialecode/cipher.git", "cipher"),
+            ("docs/guide.md", "Remote git@gitlab.com:someorg/cipher", "cipher"),
+            ("docs/guide.md", "Mirror gitee.com/someorg/offset", "offset"),
+            ("docs/guide.md", "Clone someorg/offset.git directly.", "offset"),
+            ("docs/guide.md", "Repository offset.git is local.", "offset"),
+            ("docs/guide.md", "Located at ../offset directory.", "offset"),
+            ("docs/guide.md", r"Located at ..\offset directory.", "offset"),
+            ("docs/guide.md", "Located at ./cipher directory.", "cipher"),
+            ("docs/guide.md", "Path project/offset here.", "offset"),
+            ("docs/guide.md", r"Path project\offset here.", "offset"),
+            ("docs/guide.md", "Path projects/cipher here.", "cipher"),
+            ("docs/guide.md", "Path repos/offset here.", "offset"),
+            ("docs/guide.md", "Path workspace/cipher here.", "cipher"),
+            ("docs/guide.md", "这里参考 offset 实现。", "offset"),
+            ("docs/guide.md", "参考：offset。", "offset"),
+            ("docs/guide.md", "参考项目 offset 的结构。", "offset"),
+            ("docs/guide.md", "参考项目：offset。", "offset"),
+            ("docs/guide.md", "参考项目: offset。", "offset"),
+            ("docs/guide.md", "参考 **offset** 的结构。", "offset"),
+            ("docs/guide.md", "参考仓库《cipher》的设计。", "cipher"),
+            ("docs/guide.md", "同级仓库 cipher。", "cipher"),
+            ("docs/guide.md", "同级仓库：offset。", "offset"),
+            ("docs/guide.md", "本机项目 offset。", "offset"),
+            ("docs/guide.md", "隔壁仓库 cipher。", "cipher"),
+            ("docs/guide.md", "借鉴 offset 的思路。", "offset"),
+            ("docs/guide.md", "仿照 cipher 布局。", "cipher"),
+            ("docs/guide.md", "抄自 offset。", "offset"),
+            ("docs/guide.md", "来自 offset。", "offset"),
+            ("docs/guide.md", "类似 offset。", "offset"),
+            ("docs/guide.md", "对标 cipher。", "cipher"),
+            ("docs/guide.md", "桌面应用 cipher。", "cipher"),
+            ("docs/guide.md", "offset 项目已归档。", "offset"),
+            ("docs/guide.md", "**offset** 项目已归档。", "offset"),
+            ("docs/guide.md", "offset（同级仓库）架构。", "offset"),
+            ("docs/guide.md", "offset（参考项目）实现。", "offset"),
+            ("docs/guide.md", "offset 的源码。", "offset"),
+            ("docs/guide.md", "offset 软件功能。", "offset"),
+            ("docs/guide.md", "cipher 应用界面。", "cipher"),
+            ("docs/guide.md", "offset 客户端。", "offset"),
+            ("docs/guide.md", "offset 桌面端。", "offset"),
+            ("docs/guide.md", "offset 服务端。", "offset"),
+            ("docs/guide.md", "offset 代码库。", "offset"),
+            ("docs/guide.md", "offset 工程。", "offset"),
+            ("docs/guide.md", "offset 同级目录。", "offset"),
+            ("docs/guide.md", "offset 参考。", "offset"),
+            ("docs/guide.md", "参见《cipher》。", "cipher"),
+            ("docs/guide.md", "参见「offset」。", "offset"),
+            ("docs/guide.md", "参见『cipher』。", "cipher"),
+            ("docs/guide.md", "From cipher repo history.", "cipher"),
+            ("docs/guide.md", "In **offset** repo history.", "offset"),
+            ("docs/guide.md", "Notes on offset (sibling repo).", "offset"),
+            ("docs/guide.md", "In the offset repository.", "offset"),
+            ("docs/guide.md", "In the offset project.", "offset"),
+            ("docs/guide.md", "In the offset codebase.", "offset"),
+            ("docs/guide.md", "Built like cipher app.", "cipher"),
+            ("docs/guide.md", "Built like cipher software.", "cipher"),
+            ("docs/guide.md", "Like offset client.", "offset"),
+            ("docs/guide.md", "See sibling repo offset.", "offset"),
+            ("docs/guide.md", "See sibling repo **offset**.", "offset"),
+            ("docs/guide.md", "See sibling project cipher.", "cipher"),
+            ("docs/guide.md", "See reference repo offset.", "offset"),
+            ("docs/guide.md", "See reference project cipher.", "cipher"),
+            ("docs/guide.md", "See reference app cipher.", "cipher"),
+            ("docs/guide.md", "A repo named offset.", "offset"),
+            ("docs/guide.md", "A project named cipher.", "cipher"),
+            ("docs/guide.md", "A software named cipher.", "cipher"),
+            ("docs/guide.md", "Taken from repo offset.", "offset"),
+            ("docs/guide.md", "Taken from project cipher.", "cipher"),
+            ("docs/guide.md", "Case-insensitive CHIALECODE/OFFSET and Cipher Repo.", "offset"),
+            ("lib/sample.dart", "// 参考 offset 项目\n", "offset"),
+            ("lib/sample.dart", "// See ../cipher for notes\n", "cipher"),
+        )
+        for rel, line, expected in cases:
+            with self.subTest(rel=rel, line=line, expected=expected):
+                self.write("docs/guide.md", GOOD_GUIDE)
+                sample_dart = self.root / "lib" / "sample.dart"
+                if sample_dart.exists():
+                    sample_dart.unlink()
+                body = (GOOD_GUIDE + "\n" + line + "\n") if rel.endswith(".md") else line
+                self.write(rel, body)
+                self.assertFlags(
+                    f"forbidden reference or sibling repository name ({expected})",
+                    self.run_check(),
+                )
+
+    def test_sibling_context_pattern_is_linear_on_long_whitespace_inputs(self) -> None:
+        pat = check_docs._build_sibling_context_pattern("offset")
+        spaces = " " * 50_000
+        payloads = (
+            f"参考{spaces}nomatch",
+            f"参考项目：{spaces}nomatch",
+            f"offset{spaces}nomatch",
+            f"offset（{spaces}nomatch",
+            f"offset ({spaces}nomatch",
+            f"sibling repo{spaces}nomatch",
+            f"《{spaces}nomatch",
+            f"github.com/{'a' * 50_000}nomatch",
+        )
+        t0 = time.perf_counter()
+        for payload in payloads:
+            self.assertIsNone(pat.search(payload))
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 1.0, f"expected linear-time regex scan, took {elapsed:.3f}s")
 
 
 class CliTests(FixtureCase):

@@ -345,7 +345,7 @@ void main() {
     );
   });
 
-  group('Mobile < 600px BFM editing experience & Settings mobile guards', () {
+  group('Mobile < 600px Memo composer & Settings mobile guards', () {
     late Directory tempDir;
 
     setUp(() {
@@ -367,7 +367,7 @@ void main() {
     >
     createMobileFixture(
       WidgetTester tester, {
-      BlinkNavDestination initialDestination = BlinkNavDestination.stream,
+      BlinkNavDestination initialDestination = BlinkNavDestination.memos,
     }) async {
       final paths = BlinkPaths(dataRoot: tempDir);
       final buildInfo = BlinkBuildInfo.normalized(
@@ -414,7 +414,7 @@ void main() {
     }
 
     testWidgets(
-      'anchors bottom BFM composer, shows >=44dp keyboard autocomplete bar for #, @, /, [[, and toggles Edit/Preview cleanly on <600px',
+      'anchors single-row mobile memo composer, shows >=44dp keyboard autocomplete bar for #, @, /, [[, enforces SPK-02 composing guard, and submits cleanly on <600px',
       (tester) async {
         tester.view.physicalSize = const Size(390, 844);
         tester.view.devicePixelRatio = 1.0;
@@ -422,7 +422,7 @@ void main() {
 
         final fixture = await createMobileFixture(tester);
         await tester.runAsync(
-          () => fixture.workspace.createEntry(bodyMd: '知识图谱基线笔记 #研究'),
+          () => fixture.workspace.createMemo(bodyMd: '知识图谱基线小记 #研究'),
         );
 
         await tester.pumpWidget(
@@ -436,8 +436,12 @@ void main() {
         expect(tester.takeException(), isNull);
         expect(find.byKey(const Key('mobile_bottom_nav')), findsOneWidget);
         expect(find.byKey(const Key('mobile_bottom_composer')), findsOneWidget);
+        // Legacy cluttered Edit/Preview tabs and BFM badge are gone.
+        expect(find.byKey(const Key('mobile_tab_preview')), findsNothing);
+        expect(find.byKey(const Key('mobile_tab_edit')), findsNothing);
+        expect(find.textContaining('BFM'), findsNothing);
 
-        // Composer must be anchored cleanly below the stream entries list.
+        // Composer must be anchored cleanly below the chat-timeline list.
         final composerRect = tester.getRect(
           find.byKey(const Key('mobile_bottom_composer')),
         );
@@ -458,7 +462,7 @@ void main() {
         expect(raisedComposerRect.bottom, lessThanOrEqualTo(844 - 300 + 0.5));
 
         // 1. Trigger `#` autocomplete -> horizontal bar (NOT OverlayPortal popup), >=44dp target.
-        final inputFinder = find.byKey(const Key('bfm_editor_input'));
+        final inputFinder = find.byKey(const Key('editor_text_field'));
         final textField = tester.widget<TextField>(inputFinder);
         final syntaxController =
             textField.controller! as BlinkSyntaxTextController;
@@ -478,7 +482,10 @@ void main() {
           find.byKey(const Key('mobile_autocomplete_bar')),
           findsOneWidget,
         );
-        expect(find.byKey(const Key('bfm_autocomplete_overlay')), findsNothing);
+        expect(
+          find.byKey(const Key('memo_autocomplete_overlay')),
+          findsNothing,
+        );
 
         final firstCandidate = find.byKey(
           const Key('mobile_autocomplete_candidate_0'),
@@ -517,7 +524,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(syntaxController.text, contains('@t[00:00]'));
 
-        // 3. Trigger `/` autocomplete -> suggests BFM block snippets.
+        // 3. Trigger `/` autocomplete -> suggests Markdown block snippets.
         syntaxController.value = TextEditingValue(
           text: '${syntaxController.text}/task',
           selection: TextSelection.collapsed(
@@ -573,29 +580,18 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('mobile_autocomplete_bar')), findsNothing);
 
-        // Clear composing and close keyboard, then toggle Edit / Preview tabs.
+        // Clear composing, close keyboard, and submit offline memo.
         tester.view.viewInsets = FakeViewPadding.zero;
-        const finalNote = '# 手机离线笔记\n==移动端亮点== #mobile #private\n- [ ] 验证离线保存';
+        const finalMemo = '# 手机离线小记\n==移动端亮点== #mobile #private\n- [ ] 验证离线保存';
         syntaxController.value = const TextEditingValue(
-          text: finalNote,
-          selection: TextSelection.collapsed(offset: finalNote.length),
+          text: finalMemo,
+          selection: TextSelection.collapsed(offset: finalMemo.length),
           composing: TextRange.empty,
         );
         await tester.pump(const Duration(milliseconds: 200));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(const Key('mobile_tab_preview')));
-        await tester.pumpAndSettle();
-        expect(find.byKey(const Key('mobile_bfm_preview')), findsOneWidget);
-        expect(find.textContaining('手机离线笔记'), findsWidgets);
-
-        await tester.tap(find.byKey(const Key('mobile_tab_edit')));
-        await tester.pumpAndSettle();
-        expect(find.byKey(const Key('bfm_editor_input')), findsOneWidget);
-        expect(syntaxController.text, finalNote);
-
-        // Submit offline entry and verify persistence in SQLite vault.
-        await tester.tap(find.byKey(const Key('bfm_submit_button')));
+        await tester.tap(find.byKey(const Key('editor_submit_button')));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 60)),
         );
@@ -604,13 +600,14 @@ void main() {
         final entries = await tester.runAsync(
           () => fixture.vault.raw.listEntries(),
         );
-        expect(entries!.any((e) => e.bodyMd == finalNote), isTrue);
+        expect(entries!.any((e) => e.bodyMd == finalMemo), isTrue);
+        expect(find.textContaining('手机离线小记'), findsWidgets);
         expect(tester.takeException(), isNull);
       },
     );
 
     testWidgets(
-      'settings hides desktop-only tray, folder switcher, and mirror controls on mobile platforms',
+      'settings hides desktop-only tray, folder switcher, and mirror controls across mobile 2-level categories',
       (tester) async {
         tester.view.physicalSize = const Size(360, 740);
         tester.view.devicePixelRatio = 1.0;
@@ -627,6 +624,7 @@ void main() {
             home: Scaffold(
               body: BlinkSettingsPage(
                 workspace: fixture.workspace,
+                isMobile: true,
                 isMobilePlatform: true,
               ),
             ),
@@ -635,9 +633,34 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(tester.takeException(), isNull);
+        expect(
+          find.byKey(const Key('mobile_settings_general')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('mobile_settings_storage')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('mobile_settings_sync')), findsOneWidget);
+        expect(find.byKey(const Key('mobile_settings_files')), findsOneWidget);
+        expect(find.byKey(const Key('mobile_settings_about')), findsOneWidget);
 
-        // Desktop-only controls must be hidden on mobile.
+        // 1. General category: theme toggle shown, desktop close behavior hidden.
+        await tester.tap(find.byKey(const Key('mobile_settings_general')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('surface_mode_toggle')), findsOneWidget);
         expect(find.byKey(const Key('close_behavior_toggle')), findsNothing);
+        await tester.tap(find.byKey(const Key('mobile_settings_back_button')));
+        await tester.pumpAndSettle();
+
+        // 2. Storage category: mobile sandbox notice & backup/rebuild shown; desktop folder/mirror hidden.
+        await tester.tap(find.byKey(const Key('mobile_settings_storage')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('vault_path_value')), findsOneWidget);
+        expect(find.byKey(const Key('vault_channel_lock')), findsOneWidget);
+        expect(find.byKey(const Key('vault_backup_button')), findsOneWidget);
+        expect(find.byKey(const Key('vault_rebuild_button')), findsOneWidget);
+        expect(find.byKey(const Key('mobile_sandbox_notice')), findsOneWidget);
         expect(find.byKey(const Key('vault_mirror_status')), findsNothing);
         expect(find.byKey(const Key('vault_path_input')), findsNothing);
         expect(find.byKey(const Key('vault_pick_button')), findsNothing);
@@ -645,14 +668,12 @@ void main() {
         expect(find.byKey(const Key('vault_mirror_button')), findsNothing);
         expect(find.byKey(const Key('vault_reset_button')), findsNothing);
         expect(find.byKey(const Key('vault_onedrive_hint')), findsNothing);
+        await tester.tap(find.byKey(const Key('mobile_settings_back_button')));
+        await tester.pumpAndSettle();
 
-        // Mobile-appropriate controls & About metadata remain intact.
-        expect(find.byKey(const Key('surface_mode_toggle')), findsOneWidget);
-        expect(find.byKey(const Key('vault_path_value')), findsOneWidget);
-        expect(find.byKey(const Key('vault_channel_lock')), findsOneWidget);
-        expect(find.byKey(const Key('vault_backup_button')), findsOneWidget);
-        expect(find.byKey(const Key('vault_rebuild_button')), findsOneWidget);
-        expect(find.byKey(const Key('mobile_sandbox_notice')), findsOneWidget);
+        // 3. About category: build metadata intact.
+        await tester.tap(find.byKey(const Key('mobile_settings_about')));
+        await tester.pumpAndSettle();
         expect(find.byKey(const Key('about_section')), findsOneWidget);
         expect(find.byKey(const Key('about_version')), findsOneWidget);
         expect(find.byKey(const Key('about_channel')), findsOneWidget);

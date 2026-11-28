@@ -183,7 +183,84 @@ TEXT_FILENAMES = {".editorconfig", ".gitattributes", ".gitignore", "CODEOWNERS"}
 TEXT_DIRS = {".githooks"}
 CRLF_ALLOWED_EXTENSIONS = {".bat", ".cmd"}
 
-EXTERNAL_URL_STRIP_RE = re.compile(r"https?://(?!github\.com/chialecode/)[^\s\"'<>`)]+", re.I)
+EXTERNAL_URL_STRIP_RE = re.compile(
+    r"https?://(?!(?:www\.)?github\.com/chialecode/)[^\s\"'<>`)]+", re.I
+)
+PLAIN_ALPHA_NAME_RE = re.compile(r"[A-Za-z]+")
+
+
+def _build_strict_repo_pattern(cleaned: str) -> re.Pattern[str]:
+    """Build exact word-boundary pattern for reference-index, reference/*, and distinctive sibling names."""
+    # A trailing dot only continues the token when another identifier character follows
+    # (file extension or domain); a sentence-ending period must not hide the name.
+    if "/" in cleaned:
+        return re.compile(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(cleaned)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])",
+            re.I,
+        )
+    return re.compile(
+        rf"(?<![A-Za-z0-9_.-]){re.escape(cleaned)}(?![A-Za-z0-9_(-]|\.[A-Za-z0-9])",
+        re.I,
+    )
+
+
+def _build_sibling_context_pattern(cleaned: str) -> re.Pattern[str]:
+    """Build context-aware pattern for single plain-alpha sibling repo names.
+
+    Avoids false positives on ordinary programming identifiers/attributes while
+    catching software, repository, slug, and path mentions in linear time.
+    """
+    esc = re.escape(cleaned)
+    trailing = r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9])"
+    open_zh = r"(?:\*\*|[《「『\"'`（(\u201c\u2018])"
+    close_zh = r"(?:\*\*|[》」』\"'`）)\u201d\u2019])"
+    open_en = r"(?:\*\*|[`\"'(\u201c\u2018])"
+    close_en = r"(?:\*\*|[`\"'\u201d\u2019])"
+    branches = (
+        # 1a. Explicit Git hosting URL/SSH path (non-owner external URLs stripped beforehand)
+        rf"(?<![A-Za-z0-9_.-])(?:(?:github|gitlab|gitee)\.com|bitbucket\.org|codeberg\.org)"
+        rf"[/:][A-Za-z0-9_.-]+/{esc}(?:\.git)?{trailing}",
+        # 1b. Owner/repo slug or explicit .git clone slug
+        rf"(?<![A-Za-z0-9_.-])(?:chialecode/{esc}(?:\.git)?|(?:[A-Za-z0-9_.-]+/)?{esc}\.git){trailing}",
+        # 2. Relative or workspace/project/repo directory paths (forward or backslash)
+        rf"(?<![A-Za-z0-9_.-])(?:\.\.?[\\/]|(?:projects?|repos?|workspace)[\\/]){esc}(?:\.git)?{trailing}",
+        # 3a. Explicit Chinese software/project/repo mention before <name>
+        # Each optional delimiter group starts with a non-whitespace token to stay O(N).
+        rf"(?:参考(?:项目|仓库|软件|应用|工具|实现|了)?|同级(?:项目|仓库|目录)?|本机(?:项目|仓库)?|"
+        rf"隔壁(?:项目|仓库)?|借鉴了?|仿照了?|抄自|来自|类似|对标|(?:桌面|本地)应用|软件|项目|仓库)"
+        rf"[ \t]*(?:[:：][ \t]*)?(?:{open_zh}[ \t]*)?{esc}{trailing}",
+        # 3b. Explicit Chinese software/project/repo mention after <name>
+        rf"(?<![A-Za-z0-9_.-]){esc}(?:{close_zh})?[ \t]*(?:[（(][ \t]*)?"
+        rf"(?:(?:的[ \t]*)?(?:(?:同级|参考|本机|隔壁)[ \t]*)?"
+        rf"(?:项目|仓库|软件|应用(?!到|于|至|在|了)|客户端|桌面端|服务端|代码库|源码|工程)|同级|参考)",
+        # 3c. Chinese title-quoted <name>
+        rf"[《「『][ \t]*{esc}[ \t]*[》」』]",
+        # 4a. Explicit English software/project/repo mention before <name>
+        rf"\b(?:sibling[ \t]+(?:repo(?:sitory)?|project|app|codebase)|"
+        rf"reference[ \t]+(?:repo(?:sitory)?|project|app|codebase)|"
+        rf"(?:repo(?:sitory)?|project|app|software|codebase)[ \t]+(?:named|called)|"
+        rf"from[ \t]+(?:repo(?:sitory)?|project|app|codebase))"
+        rf"(?::[ \t]*|[ \t]+)(?:{open_en})?{esc}{trailing}",
+        # 4b. Explicit English software/project/repo mention after <name>
+        rf"(?<![A-Za-z0-9_.-]){esc}(?:{close_en})?(?:['\u2019]s)?"
+        rf"(?:[ \t]+(?:[（(][ \t]*)?|（[ \t]*)(?:(?:sibling|reference)[ \t]+)?"
+        rf"(?:repo(?:sitory)?|project|codebase|app|software|client)\b",
+    )
+    return re.compile("|".join(branches), re.I)
+
+
+def _is_sibling_reference_bucket(child: Path, sibling_dirs_lower: set[str]) -> bool:
+    """Return True iff non-.git `reference/<child>` is clearly a sibling project bucket, not a third-party reference dir."""
+    if (child / ".git").exists():
+        return False
+    if child.name.lower() in sibling_dirs_lower:
+        return True
+    if (child / "PROPOSALS.md").is_file():
+        return True
+    try:
+        return next(child.iterdir(), None) is None
+    except OSError:
+        return False
 
 
 def strip_fenced_code(text: str) -> str:
@@ -284,28 +361,26 @@ def load_forbidden_repo_terms(
     seen: set[str] = set()
     entries: list[tuple[str, re.Pattern[str], bool]] = []
 
-    def add_term(term: str, *, strip_urls: bool) -> None:
+    def add_term(term: str, *, strip_urls: bool, context_only: bool = False) -> None:
         cleaned = term.strip()
         key = cleaned.lower()
         if not cleaned or key == repo_lower or key == f"chialecode/{repo_lower}" or key in seen:
             return
         seen.add(key)
-        # A trailing dot only continues the token when another identifier character follows
-        # (file extension or domain); a sentence-ending period must not hide the name.
-        if "/" in cleaned:
-            pat = re.compile(
-                rf"(?<![A-Za-z0-9_.-]){re.escape(cleaned)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])", re.I
-            )
+        if context_only:
+            pat = _build_sibling_context_pattern(cleaned)
         else:
-            pat = re.compile(
-                rf"(?<![A-Za-z0-9_.-]){re.escape(cleaned)}(?![A-Za-z0-9_(-]|\.[A-Za-z0-9])", re.I
-            )
+            pat = _build_strict_repo_pattern(cleaned)
         entries.append((cleaned, pat, strip_urls))
 
-    explicit_override = bool(
-        (ref_dir_override is not None and ref_dir_override.strip())
-        or os.environ.get("BLINK_REFERENCE_DIR", "").strip()
-    )
+    explicit_ref_dir: Path | None = None
+    if ref_dir_override is not None and ref_dir_override.strip():
+        explicit_ref_dir = Path(ref_dir_override.strip())
+    else:
+        env_dir = os.environ.get("BLINK_REFERENCE_DIR", "").strip()
+        if env_dir:
+            explicit_ref_dir = Path(env_dir)
+    explicit_override = explicit_ref_dir is not None
 
     ref_index = find_reference_index_file(root, ref_dir_override)
     ref_count = 0
@@ -322,18 +397,75 @@ def load_forbidden_repo_terms(
         except OSError:
             pass
 
+    ref_entry_dir = (
+        ref_index.parent
+        if ref_index is not None
+        else (explicit_ref_dir if explicit_ref_dir is not None and explicit_ref_dir.is_dir() else None)
+    )
+    if ref_entry_dir is not None:
+        try:
+            for child in sorted(ref_entry_dir.iterdir()):
+                if child.is_dir() and not child.name.startswith("."):
+                    before = len(entries)
+                    add_term(child.name, strip_urls=True)
+                    ref_count += len(entries) - before
+        except OSError:
+            pass
+
     sibling_count = 0
+    context_sibling_count = 0
     if not explicit_override:
+        sibling_dirs_lower: set[str] = set()
+        sibling_git_children: list[Path] = []
+        if root.parent.is_dir():
+            try:
+                for child in sorted(root.parent.iterdir()):
+                    if child.is_dir() and not child.name.startswith("."):
+                        sibling_dirs_lower.add(child.name.lower())
+                        if (child / ".git").exists():
+                            sibling_git_children.append(child)
+            except OSError:
+                pass
+
         cur = root.parent
         for _ in range(4):
             ref_root = cur / "reference"
             if ref_root.is_dir():
+                repo_ref_dir = ref_root / root.name
+                is_per_project_ref_root = repo_ref_dir.is_dir()
+                if is_per_project_ref_root:
+                    try:
+                        for child in sorted(repo_ref_dir.iterdir()):
+                            if child.is_dir() and not child.name.startswith("."):
+                                before = len(entries)
+                                add_term(child.name, strip_urls=True)
+                                ref_count += len(entries) - before
+                    except OSError:
+                        pass
                 try:
                     for child in sorted(ref_root.iterdir()):
-                        if child.is_dir() and not child.name.startswith("."):
-                            before = len(entries)
-                            add_term(child.name, strip_urls=True)
-                            sibling_count += len(entries) - before
+                        if not child.is_dir() or child.name.startswith("."):
+                            continue
+                        before = len(entries)
+                        # When `reference/<this_repo>` exists, only a non-.git
+                        # directory under `reference/` that is clearly a sibling
+                        # project bucket (present under `root.parent`, contains
+                        # `PROPOSALS.md`, or is an empty placeholder) uses
+                        # context-aware matching for single plain-alpha names.
+                        # Unpacked third-party reference dirs with files/subdirs,
+                        # `.git` reference repos, flat `reference/*` dirs,
+                        # distinctive names, and everything inside
+                        # `reference/<this_repo>/` stay strictly matched.
+                        use_context = (
+                            is_per_project_ref_root
+                            and _is_sibling_reference_bucket(child, sibling_dirs_lower)
+                            and bool(PLAIN_ALPHA_NAME_RE.fullmatch(child.name.strip()))
+                        )
+                        add_term(child.name, strip_urls=True, context_only=use_context)
+                        added = len(entries) - before
+                        sibling_count += added
+                        if use_context:
+                            context_sibling_count += added
                 except OSError:
                     pass
                 break
@@ -341,21 +473,21 @@ def load_forbidden_repo_terms(
                 break
             cur = cur.parent
 
-        if root.parent.is_dir():
-            try:
-                for child in sorted(root.parent.iterdir()):
-                    if child.is_dir() and not child.name.startswith(".") and (child / ".git").exists():
-                        before = len(entries)
-                        add_term(child.name, strip_urls=True)
-                        sibling_count += len(entries) - before
-            except OSError:
-                pass
+        for child in sibling_git_children:
+            before = len(entries)
+            use_context = bool(PLAIN_ALPHA_NAME_RE.fullmatch(child.name.strip()))
+            add_term(child.name, strip_urls=True, context_only=use_context)
+            added = len(entries) - before
+            sibling_count += added
+            if use_context:
+                context_sibling_count += added
 
     if not entries:
         return [], "check_docs: no local reference index or sibling repos found; skipping reference-name check"
+    context_note = f" ({context_sibling_count} context-matched)" if context_sibling_count else ""
     return (
         entries,
-        f"check_docs: loaded {ref_count} reference-index term(s) and {sibling_count} sibling-repo term(s)",
+        f"check_docs: loaded {ref_count} reference-index term(s) and {sibling_count} sibling-repo term(s){context_note}",
     )
 
 
